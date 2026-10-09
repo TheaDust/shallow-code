@@ -1,0 +1,21 @@
+{{PRODUCT_CONTEXT}}
+
+{{PLATFORM_CONTRACT}}
+
+{{RECEIPT}}
+
+{{FRAGMENTS}}
+
+# 当前任务
+
+目标项目目录：{{OUTPUT_DIR}}
+
+{{PROJECT_CONTEXT}}
+
+{{WORK_PACKET}}
+
+任务模式：需求修复
+工作包编号：{{PACKET_ID}}
+当前尝试：{{PACKET_ATTEMPT}}
+
+{{ACTION}}

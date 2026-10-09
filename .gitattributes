@@ -1,0 +1,4 @@
+# Prompt assets are UTF-8 LF-only Markdown (AGENTS.md convention). Keep them LF
+# even on Windows checkouts so byte-level checks see the stored form.
+prompts/**/*.md text eol=lf
+baseline/system.md text eol=lf

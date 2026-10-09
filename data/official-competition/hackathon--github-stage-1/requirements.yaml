@@ -1,0 +1,837 @@
+id: ROOT
+name: GitHub - Stage 1
+type: FOLDER
+dependencies: []
+description: This product is a simplified GitHub collaboration platform. Unless an
+  atomic requirement explicitly allows more than one role, every quoted user-interface
+  name is the exact English accessible name of the control; the role, scope, and observable-state
+  rules stated by each atomic requirement are authoritative. Values described as existing
+  accounts, organizations, teams, repositories, branches, files, commits, issues,
+  milestones, pull requests, reviews, and permission relationships are predefined
+  seed data. The application must provision those records before the corresponding
+  scenario and supply each account through an isolated browser session; they are not
+  extra features that a participant must expose through a private API. Generated
+  names may contain a unique suffix, but their role, ownership, visibility, and relationships
+  are exactly those stated in the atomic requirement. Every atomic requirement remains
+  enabled even when seed configuration is incomplete. Organization Owner, repository Admin, Read,
+  Triage, Write, Maintain, and Admin permissions follow the operation-specific rules
+  in the requirements below; these roles are not an automatic cumulative ladder. Real-time
+  collaboration, Actions, Packages, Wiki, project boards, notification delivery, and
+  external Git remote protocols are outside the scope of this product.
+children:
+- id: REQ-1
+  name: Identity and Access
+  type: FOLDER
+  dependencies: []
+  description: This module defines the “account” and “session” required to access
+    the system. An account is a persistent individual identity storing a username,
+    verified email, and credential status; a session is a record created after successful
+    account sign-in that represents only the current browser login state. Visitors
+    enter the account-access page from “Sign up”, “Sign in”, or “Forgot password”
+    on the home page; signed-in users enter security settings or sign out from the
+    account menu. The account menu is the control in the upper-right corner of the
+    page that displays the current signed-in account, organization list, and sign-out
+    entry. No page, error message, or recovery flow may display a full password. After
+    successful sign-in, the account menu displays the current user, and subsequent
+    organization, repository, issue, and pull-request pages use this session to determine
+    visibility and operation permissions; sign-out, password changes, and recovery
+    must immediately change the session state visible to subsequent requests.
+  children:
+  - id: REQ-1-1
+    name: Account Registration and Recovery
+    type: FOLDER
+    dependencies: []
+    description: The account-access page is the shared page used by unauthenticated
+      users to register, sign in, and recover a password, with the frontend showing
+      the appropriate form and submit button for each operation. The local product
+      does not implement an email-verification page, email delivery, or an external
+      verification-code service — successful registration directly stores a sign-in-capable
+      account and marks its email as verified; successful sign-in only stores a new
+      session and does not create a duplicate account; after submitting an email for
+      password recovery, the page directly displays the fixed verification code `123456`
+      and the password-reset form, and only the correct code together with a compliant
+      new password updates the password of the same account. Registration, sign-in,
+      and recovery pages must use visible labels to identify fields and submit actions;
+      after failure, non-sensitive input is retained, while password and password-confirmation
+      fields must not redisplay submitted values.
+    children:
+    - id: REQ-1-1-1
+      name: Register a New GitHub Account
+      type: ATOMIC
+      dependencies: []
+      description: |-
+        The registration page is the form opened by the unique link named “Create an account” from the sign-in page. The form contains exactly one textbox labeled “Username”, one textbox labeled “Email”, one password input labeled “Password”, one password input labeled “Confirm password”, one initially unchecked checkbox named “Agree to the terms”, and one enabled button named “Create account”. The username and email identify the account, while passwords must not be echoed on the page. This product directly marks the email of a successfully registered account as verified and does not provide a subsequent email-verification page. The visitor enters a unique username, email, password, and matching confirmation, checks “Agree to the terms”, and activates “Create account”. The username must consist of 1 to 39 lowercase ASCII letters, digits, or single hyphens (`-`) and must not begin or end with a hyphen; after trimming leading and trailing whitespace, the email must contain exactly one `@`, be no longer than 254 characters, and have at least one dot and non-empty domain labels after the `@`; the password must contain 12 to 128 characters, include at least one uppercase letter, one lowercase letter, one digit, and one non-alphanumeric special character, and contain no whitespace characters. The system stores a sign-in-capable account together with its verified-email status and enters the sign-in page; if the username or email conflicts, any field is missing, the email format is invalid, the terms are not accepted, the password is noncompliant, or the confirmation does not match, the system retains the username and email input, displays an itemized message beside the corresponding field, and does not create an account. The corresponding visible field message contains “Username already exists”, “Username format is invalid”, “Email format is invalid”, “Password requirements are not satisfied”, or “Agree to terms is required”, as applicable. Visitors can use this capability on the account-access page. The system validates input rules, displays field errors, and prevents duplicate accounts; on success, it directly creates an available account. Submitting several invalid fields together must show the username, email, password, and missing-terms messages together, rather than revealing only one error per submission; the submit button remains actionable so these messages can be read. For example, a username beginning with a hyphen, email “not-an-email”, password “short”, confirmation “different”, and unchecked terms produce these field errors and preserve the attempted username. A duplicate username paired with a different unused email displays “Username already exists” and retains both attempted values. A successful registration accepts a unique username, its email, and password; the sign-in form is immediately available, accepts that email, and the resulting signed-in username remains visible after reload.
+
+        Screenshot reference:
+        ![image](reference/github-sign-up.png)
+      scenarios:
+      - name: 'REQ-1-1-1: Register a New GitHub Account - Scenario 1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session and opens the account-access page. The visitor clicks the visible
+            link “Sign in” and then the visible link “Create an account”. The registration page
+            displays visibly labeled Username, Email, Password, and Confirm password fields,
+            a checkbox named “Agree to the terms”, and a button named “Create account”. The
+            username `nora-demo` and email `nora.demo@example.test` are not registered.'
+        - keyword: WHEN
+          content: 'The visitor enters `nora-demo` in Username, `nora.demo@example.test` in
+            Email, `Valid-password-123!` in Password and Confirm password, checks “Agree to
+            the terms”, and clicks “Create account”.'
+        - keyword: THEN
+          content: 'The system opens the sign-in page and visibly displays the labeled “Username
+            or email” and “Password” fields and the “Sign in” button. The visitor enters
+            `nora.demo@example.test` in “Username or email”, enters `Valid-password-123!` in
+            “Password”, and clicks “Sign in”. The workspace visibly displays the username
+            `nora-demo`.'
+        - keyword: THEN
+          content: 'After the visitor reloads the page, the workspace still visibly displays
+            the username `nora-demo`.'
+      - name: 'REQ-1-1-1: Register a New GitHub Account - Scenario 2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session and opens the account-access page. The visitor opens the
+            registration page through the visible “Sign in” and “Create an account” links.
+            The registration page displays visibly labeled Username, Email, Password, and
+            Confirm password fields, a checkbox named “Agree to the terms”, and a button
+            named “Create account”.'
+        - keyword: WHEN
+          content: 'The visitor enters the invalid username `-invalid-demo` in Username,
+            `invalid.username@example.test` in Email, `Valid-password-123!` in Password
+            and Confirm password, checks “Agree to the terms”, and clicks “Create account”.'
+        - keyword: THEN
+          content: 'The registration page remains open and displays “Username format is
+            invalid”. The Username field retains the value `-invalid-demo`; no account is
+            created.'
+        - keyword: THEN
+          content: 'The Email, Password, Confirm password, and terms controls remain available
+            for correction, and the rejected submission does not redirect to the sign-in page.'
+      - name: 'REQ-1-1-1: Register a New GitHub Account - Scenario 3'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session and opens the account-access page. The visitor opens the
+            registration page through the visible “Sign in” and “Create an account” links.
+            The registration page displays visibly labeled Username, Email, Password, and
+            Confirm password fields, a checkbox named “Agree to the terms”, and a button
+            named “Create account”. The username `invalid-email-demo` is unused.'
+        - keyword: WHEN
+          content: 'The visitor enters `invalid-email-demo` in Username, the invalid email
+            `not-an-email` in Email, `Valid-password-123!` in Password and Confirm password,
+            checks “Agree to the terms”, and clicks “Create account”.'
+        - keyword: THEN
+          content: 'The registration page remains open and displays “Email format is invalid”.
+            The Email field retains the value `not-an-email`; no account is created.'
+        - keyword: THEN
+          content: 'The valid Username, Password, Confirm password, and terms controls remain
+            available for correction, and the rejected submission does not redirect to the
+            sign-in page.'
+    - id: REQ-1-1-2
+      name: Sign In with an Existing Account
+      type: ATOMIC
+      dependencies:
+      - REQ-1-1-1
+      description: |-
+        This feature builds on the persisted objects. The sign-in page is the form on the account-access page containing “Username or email”, “Password”, and “Sign in”. A “session” is the current-browser login record saved after successful account authentication, represented in the frontend by the upper-right account menu and access to protected pages. The visitor enters a username or email and a password and submits the form. The system looks up the account and validates its credentials and availability status; if authentication fails due to an unknown username/email, incorrect password, or unavailable account, the system displays exactly the same generic failure message “Invalid credentials”, does not disclose whether the account exists or which credential was wrong, and does not create a session. After successful authentication, the system stores a session with a unique session identifier, account identifier, and active status, then redirects to the workspace accessible to that user; the session remains valid after refreshing or reopening the workspace, and subsequent protected organization, repository, and work-item requests must use this session to determine the current user.
+
+        Screenshot reference:
+        ![image](reference/github-sign-in.png)
+      scenarios:
+      - name: 'REQ-1-1-2: Sign In with an Existing Account - Scenario 1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. The
+            system has pre-provisioned a verified and available account with username
+            `alice-dev`, email `alice.dev@example.test`, and password
+            `Valid-password-123!`.'
+        - keyword: WHEN
+          content: 'The visitor opens the application home page, verifies that exactly one
+            visible link named “Sign in” is available, and clicks it. On the sign-in page,
+            the visitor enters `alice-dev` in the visibly labeled “Username or email” field,
+            enters `Valid-password-123!` in the visibly labeled “Password” field, and clicks
+            the button named “Sign in”.'
+        - keyword: THEN
+          content: 'The system enters the workspace and visibly displays the exact username
+            `alice-dev`.'
+        - keyword: THEN
+          content: 'After the visitor reloads the page, the exact username `alice-dev`
+            remains visible.'
+      - name: 'REQ-1-1-2: Sign In with an Existing Account - Scenario 2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. The
+            system has pre-provisioned a verified and available account with username
+            `alice-dev`, email `alice.dev@example.test`, and password
+            `Valid-password-123!`.'
+        - keyword: WHEN
+          content: 'The visitor opens the application home page, clicks the visible link
+            named “Sign in”, enters `alice.dev@example.test` in the visibly labeled
+            “Username or email” field, enters the incorrect password
+            `Valid-password-123!-incorrect` in the visibly labeled “Password” field, and
+            clicks the button named “Sign in”.'
+        - keyword: THEN
+          content: 'The sign-in page visibly displays the generic message “Invalid
+            credentials”.'
+      - name: 'REQ-1-1-2: Sign In with an Existing Account - Scenario 3'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. The
+            system has pre-provisioned a verified and available account with username
+            `alice-dev`, email `alice.dev@example.test`, and password
+            `Valid-password-123!`.'
+        - keyword: WHEN
+          content: 'The visitor opens the application home page, clicks the visible link
+            named “Sign in”, enters `alice.dev@example.test` in the visibly labeled
+            “Username or email” field, enters `Valid-password-123!` in the visibly labeled
+            “Password” field, and clicks the button named “Sign in”.'
+        - keyword: THEN
+          content: 'The system enters the workspace and visibly displays the username
+            `alice-dev`.'
+      - name: 'REQ-1-1-2: Sign In with an Existing Account - Scenario 4'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. The
+            system has pre-provisioned a verified and available account with username
+            `alice-dev`, email `alice.dev@example.test`, and password
+            `Valid-password-123!`.'
+        - keyword: WHEN
+          content: 'The visitor opens the application home page, clicks the visible link
+            named “Sign in”, enters the unknown address `unknown@example.test` in the
+            visibly labeled “Username or email” field, enters `Valid-password-123!` in
+            “Password”, and clicks “Sign in”. The visitor then reopens the application home
+            page, clicks “Sign in” again, enters `alice-dev` in “Username or email”, enters
+            the incorrect password `Valid-password-123!-wrong` in “Password”, and clicks
+            “Sign in” again.'
+        - keyword: THEN
+          content: 'The first sign-in attempt displays the generic message “Invalid
+            credentials”, and the second sign-in attempt displays the same generic message.'
+    - id: REQ-1-1-3
+      name: Recover Account Access Through a Verified Email
+      type: ATOMIC
+      dependencies:
+      - REQ-1-1-1
+      description: The sign-in page exposes a visible “Forgot password” link. The recovery
+        step displays visibly labeled Email, Verification code, New password, and Confirm
+        password fields and a “Send reset link” or “Reset password” button. A registered
+        verified email and an unknown email both reach the same recovery step and display
+        the fixed verification code `123456` without requiring email delivery. A wrong code
+        leaves the original password usable and displays “Verification code is invalid”. A
+        correct code with matching compliant passwords updates the account and displays
+        “Password updated”.
+      scenarios:
+      - name: 'REQ-1-1-3: Recover Account Access Through a Verified Email - Scenario
+          1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. Test setup
+            pre-provisions the verified account `recovery-visibility` with email
+            `recovery-visibility@example.test` and password `Valid-password-123!`; the
+            address `unknown@example.test` does not belong to an account.'
+        - keyword: WHEN
+          content: 'The visitor opens “Sign in”, clicks “Forgot password”, submits
+            `recovery-visibility@example.test`, and then repeats the reset-step flow for
+            `unknown@example.test`.'
+        - keyword: THEN
+          content: 'Both reset-step pages display the fixed text `123456`, the visibly labeled
+            “Verification code” field, and the visibly labeled “New password” field.'
+      - name: 'REQ-1-1-3: Recover Account Access Through a Verified Email - Scenario
+          2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. Test setup
+            pre-provisions the verified account `recovery-invalid-code` with email
+            `recovery-invalid-code@example.test` and password `Valid-password-123!`.'
+        - keyword: WHEN
+          content: 'The visitor opens the reset step for `recovery-invalid-code@example.test`,
+            enters `000000` in “Verification code”, enters `Replacement-password-456!` in
+            both “New password” and “Confirm password”, and clicks “Reset password”. The
+            visitor then signs in with the same email and original password
+            `Valid-password-123!`.'
+        - keyword: THEN
+          content: 'The reset displays “Verification code is invalid”, and the original
+            password login succeeds with workspace username `recovery-invalid-code`.'
+      - name: 'REQ-1-1-3: Recover Account Access Through a Verified Email - Scenario
+          3'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts in a fresh unauthenticated browser session. Test setup
+            pre-provisions the verified account `recovery-success` with email
+            `recovery-success@example.test` and password `Valid-password-123!`.'
+        - keyword: WHEN
+          content: 'The visitor opens the reset step for `recovery-success@example.test`,
+            enters `123456` in “Verification code”, enters `Replacement-password-456!` in
+            both “New password” and “Confirm password”, and clicks “Reset password”. The
+            visitor then signs in with the same email and the new password
+            `Replacement-password-456!`.'
+        - keyword: THEN
+          content: 'The system displays “Password updated”, and the new password login
+            succeeds with workspace username `recovery-success`.'
+  - id: REQ-1-2
+    name: Sign Out and End the Current Web Session
+    type: ATOMIC
+    dependencies:
+    - REQ-1-1-2
+    description: |-
+      This feature builds on the persisted objects, opened pages, or authenticated-session context provided by REQ-1-1-2 (Sign In with an Existing Account); it must reuse that context and keep pages and data consistent after the context changes. The page contains exactly one button named “Account menu”; its menu contains exactly one link named “Sign out”. Activating it displays a dialog named “Sign out” with buttons named “Confirm sign out” and “Cancel”. The dialog explains that sign-out affects only the current browser session. Only “Confirm sign out” invalidates the session, while “Cancel” or closing the dialog retains the current session and page. After confirming, refresh, browser back navigation, or directly reopening a previously accessible protected account, repository, or organization page restores an unauthenticated state and displays the “Sign in” link.
+
+      Screenshot reference:
+      ![image](reference/github-account-menu-sign-out.png)
+    scenarios:
+    - name: 'REQ-1-2: Sign Out and End the Current Web Session - Scenario 1'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts at the application home page in a fresh unauthenticated
+          browser session. The seeded data is account `alice-dev`, email `alice.dev@example.test`,
+          password `Valid-password-123!`. A signed-in user has entered an organization,
+          repository, or account-settings page they are authorized to access from
+          the account menu and has recorded that protected page heading. Seed values:
+          account `alice-dev`, email `alice.dev@example.test`, password `Valid-password-123!`.'
+      - keyword: WHEN
+        content: 'The user opens the account menu and clicks “Sign out”; if a confirmation
+          dialog appears, the user confirms instead of canceling or closing it. Seed
+          values: account `alice-dev`, email `alice.dev@example.test`, password `Valid-password-123!`.'
+      - keyword: THEN
+        content: 'The system returns to an unauthenticated access state, displays
+          the “Sign in” entry, and no longer displays that user''s account menu; if
+          the user cancels the confirmation dialog, the session remains valid and
+          the original page remains accessible. Seed values: account `alice-dev`,
+          email `alice.dev@example.test`, password `Valid-password-123!`.'
+      - keyword: THEN
+        content: 'When the user refreshes, navigates back in the browser, or directly
+          returns to the recorded protected page, the system requires re-authentication
+          and cannot restore the signed-out session. Seed values: account `alice-dev`,
+          email `alice.dev@example.test`, password `Valid-password-123!`.'
+    - name: 'REQ-1-2: Sign Out and End the Current Web Session - Scenario 2'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts at the application home page in a fresh unauthenticated
+          browser session. The seeded data is account `alice-dev`, email `alice.dev@example.test`,
+          password `Valid-password-123!`. The visitor starts at the application home
+          page in a fresh unauthenticated browser session. Seed values: account `alice-dev`,
+          email `alice.dev@example.test`, password `Valid-password-123!`.'
+      - keyword: WHEN
+        content: 'The user signs in as `alice-dev` with `Valid-password-123!` and
+          follows the visible controls for the sign out and end the current web session
+          workflow. Seed values: account `alice-dev`, email `alice.dev@example.test`,
+          password `Valid-password-123!`.'
+      - keyword: THEN
+        content: 'The page displays the required headings, controls, values, and status for the sign out
+          and end the current web session workflow. Seed values: account `alice-dev`,
+          email `alice.dev@example.test`, password `Valid-password-123!`.'
+      - keyword: THEN
+        content: 'After refreshing or reopening the visible destination, the successful
+          result remains persisted; a rejected action leaves the original state unchanged.
+          Seed values: account `alice-dev`, email `alice.dev@example.test`, password
+          `Valid-password-123!`.'
+  - id: REQ-1-3
+    name: Change Account Password
+    type: ATOMIC
+    dependencies:
+    - REQ-1-1-2
+    description: |-
+      This feature builds on the persisted objects, opened pages, or authenticated-session context provided by REQ-1-1-2 (Sign In with an Existing Account); it must reuse that context and keep pages and data consistent after the context changes. The security form has uniquely labeled password inputs “Current password”, “New password”, and “Confirm password”, and a button “Update password”; submitting an empty current-password field must display the visible application message “Current password is required”. A failure with an incorrect current password and confirmation “does-not-match” must display the corresponding current-password or confirmation error and leave the old credentials usable. Each password-change scenario starts with its own verified account in the stated credential state and a different compliant candidate password. “Password and authentication” is the security page in account Settings used to change the current account credentials; the change affects only the current account's password record and does not alter any other accounts or resources outside the session. The user must provide the current password, a new password compliant with the REQ-1 password rules, and a character-for-character identical confirmation password; all three fields are required. The system validates the change, prevents unauthorized updates, and applies the new password to subsequent sign-in attempts. If the current password is incorrect, the new password is noncompliant, the confirmation does not match, or any field is missing, the system displays the reason in the corresponding field and does not modify the credentials; the applicable visible message is “Current password is incorrect”, “Password confirmation does not match”, or “Current password is required”. The old password remains valid and the new password must not work for sign-in. After a successful update, the page displays “Password updated”, the new password is immediately used for subsequent password-based sign-ins, and the old password must no longer work for new sign-ins.
+
+      Seed password-change values are `New-password-456!` for the successful update and
+      `Required-password-789!` for the missing-current-password scenario.
+
+      Screenshot reference:
+      ![image](reference/github-password-settings.png)
+    scenarios:
+    - name: 'REQ-1-3: Change Account Password - Scenario 1'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts in a fresh unauthenticated browser session. The system
+          pre-provisions the verified account `password-change-success` with email
+          `password-change-success@example.test` and current password
+          `Valid-password-123!`.'
+      - keyword: WHEN
+        content: 'The visitor signs in as `password-change-success`, opens Settings and then
+          Password and authentication, enters `Valid-password-123!` in “Current password”,
+          enters `New-password-456!` in both “New password” and “Confirm password”, and clicks
+          “Update password”. The visitor then opens the account-access page, clicks “Sign in”,
+          enters `password-change-success@example.test` and `New-password-456!`, and clicks
+          “Sign in”.'
+      - keyword: THEN
+        content: 'The password-settings page displays the exact message “Password updated”.'
+      - keyword: THEN
+        content: 'Signing in with the new password succeeds and the workspace visibly displays
+          the exact username `password-change-success`.'
+    - name: 'REQ-1-3: Change Account Password - Scenario 2'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts in a fresh unauthenticated browser session. The system
+          pre-provisions the verified account `password-change-invalid` with email
+          `password-change-invalid@example.test` and current password
+          `Valid-password-123!`.'
+      - keyword: WHEN
+        content: 'The visitor signs in as `password-change-invalid`, opens Settings and then
+          Password and authentication, enters `Valid-password-123!-wrong` in “Current
+          password”, enters `Another-valid-password-123!` in “New password”, enters
+          `does-not-match` in “Confirm password”, and clicks “Update password”. The visitor
+          then opens the account-access page, clicks “Sign in”, enters
+          `password-change-invalid@example.test` and the original password
+          `Valid-password-123!`, and clicks “Sign in”.'
+      - keyword: THEN
+        content: 'The password-settings page displays the exact message “Current password is
+          incorrect” and does not update the password.'
+      - keyword: THEN
+        content: 'Signing in with the original password succeeds and the workspace visibly
+          displays the exact username `password-change-invalid`.'
+    - name: 'REQ-1-3: Change Account Password - Scenario 3'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts in a fresh unauthenticated browser session. The system
+          pre-provisions the verified account `password-change-required` with email
+          `password-change-required@example.test` and current password
+          `Valid-password-123!`. The candidate new password is
+          `Required-password-789!`.'
+      - keyword: WHEN
+        content: 'The visitor signs in as `password-change-required`, opens Settings and then
+          Password and authentication, leaves “Current password” empty, enters
+          `Required-password-789!` in both “New password” and “Confirm password”, and clicks
+          “Update password”. The visitor then opens the account-access page, clicks “Sign in”,
+          enters `password-change-required@example.test` and the original password
+          `Valid-password-123!`, and clicks “Sign in”.'
+      - keyword: THEN
+        content: 'The password-settings page displays the exact message “Current password is
+          required” and does not update the password.'
+      - keyword: THEN
+        content: 'Signing in with the original password succeeds and the workspace visibly
+          displays the exact username `password-change-required`.'
+- id: REQ-2
+  name: Organization and Governance
+  type: FOLDER
+  dependencies:
+  - REQ-1-1-2
+  description: Signed-in users enter the organization list through “Your organizations”
+    in the account menu and can create or open an organization; visitors can only
+    view public repositories through public organization pages. The organization overview
+    provides Repositories, People, and Teams entries. An organization Owner directly
+    adds or removes members on People, creates teams and maintains hierarchy on Teams,
+    and grants roles to members or teams in Manage access under repository Settings.
+    Organization membership only determines whether a user can see the organization
+    and can be a candidate for team/repository authorization; it does not automatically
+    grant access to any private repository. Access to a private repository comes only
+    from organization Owner status, a direct role grant on that repository, or direct
+    membership in a team authorized for that repository. All changes must be reflected
+    simultaneously in organization details, people/team lists, and the actual access
+    results of affected repositories.
+  children:
+  - id: REQ-2-1
+    name: Organization Identity and Discovery
+    type: FOLDER
+    dependencies:
+    - REQ-1-1-2
+    description: The organization overview page uses the organization name as a heading;
+      its “Repositories”, “People”, and “Teams” navigation entries have link roles
+      even when visually styled as tabs. The Repositories tab lists repositories owned
+      by the organization, the People tab lists members and their Member/Owner roles,
+      and the Teams tab lists teams. This module supports visitors discovering an
+      organization's public repositories and signed-in accounts creating organizations
+      from the “Your organizations” page. The unique organization name uses the same
+      globally unique 1–39-character lowercase ASCII format as the REQ-1 username;
+      the display name must contain 1–100 non-empty characters after trimming leading
+      and trailing whitespace. After successful creation, the system stores the organization
+      object and the creating account's Owner membership relationship, and the user
+      enters the new organization overview page; subsequent team, member, and organization-repository
+      authorization is scoped by this organization identifier. This feature builds
+      on the persisted objects, opened pages, or authenticated-session context provided
+      by REQ-1-1-2 (Sign In with an Existing Account); it must reuse that context
+      and keep pages and data consistent after the context changes.
+    children:
+    - id: REQ-2-1-1
+      name: Browse Organization Repositories
+      type: ATOMIC
+      dependencies: []
+      description: |-
+        The organization page presents “Repositories” as a navigation link, visually usable as a tab, and a textbox labeled “Find a repository”. Filtering updates the visible results as the user types, without a separate submit action. Each result has a link named exactly with the repository name, and opens a heading displaying “organization name/repository name”. Returning with browser Back keeps the public result available; filtering by the exact private repository name never exposes its link to a visitor. The seed organization has a public repository and a distinct private repository inaccessible to visitors. From the organization page, the user clicks the “Repositories” link, can enter a repository name in the filter box, select a public/private filter, and click a repository name in the list to open its overview. The system displays only the names, descriptions, visibility, and update times of repositories visible to the current user; clicking a result opens that repository's overview. Visitors can view public repositories on a public organization overview page; signed-in accounts can see only repositories for which they have read permission on the Repositories tab of the organization overview. The list reads repository name, description, visibility, and update time and provides no write operations; private repositories must first be validated under the already defined repository-access rules.
+
+        Screenshot reference:
+        ![image](reference/github-organization-repositories.png)
+      scenarios:
+      - name: 'REQ-2-1-1: Browse Organization Repositories - Scenario 1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the organization `Acme Demo` with
+            public repository `acme-docs` and private repository `secret-research`. The
+            organization overview exposes a visible link named “Repositories”.'
+        - keyword: WHEN
+          content: 'The visitor opens the visible organization `Acme Demo`, clicks the
+            “Repositories” link, enters `acme-docs` in the visibly labeled textbox “Find a
+            repository”, and clicks the exact link named `acme-docs`.'
+        - keyword: THEN
+          content: 'The repository overview page displays a visible heading containing
+            `acme-docs`.'
+        - keyword: THEN
+          content: 'After the visitor clicks the exact organization link `Acme Demo` and
+            clicks “Repositories” again, the exact link `acme-docs` remains visible.'
+      - name: 'REQ-2-1-1: Browse Organization Repositories - Scenario 2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the organization `Acme Demo` with
+            public repository `acme-docs` and private repository `secret-research`. The
+            organization overview exposes a visible link named “Repositories”.'
+        - keyword: WHEN
+          content: 'The visitor opens the visible organization `Acme Demo`, clicks the
+            “Repositories” link, and enters `secret-research` in the visibly labeled textbox
+            “Find a repository”.'
+        - keyword: THEN
+          content: 'The exact link named `secret-research` is not visible in the organization
+            repository results.'
+    - id: REQ-2-1-2
+      name: Create an Organization After Authentication
+      type: ATOMIC
+      dependencies:
+      - REQ-1-1-2
+      description: The authenticated account menu exposes a visible “Your organizations”
+        link, whose page exposes a visible “New organization” link. The organization
+        creation page displays visibly labeled “Organization name” and “Display name”
+        fields and a button named “Create organization”. A signed-in verified account
+        can submit a unique organization identifier and display name; successful creation
+        opens the new organization overview and persists it across reload. Organization
+        identifiers must be 1–39 lowercase ASCII characters and globally unique. The
+        display name must contain 1–100 non-whitespace characters after trimming. A
+        duplicate identifier displays “Organization name already exists” without opening
+        the existing organization. An invalid identifier displays “Organization name format
+        is invalid”, and a whitespace-only display name displays “Display name is required”;
+        rejected submissions do not create an organization.
+      scenarios:
+      - name: 'REQ-2-1-2: Create an Organization After Authentication - Scenario 1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the verified account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!`; the account
+            can create organizations.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens the “Account menu”, clicks
+            “Your organizations”, clicks “New organization”, enters `mobile-guild` in the
+            visibly labeled “Organization name” field, enters `Mobile Guild` in “Display
+            name”, and clicks “Create organization”.'
+        - keyword: THEN
+          content: 'The system opens an organization overview whose heading visibly contains
+            `mobile-guild`.'
+        - keyword: THEN
+          content: 'After the visitor reloads the page, the heading containing `mobile-guild`
+            remains visible.'
+      - name: 'REQ-2-1-2: Create an Organization After Authentication - Scenario 2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the verified account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!`; the account
+            can create organizations. The organization `Acme Demo` already exists.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens the “Account menu”, clicks
+            “Your organizations”, clicks “New organization”, enters the existing identifier
+            `Acme Demo` in the visibly labeled “Organization name” field, leaves the display
+            name empty, and clicks “Create organization”.'
+        - keyword: THEN
+          content: 'The page displays the exact message “Organization name already exists”
+            and does not display an organization heading for the attempted existing
+            organization creation.'
+      - name: 'REQ-2-1-2: Create an Organization After Authentication - Scenario 3'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the verified account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!`; the account
+            can create organizations.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens the “Account menu”, clicks
+            “Your organizations”, clicks “New organization”, enters `-invalid-organization`
+            in the visibly labeled “Organization name” field, enters three spaces in
+            “Display name”, and clicks “Create organization”.'
+        - keyword: THEN
+          content: 'The page displays both exact messages “Organization name format is invalid”
+            and “Display name is required”, and no organization is created.'
+  - id: REQ-2-2
+    name: Team and Member Management
+    type: FOLDER
+    dependencies:
+    - REQ-2-1-2
+    description: On the current organization's member- and team-management pages,
+      users create teams, maintain team hierarchy and membership relationships, and
+      directly add or remove organization members. A team name contains 1–50 lowercase
+      ASCII letters, digits, or hyphens, may not begin or end with a hyphen, and must
+      be unique within the same organization; a team must belong to an organization,
+      and a parent team must belong to the same organization and may not create a
+      direct or indirect cycle. Organization membership and team membership are independent
+      persisted relationships; team hierarchy is used only for display and management
+      and does not implicitly add members of a parent or child team to the other team.
+      On the People page, an Owner enters the username or verified email of an existing
+      account and confirms, after which the system immediately saves that account's
+      Member or Owner membership relationship; there is no invitation, Pending, or
+      acceptance step. When removing a member, the system atomically deletes that
+      organization-membership relationship, all of that account's team memberships
+      in the organization, and all direct grants to that account on repositories of
+      the organization; team grants themselves are not deleted. If removal would leave
+      the organization with no Owner, the system rejects the operation and keeps all
+      relationships unchanged; the person's account, personal repositories, and relationships
+      with other organizations must not be deleted. This feature builds on the persisted
+      objects, opened pages, or authenticated-session context provided by REQ-2-1-2
+      (Create an Organization After Authentication); it must reuse that context and
+      keep pages and data consistent after the context changes.
+    children:
+    - id: REQ-2-2-1
+      name: Create an Organization Team
+      type: ATOMIC
+      dependencies:
+      - REQ-2-1-2
+      description: The organization overview exposes a visible “Teams” link. The Teams
+        page exposes a visible “New team” link, which opens a form with a visibly labeled
+        “Team name” field and a “Create team” button. An organization Owner can submit a
+        unique team name containing 1–50 lowercase ASCII letters, digits, or hyphens, with
+        no leading or trailing hyphen. A successful submission opens the new team overview
+        and the team heading remains visible after reload. A malformed team name displays
+        “Team name is invalid” and does not create a team.
+      scenarios:
+      - name: 'REQ-2-2-1: Create an Organization Team - Scenario 1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the verified account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!`; the account
+            is Owner of the existing organization `Acme Demo`. The team name `mobile-team`
+            is not yet used in that organization.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens “Account menu”, clicks “Your
+            organizations”, opens the organization `Acme Demo`, clicks “Teams”, clicks “New
+            team”, enters `mobile-team` in the visibly labeled “Team name” field, and clicks
+            “Create team”.'
+        - keyword: THEN
+          content: 'The system opens a team overview whose heading visibly contains
+            `mobile-team`.'
+        - keyword: THEN
+          content: 'After the visitor reloads the page, the heading containing `mobile-team`
+            remains visible.'
+      - name: 'REQ-2-2-1: Create an Organization Team - Scenario 2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the verified account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!`; the account
+            is Owner of the existing organization `Acme Demo`.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens “Account menu”, clicks “Your
+            organizations”, opens the organization `Acme Demo`, clicks “Teams”, clicks “New
+            team”, enters `-invalid-team` in the visibly labeled “Team name” field, and clicks
+            “Create team”.'
+        - keyword: THEN
+          content: 'The page displays the exact message “Team name is invalid”.'
+    - id: REQ-2-2-2
+      name: Manage Organization Team Members and Hierarchy
+      type: ATOMIC
+      dependencies:
+      - REQ-2-2-1
+      description: An organization Owner can open a team in the organization’s “Teams”
+        page. The team page exposes “Members” and “Settings”. On Members, “Add member”
+        opens a visibly labeled “Username” textbox and an “Add member” button; after a
+        valid organization member is added, the member appears in the list with a
+        “Remove <username>” button. Removing the member updates the list immediately and
+        remains effective after reload. On Settings, “Parent team” is a combobox and
+        “Save” persists a parent-team change. A change that would make a team its own
+        ancestor is rejected with “Cyclic team hierarchy is not allowed”, and the
+        previously saved parent remains selected after reload.
+      scenarios:
+      - name: 'REQ-2-2-2: Manage Organization Team Members and Hierarchy - Scenario
+          1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions `team-maintainer` with email
+            `team-maintainer@example.test` and password `Valid-password-123!`; this account
+            is an organization Owner authorized to manage `frontend-team` in `Acme Demo`.
+            The registered organization member `bob-reviewer` (email
+            `bob-reviewer@example.test`) is not currently a member of `frontend-team`.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `team-maintainer`, opens “Account menu”, clicks
+            “Your organizations”, opens `Acme Demo`, clicks “Teams”, opens the team
+            `frontend-team`,
+            and clicks “Members”. The visitor clicks “Add member”, enters `bob-reviewer` in
+            the visibly labeled “Username” textbox, and clicks the “Add member” button. The
+            visitor then clicks “Remove bob-reviewer”.'
+        - keyword: THEN
+          content: 'After adding, `bob-reviewer` is visible in the member list; after removal,
+            `bob-reviewer` is not visible.'
+        - keyword: THEN
+          content: 'After reloading the Members page, `bob-reviewer` remains absent.'
+      - name: 'REQ-2-2-2: Manage Organization Team Members and Hierarchy - Scenario
+          2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions `team-maintainer` with email
+            `team-maintainer@example.test` and password `Valid-password-123!`; this account
+            is an organization Owner authorized to manage `frontend-team` in `Acme Demo`.
+            `frontend-team` has saved parent value `platform-team`, and its descendant team
+            `frontend-child` is available as a selectable team option.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `team-maintainer`, opens “Account menu”, clicks
+            “Your organizations”, opens `Acme Demo`, clicks “Teams”, opens the team
+            `frontend-team`,
+            and clicks “Settings”. The visitor selects `frontend-child` in the combobox named
+            “Parent team” and clicks “Save”.'
+        - keyword: THEN
+          content: 'The page displays the exact message “Cyclic team hierarchy is not allowed”.'
+        - keyword: THEN
+          content: 'After reloading, the “Parent team” combobox still has value
+            `platform-team`.'
+    - id: REQ-2-2-3
+      name: Directly Add a User as an Organization Member
+      type: ATOMIC
+      dependencies:
+      - REQ-2-1-2
+      description: An organization Owner can open the organization’s “People” page and
+        click “Add member”. The form displays a visibly labeled “Username or email” field,
+        a “Role” combobox with a “Member” option, and an “Add member” button. Adding a
+        registered non-member directly creates the organization membership with Member
+        role, displays the account in People without a pending-invitation state, and
+        persists after reload. After the member signs in, the organization appears in
+        “Your organizations”, but membership alone does not grant access to an otherwise
+        unauthorized private repository. Adding an existing member displays “Account is
+        already a member” without duplicating the relationship; an unknown username
+        displays “Account not found”.
+      scenarios:
+      - name: 'REQ-2-2-3: Directly Add a User as an Organization Member - Scenario
+          1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the Owner account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!` for
+            organization `Acme Demo`. The registered account `new-member` with email
+            `new-member@example.test` is not currently an organization member. The
+            organization has an ungranted private repository `secret-research`.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens “Account menu”, clicks “Your
+            organizations”, opens `Acme Demo`, and clicks “People”. The visitor clicks “Add
+            member”, enters `new-member` in “Username or email”, selects “Member” in the
+            “Role” combobox, and clicks the “Add member” button.'
+        - keyword: THEN
+          content: 'The People page displays `new-member` with the “Member” role and no
+            “Pending invitation” text. After reloading, `new-member` remains visible.'
+        - keyword: THEN
+          content: 'In a separate browser session, `new-member` can sign in with email
+            `new-member@example.test` and password `Valid-password-123!`, sees `Acme Demo`
+            in “Your organizations”, and receives “Access denied” when opening the
+            organization’s ungranted private repository.'
+      - name: 'REQ-2-2-3: Directly Add a User as an Organization Member - Scenario
+          2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the Owner account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!` for
+            organization `Acme Demo`. The account `existing-member` with email
+            `existing-member@example.test` is already a member, while the username
+            `unknown-reviewer` does not belong to any account.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens “Account menu”, clicks “Your
+            organizations”, opens `Acme Demo`, and clicks “People”. The visitor clicks “Add
+            member”, enters `existing-member`, and clicks the “Add member” button. The
+            visitor then enters `unknown-reviewer` in the same field and clicks “Add member”
+            again.'
+        - keyword: THEN
+          content: 'The first submission displays the exact message “Account is already a
+            member”, and the second submission displays “Account not found”.'
+        - keyword: THEN
+          content: 'The People page contains exactly one visible occurrence of
+            `existing-member`; neither rejected submission creates a duplicate membership.'
+    - id: REQ-2-2-4
+      name: Remove a Member from an Organization
+      type: ATOMIC
+      dependencies:
+      - REQ-2-1-2
+      description: The organization overview exposes a “People” link listing member
+        usernames. For an Owner, a member row exposes a button named “Member menu
+        <username>”; the menu contains “Remove from organization”, followed by a
+        confirmation button named “Remove”. Confirmed removal removes the member from
+        People immediately and after reload. A non-Owner can view the member but has no
+        “Member menu <username>” button and no “Remove from organization” menu item.
+      scenarios:
+      - name: 'REQ-2-2-4: Remove a Member from an Organization - Scenario 1'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions the Owner account `org-owner` with
+            email `org-owner@example.test` and password `Valid-password-123!` for
+            organization `Acme Demo`. The member `existing-member` with email
+            `existing-member@example.test` is present in the organization People list.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-owner`, opens “Account menu”, clicks “Your
+            organizations”, opens `Acme Demo`, and clicks “People”. The visitor verifies
+            `existing-member` is visible, clicks “Member menu existing-member”, clicks
+            “Remove from organization”, and clicks “Remove” in the confirmation dialog.'
+        - keyword: THEN
+          content: 'The People page no longer displays `existing-member`.'
+        - keyword: THEN
+          content: 'After reloading the People page, `existing-member` remains absent.'
+      - name: 'REQ-2-2-4: Remove a Member from an Organization - Scenario 2'
+        steps:
+        - keyword: GIVEN
+          content: 'The visitor starts at the application home page in a fresh unauthenticated
+            browser session. The system pre-provisions `org-member` with email
+            `org-member@example.test` and password `Valid-password-123!` as an ordinary
+            non-Owner member of `Acme Demo`. The separate member `protected-member` with
+            email `protected-member@example.test` is present in the organization People
+            list for this scenario.'
+        - keyword: WHEN
+          content: 'The visitor signs in as `org-member`, opens “Account menu”, clicks “Your
+            organizations”, opens `Acme Demo`, and clicks “People”. The visitor verifies
+            `protected-member` is visible and checks for the button “Member menu
+            protected-member” and the menu item “Remove from organization”.'
+        - keyword: THEN
+          content: 'The non-Owner page exposes neither the “Member menu protected-member”
+            button nor the “Remove from organization” menu item.'
+  - id: REQ-2-3
+    name: Grant Repository Access to People and Teams
+    type: ATOMIC
+    dependencies:
+    - REQ-2-1-2
+    - REQ-2-2-1
+    description: A repository Admin can open “Settings” and “Manage access”. “Add people
+      or teams” opens a picker with a visibly labeled “Search” textbox, selectable team
+      options, a “Role” combobox, and an “Add” button. Adding a team with Write access
+      displays the exact team name and Write role, and the grant remains visible after
+      reload. An existing access row exposes a “Role” combobox and “Save” button; changing
+      its role from Write to Read updates the existing record rather than creating a
+      duplicate, and exactly one Read row remains after reload.
+    scenarios:
+    - name: 'REQ-2-3: Grant Repository Access to People and Teams - Scenario 1'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts at the application home page in a fresh unauthenticated
+          browser session. The system pre-provisions `repo-admin` with email
+          `repo-admin@example.test` and password `Valid-password-123!` and Admin permission
+          on repository `acme-docs`. Organization team `frontend-team` exists and initially
+          has no direct access grant on `acme-docs`.'
+      - keyword: WHEN
+        content: 'The visitor signs in as `repo-admin`, opens repository `acme-docs`, clicks
+          “Settings”, clicks “Manage access”, and clicks “Add people or teams”. The visitor
+          enters `frontend-team` in “Search”, selects the matching team option, selects
+          “Write” in the “Role” combobox, and clicks “Add”.'
+      - keyword: THEN
+        content: 'The access list visibly displays the exact team name `frontend-team` and
+          the exact role “Write”.'
+      - keyword: THEN
+        content: 'After reloading the Manage access page, `frontend-team` remains visible.'
+    - name: 'REQ-2-3: Grant Repository Access to People and Teams - Scenario 2'
+      steps:
+      - keyword: GIVEN
+        content: 'The visitor starts at the application home page in a fresh unauthenticated
+          browser session. The system pre-provisions `repo-admin` with email
+          `repo-admin@example.test` and password `Valid-password-123!` and Admin permission
+          on repository `acme-docs`. The separate organization team `access-role-team`
+          already has exactly one direct Write access grant on `acme-docs`.'
+      - keyword: WHEN
+        content: 'The visitor signs in as `repo-admin`, opens repository `acme-docs`, clicks
+          “Settings”, and clicks “Manage access”. In the row whose accessible name contains
+          `access-role-team`, the visitor verifies the current role is Write, selects “Read”
+          in the “Role” combobox, and clicks “Save”.'
+      - keyword: THEN
+        content: 'After reloading, exactly one row for `access-role-team` is present and that
+          row displays the role “Read”.'

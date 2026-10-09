@@ -1,0 +1,33 @@
+{
+  "name": "shallowcode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts",
+    "test:browser": "tsx --test --test-concurrency=1 test/browser/*.test.ts",
+    "test:all": "npm run typecheck && npm test && npm run test:browser",
+    "smoke:credentials": "tsx --test --test-name-pattern=\"credential smoke\" test/credential-smoke.test.ts",
+    "start": "tsx index.ts"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "0.73.1",
+    "@playwright/test": "1.57.0",
+    "koffi": "2.16.3",
+    "typebox": "1.3.30",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "esbuild": "0.28.2",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "koffi@2.16.3": true
+  }
+}

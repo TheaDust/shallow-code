@@ -1,0 +1,67 @@
+id: ROOT
+name: Demo Product
+type: FOLDER
+dependencies: []
+description: Root description.
+children:
+  - id: AREA-A
+    name: Account Area
+    type: FOLDER
+    dependencies: []
+    description: Account features.
+    children:
+      - id: REQ-A
+        name: Create a profile
+        type: ATOMIC
+        dependencies: []
+        description: >-
+          The page shows “Profile name”, a `Save` button, and keeps the value.
+
+          Screenshot reference:
+
+          ![profile](reference/profile.png)
+        scenarios:
+          - name: Save a profile
+            steps:
+              - keyword: GIVEN
+                content: The profile page is open.
+              - keyword: WHEN
+                content: The user fills “Profile name” and clicks `Save`.
+              - keyword: THEN
+                content: The saved name remains visible after refresh.
+          - name: Reject an empty profile
+            steps:
+              - keyword: WHEN
+                content: The user clicks `Save` without a name.
+              - keyword: THEN
+                content: The page displays “Name is required”.
+      - id: REQ-B
+        name: Edit a profile
+        type: ATOMIC
+        dependencies: [REQ-A]
+        description: The user can edit “Profile name” and click `Save changes`.
+        scenarios:
+          - name: Edit the saved profile
+            steps:
+              - keyword: GIVEN
+                content: A saved profile exists.
+              - keyword: THEN
+                content: The edited value persists.
+  - id: AREA-B
+    name: Settings Area
+    type: FOLDER
+    dependencies: []
+    description: Settings features.
+    children:
+      - id: REQ-C
+        name: Open settings
+        type: ATOMIC
+        dependencies: []
+        description: The page exposes “Settings”.
+        scenarios:
+          - name: Open settings
+            steps:
+              - keyword: WHEN
+                content: The user clicks “Settings”.
+              - keyword: THEN
+                content: The settings page is visible.
