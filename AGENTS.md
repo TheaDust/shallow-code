@@ -15,7 +15,7 @@
 
 - Pi Worker 是唯一实现目标应用业务代码的 Builder；控制器只调度、验收及安装任务无关脚手架和批准能力。
 - Judge 依据需求与浏览器观察规划和验收，保持与目标源码、diff、Builder 会话及官方测试隔离。Builder 输入通过白名单失败观测装配。
-- 目标应用仓库的 `.arc/` 与 `shallow-progress/` 对 Builder 屏蔽，回滚保留二者；其中 `shallow-progress/` 保持 untracked 且不 ignore，以便平台打包。保留 `.arc/` 原有事件协议与投影。
+- 控制器的私有证据不放进工作区：运行日志、Judge 计划、证据与 Pi 会话位于工作区外的 run 目录，`pi-tools.ts` 与候选快照据此屏蔽私有路径。`shallow-progress/` 保持 untracked，用于对外可见的进度记录。ARC 事件投影与平台打包约定由原项目维护，本仓库不再生成 `.arc/` 产物。
 - Builder 自述、构建成功和历史记录均不能授予 `verified`。历史计划与进度只提供需求 ID 来源，本轮按当前需求重新规划与执行。
 
 ### 验收与修复
@@ -27,9 +27,10 @@
 - 保持候选副本、case 数据隔离和源码/构建一致性检查。修复接受前复验既有通过路径；未接受改动恢复检查点，并保留失败尝试历史。
 - 最终验收只检测当前验收范围；交付修复改变代码后重新验收。Evolution / Stage 的外部前序依赖只作上下文，跳过沿用项单列，不计作通过。
 
-### 平台、提示词与观测
+### 项目配置、提示词与观测
 
-- 主线端口取公共运行合同：`PORT` 缺省 3000、兼容端口 3301，探针避开二者并使用 `ARC_EXTRA_PORTS=0`；交付复验只设 `PORT` 的启动路径。
+- 项目的安装、构建、开发测试目标、启动命令、环境、就绪条件、依赖输入、生成目录与持久化数据隔离方式由 `shallowcode.config.json`（`ProjectSpec`）声明，与需求 YAML 分开加载；命令使用项目相对 cwd，不依赖 `frontend`/`backend` 之类固定目录名。解析期拒绝绝对路径与 `..` 越界。
+- 迁移期间端口仍由 `runtime-config.ts` 的 `createArcPlatformContract` 提供；`resolveRuntimeContract` 已可用但尚未接入入口，接入时须同步提示词中的评测端口条款。
 - 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充；新增 fragment 同步 `prompt-fragments.ts` 与测试。
 - 合同修改核对 Builder、Planner、复核、精化及 baseline 的适用资产和动态装配，而非只改一份 Markdown。
 - 新增或调整运行事件同步 `types.ts`、`human-log.ts` 与对应测试；主线观测经 `RunStateStore.record` 发射，诊断使用统一脱敏。
@@ -38,14 +39,14 @@
 
 | 任务 | 优先入口 |
 | --- | --- |
-| 生产装配、CLI、平台配置 | `index.ts`、`main.py`、`src/cli.ts`、`src/runtime-config.ts` |
+| 生产装配、CLI、项目运行配置 | `index.ts`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
 | 需求解析、依赖、增量范围 | `src/catalog.ts`、`src/evolution.ts`、`src/scheduler.ts` |
 | 功能分组 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`prompts/planning/feature-grouping.md` |
 | 管线、检查点、回滚、交付 | `src/pipeline.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |
 | Builder 提示词与执行 | `src/builder/prompt.ts`、`prompt-builder.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`） |
 | Judge 规划、覆盖、恢复与执行 | `src/judge/llm-probe-planner.ts`、`probe-schema.ts`、`probe-coverage.ts`、`audit.ts`、`playwright-probe-runner.ts`（均在 `src/judge/`） |
-| 事件、日志、平台投影 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/arc-protocol.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
-| 数据继承与 baseline | `src/inherited-data.ts`、`baseline/index.ts`、`baseline/system.md` |
+| 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
+| 继承数据 | `src/inherited-data.ts` |
 
 目标应用的 `ARCHITECTURE.md` 交接合同位于 `prompts/system/architecture-notes.md`；修改跨会话交接时读取该资产。
 
@@ -63,8 +64,8 @@ npm run test:all
 - 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/evolution.test.ts`。
 - Judge 合同与恢复：`test/probe-contract.test.ts`、`test/semantic-review.test.ts`、`test/locator-recovery.test.ts`、`test/browser/`。
 - 管线、候选与交付：`test/pipeline.e2e.test.ts`、`test/candidate-runtime.test.ts`、`test/final-verifier.test.ts`、`test/inherited-data.test.ts`。
-- 提示词与共享执行：`test/builder-prompt.test.ts`、`test/prompt-assets.test.ts`、`test/pi-worker.test.ts`、`test/baseline.test.ts`。
-- 观测与投影：`test/observability.test.ts`、`test/arc-protocol.test.ts`、`test/human-log.test.ts`。
+- 提示词与共享执行：`test/builder-prompt.test.ts`、`test/prompt-assets.test.ts`、`test/pi-worker.test.ts`、`test/project-spec.test.ts`。
+- 观测：`test/observability.test.ts`、`test/human-log.test.ts`。
 
 真实网关冒烟需显式设置 `RUN_CREDENTIAL_SMOKE=1` 并提供凭证；缺省 skip。没有独立 lint / format 脚本，验证命令以 `package.json` 为准。
 
