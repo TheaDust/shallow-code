@@ -94,7 +94,8 @@ export interface WorkPacket {
 export interface ProcessCommand {
   executable: string;
   args: string[];
-  cwd: "output" | "frontend" | "backend";
+  /** Project-relative working directory; "output" is the project root. */
+  cwd: string;
 }
 
 export interface PlatformContract {
