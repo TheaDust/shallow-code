@@ -3,7 +3,6 @@ import { dirname, join } from "node:path";
 import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { compileBuilderPrompt } from "../src/builder/prompt.js";
-import { ArcEventSink } from "../src/arc-protocol.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { HumanRunFormatter } from "../src/human-log.js";
 import { PlanCache } from "../src/judge/plan-cache.js";
@@ -369,16 +368,13 @@ test("Historical plans do not filter blank, unknown or ordinary progressive-stag
   }
 });
 
-test("Competition mode audits only changed and new targets, preserving full prerequisite evidence and truthful ARC states", async () => {
+test("Delta mode audits only changed and new targets, preserving full prerequisite evidence", async () => {
   await withModulePipeline(async f => {
     const source = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
     source.children[0].children[0].description = modified;
     await writeFile(f.options.requirementsFile, JSON.stringify(source));
     await writeHistory(f, ["A", "B"]);
     delete f.options.auditInheritedRequirements;
-    const arc = new ArcEventSink(f.options.outputDir);
-    await arc.init();
-    f.deps.arcEvents = arc;
     const planned: string[] = [];
     const executed: string[] = [];
     f.deps.planner.plan = async packet => {
@@ -410,12 +406,6 @@ test("Competition mode audits only changed and new targets, preserving full prer
       assert.match(prompt, /本轮模块边界验收和最终交付只覆盖新增/);
       assert.doesNotMatch(prompt, /本轮模块边界验收和最终交付覆盖当前需求树，包括沿用项/);
     }
-    const requirements = JSON.parse(await readFile(join(f.options.outputDir, ".arc", "traceability", "requirements.json"), "utf8"));
-    assert.equal(requirements.B.description, source.children[0].children[1].description);
-    const arcEvents = (await readFile(join(f.options.outputDir, ".arc", "runner-events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    assert.ok(!arcEvents.some(event => event.type === "requirement_state" && event.node_id === "B" && event.phase === "test"));
-    assert.ok(!arcEvents.some(event => event.type === "requirement_state" && ["FIRST", "ROOT"].includes(event.node_id) && event.phase === "test"));
-    assert.ok(arcEvents.some(event => event.type === "requirement_state" && event.node_id === "SECOND" && event.phase === "test" && event.status === "passed"));
     const finished = (await f.events()).find(event => event.type === "pipeline_finished");
     assert.deepEqual(finished?.detail?.skippedRequirementIds, ["B"]);
     assert.deepEqual(finished?.detail?.pendingRequirementIds, []);

@@ -179,7 +179,6 @@ function sanitizeEvidenceLocator(locator: ProbeLocator, secrets: readonly string
 }
 
 function eventPhase(event: RunEvent): RunEvent["phase"] {
-  if (event.type.startsWith("arc_")) return "projection";
   if (event.type.startsWith("evidence_")) return "evidence";
   if (event.type.startsWith("builder_")) return "builder";
   if (event.type.startsWith("application_")) return "application";

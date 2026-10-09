@@ -159,8 +159,6 @@ function describe(type: string, event: RunEvent): string | null {
       return `开始交付验证（安装→构建→启动→健康检查→浏览器冒烟）；基础设施重试 ${pickNumber(detail, "retryCount") ?? 0}`;
     case "verification_finished":
       return `交付验证${detail?.ok ? "通过" : "失败"}；阶段 ${pickString(detail, "stage")}${message ? `：${message}` : ""}`;
-    case "arc_projection_failed":
-      return `ARC 平台投影写入失败，内部判定保持不变${message ? `：${message}` : ""}`;
     case "evidence_write_failed":
       return `失败证据保存失败（${packetId}），继续依据现有判词决策`;
     case "builder_reference_images": {

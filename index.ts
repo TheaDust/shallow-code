@@ -8,7 +8,6 @@ import { pathToFileURL } from "node:url";
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
-import { ArcEventSink } from "./src/arc-protocol.js";
 import { localDefaultOutputDir, parseCliArgs } from "./src/cli.js";
 import { FinalVerifier } from "./src/final-verifier.js";
 import { CandidateRuntime } from "./src/candidate-runtime.js";
@@ -173,14 +172,6 @@ async function executeProduction(
     process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
     const finalVerifier = new FinalVerifier(runner, lifecycle, candidate);
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir));
-    const projectionWarning = (error: unknown): void => {
-      try { logSink.write(`${JSON.stringify({ at: new Date().toISOString(), type: "arc_projection_failed",
-        detail: { message: sanitizeDiagnosticText(String(error), [gateway.apiKey]) } })}\n`); } catch { /* Diagnostic only. */ }
-    };
-    const arcEvents = new ArcEventSink(pipelineOptions.outputDir, {
-      journalFile: join(dirname(runLogFile), "arc-projection.jsonl"),
-    });
-    await arcEvents.init().catch(projectionWarning);
     const promptDir = new URL("./prompts/", import.meta.url);
     const promptHash = createHash("sha256");
     for (const name of (await readdir(promptDir, { recursive: true })).filter((name) => name.endsWith(".md")).sort()) {
@@ -198,7 +189,6 @@ async function executeProduction(
         candidate,
         clock: { nowMs: () => Date.now() },
         finalVerifier,
-        arcEvents,
         logSink,
         diagnosticSecrets: [gateway.apiKey],
         runMetadata: { model: gateway.model, builderTimeoutMs: modelTimeouts.builderTimeoutMs,
@@ -209,7 +199,7 @@ async function executeProduction(
         },
       });
     } finally {
-      await arcEvents.rebuild().catch(projectionWarning);
+      // Nothing else owns the run directory; the ledger and run log are the record.
     }
   } finally {
     try {

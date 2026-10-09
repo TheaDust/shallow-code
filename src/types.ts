@@ -122,7 +122,7 @@ interface RunEventEnvelope {
   eventId?: string;
   sequence?: number;
   elapsedMs?: number;
-  phase?: "pipeline" | "builder" | "planner" | "application" | "probe" | "decision" | "delivery" | "projection" | "evidence";
+  phase?: "pipeline" | "builder" | "planner" | "application" | "probe" | "decision" | "delivery" | "evidence";
   acceptedSha?: string;
   attempt?: number;
 }
@@ -224,7 +224,6 @@ interface RunEventDetails {
     missingPlanRequirementIds?: string[]; inconclusiveByKind?: Partial<Record<InconclusiveKind, string[]>>;
     auditRequirementIds?: string[]; skippedRequirementIds?: string[] };
   pipeline_failed: DiagnosticDetail;
-  arc_projection_failed: DiagnosticDetail;
   evidence_write_failed: Record<string, never>;
 }
 

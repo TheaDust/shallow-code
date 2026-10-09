@@ -11,11 +11,6 @@ import type {
   BuilderProjectContext,
 } from "./builder/prompt-input.js";
 import { toBuilderShadowObservation } from "./builder/shadow-observation.js";
-import {
-  buildArcRequirementRows,
-  type ArcRequirementRow,
-  type ArcScenarioRow,
-} from "./arc-protocol.js";
 import { loadRequirementCatalog } from "./catalog.js";
 import { maskRequirementLiterals } from "./requirement-text.js";
 import { evolutionImplementationCatalog, readHistoricalRequirementIds, selectEvolutionScope } from "./evolution.js";
@@ -27,7 +22,7 @@ import type {
 import { ProbePlannerError, type ProbePlanner, type ProbePlannerUsage } from "./judge/llm-probe-planner.js";
 import type { PlaywrightProbeRunner } from "./judge/playwright-probe-runner.js";
 import { RunStateStore, sanitizeDiagnosticText, type LogSink } from "./run-state.js";
-import { featureGroupPackets, auditPackets, folderDescendants, makePacket, DEFAULT_FEATURE_GROUP_THRESHOLDS } from "./scheduler.js";
+import { featureGroupPackets, auditPackets, makePacket, DEFAULT_FEATURE_GROUP_THRESHOLDS } from "./scheduler.js";
 import { parseFeatureGrouping, type FeatureGrouper } from "./feature-grouper.js";
 import { RunBudget, type PipelinePhase } from "./run-budget.js";
 import { auditPacket, type AuditResult, type AuditPolicy } from "./judge/audit.js";
@@ -84,23 +79,6 @@ export interface Clock {
   nowMs(): number;
 }
 
-export interface ArcEventsPort {
-  runnerState(
-    state: "running" | "completed" | "failed",
-    message?: string,
-  ): Promise<void>;
-  requirementState(
-    reqId: string,
-    phase: "design" | "implement" | "test",
-    status: "running" | "completed" | "failed" | "passed",
-  ): Promise<void>;
-  commitHistorySignal(reason: string): Promise<void>;
-  storeRequirementTree(
-    requirementRows: Record<string, ArcRequirementRow>,
-    scenarioRows: Record<string, ArcScenarioRow>,
-  ): Promise<void>;
-}
-
 export interface PipelineDeps {
   grouper?: FeatureGrouper;
   builder: BuilderPort;
@@ -111,7 +89,6 @@ export interface PipelineDeps {
   candidate?: CandidateRuntime;
   clock: Clock;
   finalVerifier: FinalVerifierPort;
-  arcEvents?: ArcEventsPort;
   logSink?: LogSink;
   diagnosticSecrets?: readonly string[];
   runMetadata?: Record<string, unknown>;
@@ -364,7 +341,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     state.setAcceptedSha(sha);
     if (candidate) deps.candidate?.recordAccepted(candidate);
     await state.record({ at: now(), type: "checkpoint_saved", detail: { requirementIds: ids, reason, candidate } });
-    await emitArc(deps, state, arc => arc.commitHistorySignal("git_commit"));
   };
   const preserveInterruptedWork = async (packet: WorkPacket): Promise<void> => {
     if (!await deps.git.hasApplicationChanges(state.snapshot.acceptedSha)) return;
@@ -476,11 +452,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       await state.record({ at: now(), type: "audit_result", packetId: packet.id,
         detail: { requirementIds: packet.requirementIds, status: result.status, reason: result.reason,
           failureKind: result.failureKind, navigationRecovered: result.navigationRecovered, uncoveredOutcomes: result.coverageGaps?.length } });
-      // The platform has no inconclusive status: leave implementation completed, never claim passed.
-      for (const id of packet.requirementIds) {
-        if (result.status !== "inconclusive") await emitArc(deps, state, arc => arc.requirementState(id, "test", result.status === "verified" ? "passed" : "failed"));
-        else await emitArc(deps, state, arc => arc.requirementState(id, "implement", "completed"));
-      }
+      // An inconclusive audit keeps its own status; it is never reported as passed.
     }
   };
   const runModuleBoundaryAudit = async (packetIds: string[], moduleId: string, moduleName: string | undefined): Promise<void> => {
@@ -894,30 +866,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     } } : {}),
     ...(deps.grouper && catalog.requirements.length > 0 ? { groupingSource: "pending_llm" as const }
       : { grouping: featureGrouping.stats }), ...deps.runMetadata } });
-  await emitArc(deps, state, arc => arc.runnerState("running", "feature-group pipeline started"));
-  const rows = buildArcRequirementRows(catalog.tree);
-  await emitArc(deps, state, arc => arc.storeRequirementTree(rows.requirementRows, rows.scenarioRows));
-  const folderMap = folderDescendants(catalog);
-  // The platform counts FOLDER nodes as requirements too; derive their state
-  // from their atomic descendants so the functional-rate denominator is covered.
-  const emitFolderRollup = async (): Promise<void> => {
-    const statuses = state.snapshot.statusByRequirementId;
-    const folders = [...folderMap].sort(([, left], [, right]) => left.length - right.length);
-    for (const [folderId, allLeaves] of folders) {
-      const leaves = allLeaves.filter(id => !skipped.has(id));
-      if (!leaves.length) continue;
-      const implementedLeaves = leaves.filter(id => implemented.has(id));
-      await emitArc(deps, state, arc => arc.requirementState(folderId, "design", "running"));
-      await emitArc(deps, state, arc => arc.requirementState(folderId, "design", "completed"));
-      await emitArc(deps, state, arc => arc.requirementState(folderId, "implement", "running"));
-      await emitArc(deps, state, arc => arc.requirementState(folderId, "implement", implementedLeaves.length === leaves.length ? "completed" : "failed"));
-      const allVerified = leaves.every(id => statuses[id] === "verified");
-      // The full source tree is still projected. A mixed folder must not imply its skipped leaves passed.
-      if (leaves.length === allLeaves.length) {
-        await emitArc(deps, state, arc => arc.requirementState(folderId, "test", allVerified ? "passed" : "failed"));
-      }
-    }
-  };
   try {
     await phase("implementation");
     if (evolutionScope && history) {
@@ -939,10 +887,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
         for (const id of evolutionScope.inheritedRequirementIds) {
           inherited.add(id);
           implemented.add(id);
-          await emitArc(deps, state, arc => arc.requirementState(id, "design", "running"));
-          await emitArc(deps, state, arc => arc.requirementState(id, "design", "completed"));
-          await emitArc(deps, state, arc => arc.requirementState(id, "implement", "running"));
-          await emitArc(deps, state, arc => arc.requirementState(id, "implement", "completed"));
         }
       }
       implementationCatalog = evolutionImplementationCatalog(catalog, inherited);
@@ -1053,12 +997,8 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       gatewayPhase = "implementation";
       await state.record({ at: now(), type: "packet_selected", packetId: packet.id,
         detail: { requirementIds: packet.requirementIds, names: packet.requirements.map(item => item.name) } });
-      for (const id of packet.requirementIds) {
-        // Design is folded into the implementation turn; keep the platform's phase trace complete.
-        await emitArc(deps, state, arc => arc.requirementState(id, "design", "running"));
-        await emitArc(deps, state, arc => arc.requirementState(id, "design", "completed"));
-        await emitArc(deps, state, arc => arc.requirementState(id, "implement", "running"));
-      }
+      // Design is folded into the implementation turn; the module phase trace is
+      // kept whole by the generic run ledger instead of a platform mirror.
       const { unmet: unmetDependencies, provisional: provisionalDependencies } = dependencyGate(packet, currentModuleId);
       if (unmetDependencies.length > 0) {
         const hasEligibleMember = packet.requirements.some(requirement =>
@@ -1069,9 +1009,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
           detail: { requirementIds: packet.requirementIds,
             unmetDependencyIds: unmetDependencies.map(item => item.id),
             dependencyStatuses: Object.fromEntries(unmetDependencies.map(item => [item.id, item.status])) } });
-        for (const id of packet.requirementIds) {
-          await emitArc(deps, state, arc => arc.requirementState(id, "implement", "failed"));
-        }
         previousModuleId = currentModuleId;
         continue;
       }
@@ -1155,7 +1092,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
           state.markRequirements(packet.requirementIds, "blocked");
           await state.record({ at: now(), type: "module_failed", packetId: packet.id,
             detail: { requirementIds: packet.requirementIds, reason: "Builder did not complete within the bounded implementation attempts; partial work is not a completed implementation" } });
-          for (const id of packet.requirementIds) await emitArc(deps, state, arc => arc.requirementState(id, "implement", "failed"));
           continue;
         }
       }
@@ -1215,7 +1151,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
         await deps.git.restoreAccepted(state.snapshot.acceptedSha);
         state.markRequirements(packet.requirementIds, "blocked");
         await state.record({ at: now(), type: "module_failed", packetId: packet.id, detail: { requirementIds: packet.requirementIds, reason } });
-        for (const id of packet.requirementIds) await emitArc(deps, state, arc => arc.requirementState(id, "implement", "failed"));
         continue;
       }
       // Track which audit packets are eligible for module boundary audit.
@@ -1225,7 +1160,6 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       await checkpoint(packet.requirementIds, packet.id, candidate);
       for (const id of packet.requirementIds) {
         implemented.add(id);
-        await emitArc(deps, state, arc => arc.requirementState(id, "implement", "completed"));
       }
       previousModuleId = currentModuleId;
     }
@@ -1307,15 +1241,11 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       missingPlanRequirementIds, inconclusiveByKind,
       ...(skipped.size > 0 ? { auditRequirementIds: auditedRequirements.map(item => item.id), skippedRequirementIds: [...skipped] } : {}) };
     await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo"), memory: await memorySnapshot() } });
-    await emitFolderRollup();
-    await emitArc(deps, state, arc => arc.runnerState(finalReport.ok ? "completed" : "failed", `summary ${summary.status}`));
     return summary;
   } catch (error) {
     // An uncontained writer must never race a checkout. Stop the run for host cleanup.
     if (!(error instanceof ExecutionFault && error.code === "builder_cleanup")) await deps.git.restoreAccepted(state.snapshot.acceptedSha);
     await state.record({ at: now(), type: "pipeline_failed", detail: { message: errorMessage(error) } });
-    await emitFolderRollup();
-    await emitArc(deps, state, arc => arc.runnerState("failed", sanitizeDiagnosticText(errorMessage(error), deps.diagnosticSecrets)));
     throw error;
   } finally {
     preplanAbort.abort();
@@ -1386,19 +1316,6 @@ const expectedByStage = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-async function emitArc(
-  deps: PipelineDeps,
-  state: RunStateStore,
-  emit: (arc: ArcEventsPort) => Promise<void> | void,
-): Promise<void> {
-  if (!deps.arcEvents) return;
-  try {
-    await emit(deps.arcEvents);
-  } catch (error) {
-    await state.record({ at: now(), type: "arc_projection_failed", detail: { message: errorMessage(error) } });
-  }
 }
 
 async function runFinalVerifier(

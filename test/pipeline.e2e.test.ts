@@ -1015,61 +1015,11 @@ test("Real Git keeps a blocked module's rejected attempt reachable in history", 
   });
 });
 
-test("ARC/log failures do not change checkpoints and private Judge data stays outside Builder input", async () => {
+test("Log failures do not change checkpoints and private Judge data stays outside Builder input", async () => {
   await withModulePipeline(async f => {
     f.deps.logSink = { write() { throw new Error("sink failed"); } };
-    f.deps.arcEvents = { runnerState: async () => { throw new Error("ARC unavailable"); },
-      requirementState: async () => {}, commitHistorySignal: async () => {}, storeRequirementTree: async () => {} };
     const summary = await f.run();
     assert.equal(summary.status, "delivered");
     assert.doesNotMatch(JSON.stringify(f.builder.requests), /probePlan|locatorSnapshot|acceptedSha|phase budget/);
-    assert.ok((await f.events()).some(item => item.type === "arc_projection_failed"));
-  });
-});
-
-test("Folder nodes receive derived design/implement/test states for the platform requirement denominator", async () => {
-  await withModulePipeline(async f => {
-    const states: Array<{ id: string; phase: string; status: string }> = [];
-    f.deps.arcEvents = {
-      runnerState: async () => {},
-      requirementState: async (id, phase, status) => { states.push({ id, phase, status }); },
-      commitHistorySignal: async () => {},
-      storeRequirementTree: async () => {},
-    };
-    const summary = await f.run();
-    assert.equal(summary.status, "delivered");
-    const sequence = (id: string) => states.filter(item => item.id === id).map(item => `${item.phase}:${item.status}`);
-    assert.deepEqual(sequence("A"),
-      ["design:running", "design:completed", "implement:running", "implement:completed", "test:passed"]);
-    for (const folder of ["FIRST", "SECOND", "ROOT"]) {
-      assert.deepEqual(sequence(folder),
-        ["design:running", "design:completed", "implement:running", "implement:completed", "test:passed"], folder);
-    }
-  });
-});
-
-test("Folder rollup reflects blocked and failed descendants", async () => {
-  await withModulePipeline(async f => {
-    const states: Array<{ id: string; phase: string; status: string }> = [];
-    f.deps.arcEvents = {
-      runnerState: async () => {},
-      requirementState: async (id, phase, status) => { states.push({ id, phase, status }); },
-      commitHistorySignal: async () => {},
-      storeRequirementTree: async () => {},
-    };
-    f.deps.builder = new FakeBuilder(["completed", "failed"]);
-    f.deps.runner.run = async plan => plan.packetId === "packet-b" ? fail(plan) : pass(plan);
-    const summary = await f.run();
-    assert.equal(summary.status, "partial");
-    const sequence = (id: string) => states.filter(item => item.id === id).map(item => `${item.phase}:${item.status}`);
-    // FIRST: A implemented+verified, B implemented but failed audit -> implement completed, test failed.
-    assert.deepEqual(sequence("FIRST"),
-      ["design:running", "design:completed", "implement:running", "implement:completed", "test:failed"]);
-    // SECOND: C uses B's runnable checkpoint and passes its own audit.
-    assert.deepEqual(sequence("SECOND"),
-      ["design:running", "design:completed", "implement:running", "implement:completed", "test:passed"]);
-    // ROOT aggregates the whole tree; B's failed audit keeps its test failed.
-    assert.deepEqual(sequence("ROOT"),
-      ["design:running", "design:completed", "implement:running", "implement:completed", "test:failed"]);
   });
 });
