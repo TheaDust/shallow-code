@@ -267,9 +267,13 @@ function platformContractSection(contract: PlatformContract): string {
     EXTRA_PORTS: extraPorts.join("、"),
     PROBE_PORT: String(contract.port),
   });
+  // Only a reserved delivery port needs an explicit "do not bind during generation"
+  // rule; a project that reserves none gets no such sentence.
+  const reservedPortClause = contract.evaluationPort === undefined
+    ? "" : `不要在生成期监听或以任何方式占用正式评测端口 ${contract.evaluationPort}；`;
   return fillTemplate(loadPrompt("system", "platform-contract"), {
     PROBE_PORT: String(contract.port),
-    EVAL_PORT: String(contract.evaluationPort),
+    RESERVED_PORT_CLAUSE: reservedPortClause,
     EXTRA_PORTS_SECTION: extraPortsSection,
     INSTALL_COMMANDS: contract.installCommands.map(renderCommand).join("\n") || "无",
     BUILD_COMMANDS: contract.buildCommands.map(renderCommand).join("\n") || "无",

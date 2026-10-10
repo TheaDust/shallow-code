@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BuilderApp } from "../src/builder/builder-app.js";
-import { createArcPlatformContract } from "../src/runtime-config.js";
+import { minimalWebContract } from "../src/project-spec.js";
 
 test("Managed app serializes starts, keeps data/port contract and stops only its owned app", async () => {
-  const contract = { ...createArcPlatformContract("linux", 43210), dataDirectory: "isolated" };
+  const contract = { ...minimalWebContract({ port: 43210 }, "linux"), dataDirectory: "isolated" };
   let starts = 0, stops = 0;
   const app = new BuilderApp("output", contract, { start: async (output, actual) => {
     assert.equal(output, "output"); assert.deepEqual(actual, contract); starts++;
@@ -25,7 +25,7 @@ test("Closing during startup waits for it and cleans the resulting process", asy
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   let stopped = false;
-  const contract = createArcPlatformContract("linux", 43210);
+  const contract = minimalWebContract({ port: 43210 }, "linux");
   const app = new BuilderApp("output", contract, { start: async () => {
     await gate;
     return { baseUrl: contract.baseUrl, stop: async () => { stopped = true; } };
@@ -39,7 +39,7 @@ test("Closing during startup waits for it and cleans the resulting process", asy
 
 test("Failed startup is reported and can be retried without pretending the app is running", async () => {
   let starts = 0;
-  const contract = createArcPlatformContract("linux", 43210);
+  const contract = minimalWebContract({ port: 43210 }, "linux");
   const app = new BuilderApp("output", contract, { start: async () => {
     if (++starts === 1) throw new Error("occupied");
     return { baseUrl: contract.baseUrl, stop: async () => {} };

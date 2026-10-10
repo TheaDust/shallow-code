@@ -1,21 +1,8 @@
 import { createServer } from "node:net";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { DEFAULT_CONTEXT_WINDOW } from "./builder/pi-model-config.js";
-import type { PlatformContract } from "./types.js";
-
-/**
- * Ports the platform's acceptance specs hard-code as their default base URL.
- * Mirrors arc-adapter's discovery: every `http://127.0.0.1:<port>` /
- * `http://localhost:<port>` literal in the task's spec bundle is a port the
- * grader's backend must serve, because the grader sets only PORT.
- */
-const LOOPBACK_URL_PORT = /https?:\/\/(?:127\.0\.0\.1|localhost):(\d{2,5})(?!\d)/g;
-/** Where the runner mounts the acceptance spec bundle. */
-export const DEFAULT_ACCEPTANCE_TESTS_DIR = "/workspace/tests";
-/** Published compatibility port used by main without inspecting test files. */
-export const FALLBACK_EXTRA_PORTS = [3301];
 
 export interface GatewayConfig {
   apiKey: string;
@@ -78,113 +65,6 @@ export async function readEnvFile(
     values[key] = value;
   }
   return values;
-}
-
-export function createArcPlatformContract(
-  platform: NodeJS.Platform = process.platform,
-  port = 3000,
-  evaluationPort = 3000,
-  extraPorts?: number[],
-): PlatformContract {
-  const npm = platform === "win32" ? "npm.cmd" : "npm";
-  return {
-    baseUrl: `http://127.0.0.1:${port}`,
-    port,
-    evaluationPort,
-    installCommands: [
-      {
-        executable: npm,
-        args: ["install", "--no-audit", "--no-fund"],
-        cwd: "frontend",
-      },
-      {
-        executable: npm,
-        args: ["install", "--no-audit", "--no-fund"],
-        cwd: "backend",
-      },
-    ],
-    buildCommands: [
-      { executable: npm, args: ["run", "build"], cwd: "frontend" },
-    ],
-    startCommand: {
-      executable: npm,
-      args: ["run", "start"],
-      cwd: "backend",
-    },
-    healthPath: "/health",
-    // The grader sets only PORT; bind the configured compatibility ports too.
-    extraPorts: extraPorts ? [...extraPorts] : [...FALLBACK_EXTRA_PORTS],
-    buildTimeoutMs: 180_000,
-    startTimeoutMs: 30_000,
-  };
-}
-
-/** Loopback base-URL ports referenced by an acceptance spec source. */
-export function extractBasePorts(text: string): number[] {
-  const ports = new Set<number>();
-  for (const match of text.matchAll(LOOPBACK_URL_PORT)) {
-    const port = Number(match[1]);
-    if (Number.isInteger(port) && port > 0 && port <= 65_535) ports.add(port);
-  }
-  return [...ports].sort((a, b) => a - b);
-}
-
-/** Every loopback port the spec bundle under `testsDir` hard-codes, sorted. */
-export async function collectSpecBasePorts(testsDir: string): Promise<number[]> {
-  let entries: string[];
-  try {
-    entries = await readdir(testsDir, { recursive: true, encoding: "utf8" });
-  } catch {
-    return [];
-  }
-  const ports = new Set<number>();
-  for (const entry of entries) {
-    if (!entry.endsWith(".ts")) continue;
-    let text: string;
-    try {
-      text = await readFile(resolve(testsDir, entry), "utf8");
-    } catch {
-      continue;
-    }
-    for (const port of extractBasePorts(text)) ports.add(port);
-  }
-  return [...ports].sort((a, b) => a - b);
-}
-
-/** First candidate directory that actually ships `*.spec.ts` files. */
-export async function locateAcceptanceTestsDir(
-  env: Record<string, string | undefined>,
-  fallbackDir: string | null = DEFAULT_ACCEPTANCE_TESTS_DIR,
-): Promise<string | null> {
-  const candidates: string[] = [];
-  const fromEnv = env["ARCBENCH_TESTS_DIR"]?.trim();
-  if (fromEnv) candidates.push(resolve(fromEnv));
-  if (fallbackDir) candidates.push(resolve(fallbackDir));
-  for (const candidate of candidates) {
-    try {
-      if ((await readdir(candidate, { recursive: true, encoding: "utf8" })).some((entry) => entry.endsWith(".spec.ts"))) {
-        return candidate;
-      }
-    } catch {
-      // Missing/unreadable candidate: try the next one.
-    }
-  }
-  return null;
-}
-
-/**
- * Extra ports the platform contract must bind, discovered from the task's own
- * acceptance specs (excluding the evaluation port the grader sets as PORT).
- * Falls back to {@link FALLBACK_EXTRA_PORTS} only when no spec bundle is present.
- */
-export async function resolvePlatformExtraPorts(
-  env: Record<string, string | undefined>,
-  evaluationPort: number,
-  fallbackDir: string | null = DEFAULT_ACCEPTANCE_TESTS_DIR,
-): Promise<number[]> {
-  const testsDir = await locateAcceptanceTestsDir(env, fallbackDir);
-  const source = testsDir ? await collectSpecBasePorts(testsDir) : FALLBACK_EXTRA_PORTS;
-  return source.filter((port) => port !== evaluationPort).sort((a, b) => a - b);
 }
 
 export function parseProbePortOverride(

@@ -27,8 +27,6 @@ import type { LogSink } from "./src/run-state.js";
 import { sanitizeDiagnosticText } from "./src/diagnostics.js";
 import { PROBE_PLAN_JSON_SCHEMA } from "./src/judge/probe-schema.js";
 import {
-  createArcPlatformContract,
-  FALLBACK_EXTRA_PORTS,
   deriveModelTimeouts,
   parseBuilderContextWindow,
   parseEvaluationPort,
@@ -43,6 +41,7 @@ import {
   referenceImagesEnabled,
   type GatewayConfig,
 } from "./src/runtime-config.js";
+import { loadProjectSpec, minimalWebProjectSpec, npmExecutable, resolveRuntimeContract, type ProjectSpec } from "./src/project-spec.js";
 
 export interface AgentExecutionContext {
   gateway: GatewayConfig;
@@ -80,16 +79,18 @@ export async function main(
   }
   await mkdir(cli.outputDir, { recursive: true });
   const runId = `${process.pid}-${Date.now()}`;
-  const evaluationPort = parseEvaluationPort(mergedEnv) ?? 3000;
-  // Finals prohibit inspecting unpublished tests, including port discovery.
-  const extraPorts = FALLBACK_EXTRA_PORTS.filter(port => port !== evaluationPort);
+  // An existing Web project declares how it runs; a blank output directory gets
+  // the shipped minimal-web template's declared contract.
+  const spec = await loadProjectSpecOrDefault(cli.outputDir);
+  const evaluationPort = parseEvaluationPort(mergedEnv);
+  const declaredExtraPorts = spec.extraPorts ?? [];
   const probePortOverride = parseProbePortOverride(mergedEnv);
-  if (probePortOverride !== null && (probePortOverride === evaluationPort || extraPorts.includes(probePortOverride))) {
+  if (probePortOverride !== null && (probePortOverride === evaluationPort || declaredExtraPorts.includes(probePortOverride))) {
     throw new Error(
-      `SHALLOW_PROBE_PORT must differ from the evaluation port ${evaluationPort} and the platform extra ports ${extraPorts.join(", ") || "(none)"}`,
+      `SHALLOW_PROBE_PORT must differ from the evaluation port ${evaluationPort} and the project extra ports ${declaredExtraPorts.join(", ") || "(none)"}`,
     );
   }
-  const probePort = probePortOverride ?? (await pickFreePort([evaluationPort, ...extraPorts]));
+  const probePort = probePortOverride ?? (await pickFreePort([...(evaluationPort === null ? [] : [evaluationPort]), ...declaredExtraPorts]));
   const runDir = parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs");
   const sseCaptureDir = resolveSseCaptureDir(mergedEnv, join(runDir, runId, "sse-capture"));
   const referenceImages = referenceImagesEnabled(mergedEnv);
@@ -98,7 +99,11 @@ export async function main(
     outputDir: cli.outputDir,
     ledgerFile: join(runDir, runId, "run-ledger.jsonl"),
     totalBudgetMs: cli.budgetMs,
-    platformContract: createArcPlatformContract(process.platform, probePort, evaluationPort, extraPorts),
+    platformContract: resolveRuntimeContract(spec, {
+      port: probePort,
+      ...(evaluationPort === null ? {} : { evaluationPort }),
+      ...(declaredExtraPorts.length > 0 ? { extraPorts: declaredExtraPorts } : {}),
+    }),
     progressDir: join(cli.outputDir, PROGRESS_DIR_NAME),
     auditInheritedRequirements: parseEvolutionAuditInherited(mergedEnv),
     generateFinalAuditPlans: parseFinalAuditGeneratePlan(mergedEnv),
@@ -114,6 +119,20 @@ export async function main(
     throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), [gateway.apiKey]));
   });
   return summary.status === "failed" ? 1 : 0;
+}
+
+/**
+ * An existing Web project declares how it runs. A directory this run creates
+ * from scratch has nothing to declare yet, so it starts from the shipped
+ * minimal-web template's spec; the scaffold written into it matches.
+ */
+async function loadProjectSpecOrDefault(outputDir: string): Promise<ProjectSpec> {
+  try {
+    return await loadProjectSpec(outputDir);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("Missing project run configuration:")) throw error;
+    return minimalWebProjectSpec(npmExecutable());
+  }
 }
 
 async function mergeGatewayEnv(

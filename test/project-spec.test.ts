@@ -7,6 +7,7 @@ import {
   DEFAULT_READY_PATH,
   PROJECT_SPEC_FILENAME,
   loadProjectSpec,
+  minimalWebContract,
   minimalWebProjectSpec,
   npmExecutable,
   parseProjectSpec,
@@ -29,6 +30,35 @@ const FULL_SPEC = {
   generatedPaths: ["web/dist"],
   dataPaths: ["web/storage", "./server/data"],
 };
+
+test("The shipped template declares the previous frontend/backend process contract per platform", () => {
+  const linux = minimalWebContract({ port: 3000, extraPorts: [3301] }, "linux");
+  const windows = minimalWebContract({ port: 3000 }, "win32");
+
+  assert.deepEqual(linux.installCommands, [
+    { executable: "npm", args: ["install", "--no-audit", "--no-fund"], cwd: "frontend" },
+    { executable: "npm", args: ["install", "--no-audit", "--no-fund"], cwd: "backend" },
+  ]);
+  assert.deepEqual(linux.buildCommands, [
+    { executable: "npm", args: ["run", "build"], cwd: "frontend" },
+  ]);
+  assert.deepEqual(linux.startCommand, { executable: "npm", args: ["run", "start"], cwd: "backend" });
+  assert.equal(linux.baseUrl, "http://127.0.0.1:3000");
+  assert.equal(linux.healthPath, DEFAULT_READY_PATH);
+  assert.deepEqual(linux.extraPorts, [3301]);
+  assert.equal(windows.startCommand.executable, "npm.cmd");
+  // No reserved delivery port unless the run declares one.
+  assert.equal("evaluationPort" in minimalWebContract({ port: 3000 }, "linux"), false);
+});
+
+test("An explicit probe port drives the base URL without changing the declared commands", () => {
+  const contract = minimalWebContract({ port: 3100 }, "linux");
+  assert.equal(contract.port, 3100);
+  assert.equal(contract.baseUrl, "http://127.0.0.1:3100");
+  assert.deepEqual(contract.buildCommands, [
+    { executable: "npm", args: ["run", "build"], cwd: "frontend" },
+  ]);
+});
 
 test("The shipped template spec resolves to the previous fixed frontend/backend contract", () => {
   const spec = minimalWebProjectSpec(npmExecutable());

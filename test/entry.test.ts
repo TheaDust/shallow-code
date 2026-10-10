@@ -369,20 +369,20 @@ test("Agent entry resolves the opt-in SSE capture directory next to the run log"
   });
 });
 
-test("Agent entry uses the public port contract without reading an acceptance test bundle", async () => {
+test("Agent entry takes extra ports from the project's own run configuration", async () => {
   await withTempDir("shallow-entry-", async (directory) => {
     const requirementsDir = join(directory, "requirements");
-    const testsDir = join(directory, "tests");
+    const outputDir = join(directory, "output");
     await mkdir(requirementsDir);
-    await mkdir(testsDir);
+    await mkdir(outputDir);
     await writeFile(
       join(requirementsDir, "requirements.yaml"),
       "id: ROOT\nname: Root\ntype: FOLDER\ndependencies: []\ndescription: Root\nchildren: []\n",
     );
-    await writeFile(
-      join(testsDir, "home.spec.ts"),
-      "await page.goto('http://127.0.0.1:3301'); await page.goto('http://localhost:4400');",
-    );
+    await writeFile(join(outputDir, "shallowcode.config.json"), JSON.stringify({
+      start: { executable: "node", args: ["server.js"] },
+      extraPorts: [3301, 4400],
+    }), "utf8");
     let received: AgentExecutionContext | undefined;
     const execute: AgentExecution = async (context) => {
       received = context;
@@ -395,34 +395,38 @@ test("Agent entry uses the public port contract without reading an acceptance te
     };
 
     await main(
-      ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output")],
-      { ...gatewayEnv(), ARCBENCH_TESTS_DIR: testsDir },
+      ["--requirements-dir", requirementsDir, "--output-dir", outputDir],
+      gatewayEnv(),
       execute,
       null,
     );
 
     const contract = received?.pipelineOptions.platformContract;
-    assert.deepEqual(contract?.extraPorts, [3301]);
-    assert.ok(!contract?.extraPorts?.includes(contract.port));
+    assert.deepEqual(contract?.extraPorts, [3301, 4400]);
+    assert.deepEqual(contract?.startCommand, { executable: "node", args: ["server.js"], cwd: "output" });
+    assert.ok(!contract?.extraPorts?.includes(contract!.port));
   });
 });
 
-test("Agent entry rejects a probe port that collides with a public compatibility port", async () => {
+test("Agent entry rejects a probe port that collides with a project-declared extra port", async () => {
   await withTempDir("shallow-entry-", async (directory) => {
     const requirementsDir = join(directory, "requirements");
-    const testsDir = join(directory, "tests");
+    const outputDir = join(directory, "output");
     await mkdir(requirementsDir);
-    await mkdir(testsDir);
+    await mkdir(outputDir);
     await writeFile(
       join(requirementsDir, "requirements.yaml"),
       "id: ROOT\nname: Root\ntype: FOLDER\ndependencies: []\ndescription: Root\nchildren: []\n",
     );
-    await writeFile(join(testsDir, "home.spec.ts"), "await page.goto('http://127.0.0.1:3301');");
+    await writeFile(join(outputDir, "shallowcode.config.json"), JSON.stringify({
+      start: { executable: "node", args: ["server.js"] },
+      extraPorts: [3301],
+    }), "utf8");
 
     await assert.rejects(
       main(
-        ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output")],
-        { ...gatewayEnv(), ARCBENCH_TESTS_DIR: testsDir, SHALLOW_PROBE_PORT: "3301" },
+        ["--requirements-dir", requirementsDir, "--output-dir", outputDir],
+        { ...gatewayEnv(), SHALLOW_PROBE_PORT: "3301" },
         async () => ({ status: "delivered", verifiedRequirementIds: [], blockedRequirementIds: [], acceptedSha: "sha" }),
         null,
       ),

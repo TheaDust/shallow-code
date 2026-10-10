@@ -5,7 +5,7 @@ import { PromptBuilder } from "../src/builder/prompt-builder.js";
 import type { CodingAgentRequest, CodingAgentResult } from "../src/builder/execution-port.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { auditPackets } from "../src/scheduler.js";
-import { createArcPlatformContract } from "../src/runtime-config.js";
+import { minimalWebContract } from "../src/project-spec.js";
 import { VisionCapability } from "../src/builder/vision-probe.js";
 
 async function fixture(results: CodingAgentResult[], options: { referenceImages?: boolean; visionProbe?: VisionCapability; timeoutMs?: number } = {}) {
@@ -15,7 +15,7 @@ async function fixture(results: CodingAgentResult[], options: { referenceImages?
   const builder = new PromptBuilder({ run: async request => { calls.push(request); return results.shift()!; }, close: async () => {} },
     { timeoutMs: options.timeoutMs ?? 1000, requirementsDir: resolve("test/fixtures"), contextWindow: 256_000,
       referenceImages: options.referenceImages, visionProbe: options.visionProbe });
-  const request = { mode: "implement" as const, packet, outputDir: "application", platformContract: createArcPlatformContract("linux", 43210),
+  const request = { mode: "implement" as const, packet, outputDir: "application", platformContract: minimalWebContract({ port: 43210 }, "linux"),
     projectContext: { product: packet.requirements[0].product, ancestors: [], satisfiedDependencies: [] } };
   return { builder, calls, request };
 }

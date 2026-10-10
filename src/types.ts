@@ -103,8 +103,8 @@ export interface PlatformContract {
   dataDirectory?: string;
   baseUrl: string;
   port: number;
-  /** Port the grader reaches at evaluation time; generation must never bind it. */
-  evaluationPort: number;
+  /** Port reserved for delivery-time grading; generation must never bind it. Absent when none is reserved. */
+  evaluationPort?: number;
   installCommands: ProcessCommand[];
   buildCommands: ProcessCommand[];
   startCommand: ProcessCommand;

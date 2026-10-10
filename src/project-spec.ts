@@ -49,8 +49,8 @@ export interface ProjectSpec {
 /** Ports are assigned per run; they are runtime state, not project declaration. */
 export interface RuntimePorts {
   port: number;
-  /** Port reserved for the platform at evaluation time; generation must never bind it. */
-  evaluationPort: number;
+  /** Port reserved for delivery-time grading; generation must never bind it. */
+  evaluationPort?: number;
   extraPorts?: number[];
 }
 
@@ -69,6 +69,14 @@ export function minimalWebProjectSpec(npm: string): ProjectSpec {
     readyPath: DEFAULT_READY_PATH,
     dataPaths: ["backend/data", "backend/.data"],
   };
+}
+
+/** Runtime contract for the shipped template, used by fixtures and a blank template run. */
+export function minimalWebContract(
+  ports: RuntimePorts,
+  platform: NodeJS.Platform = process.platform,
+): PlatformContract {
+  return resolveRuntimeContract(minimalWebProjectSpec(npmExecutable(platform)), ports);
 }
 
 /** Read and validate the project run description for `projectRoot`. */
@@ -134,7 +142,7 @@ export function resolveRuntimeContract(spec: ProjectSpec, ports: RuntimePorts): 
   return {
     baseUrl: `http://127.0.0.1:${ports.port}`,
     port: ports.port,
-    evaluationPort: ports.evaluationPort,
+    ...(ports.evaluationPort === undefined ? {} : { evaluationPort: ports.evaluationPort }),
     installCommands: (spec.install ?? []).map(toProcessCommand),
     buildCommands: (spec.build ?? []).map(toProcessCommand),
     startCommand: toProcessCommand(spec.start),

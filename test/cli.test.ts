@@ -97,6 +97,37 @@ test("CLI rejects a negative or non-integer budget", () => {
   }
 });
 
+test("CLI takes over an existing project with --project", () => {
+  const parsed = parseCliArgs([
+    "--requirements-dir",
+    "C:/fixture/requirements",
+    "--project",
+    "C:/projects/existing-web",
+  ]);
+
+  assert.deepEqual(parsed, {
+    requirementsDir: resolve("C:/fixture/requirements"),
+    outputDir: resolve("C:/projects/existing-web"),
+    budgetMs: 0,
+    projectDir: resolve("C:/projects/existing-web"),
+  });
+});
+
+test("CLI rejects naming the run directory twice", () => {
+  assert.throws(
+    () =>
+      parseCliArgs([
+        "--requirements-dir",
+        "C:/fixture/requirements",
+        "--project",
+        "C:/projects/existing-web",
+        "--output-dir",
+        "C:/fixture/output",
+      ]),
+    /either --project or --output-dir/,
+  );
+});
+
 test("CLI rejects unknown arguments", () => {
   assert.throws(
     () =>
