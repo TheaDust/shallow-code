@@ -76,7 +76,7 @@ Judge 保留 GIVEN/WHEN/THEN 的准备和结果语义。所有明示结果分别
 
 已有项目的开发副本保留在该轮 `workspace` 中，`workspace.json` 记录来源和输入基线，`changes.patch` 导出本轮改动，包含新增文件和二进制变更。结束时终端打印副本与补丁位置，供检查和后续交付。`shallow-progress/progress.log` 保存可读进度，保持 untracked；当前 Judge 计划只存于私有运行目录。
 
-保留 Stage/Phase、Evolution 及显式修改描述的输入兼容。历史计划与严格检查点日志提供需求 ID 来源，前序能力只作上下文，历史记录不授予本轮 verified。`SHALLOW_EVOLUTION_AUDIT_INHERITED=1` 包含沿用项回归；跳过项单列。
+保留 Stage/Phase、Evolution 及显式修改描述的输入兼容。需求 ID 来源是进度日志中的严格检查点行；输入项目自身已带 `shallow-progress/plans` 时也读取其中的历史计划——本工具新写出的 Judge 计划只存于私有运行目录。前序能力只作上下文，历史记录不授予本轮 verified。`SHALLOW_EVOLUTION_AUDIT_INHERITED=1` 包含沿用项回归；跳过项单列。
 
 **工程验证与源码导航**
 

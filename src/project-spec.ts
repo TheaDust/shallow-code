@@ -185,10 +185,14 @@ function toProcessCommand(command: ProjectCommand): ProcessCommand {
     ...(command.timeoutMs === undefined ? {} : { timeoutMs: command.timeoutMs }) };
 }
 
+/**
+ * The literal "output" is the legacy spelling of the project root: every
+ * consumer of `ProcessCommand.cwd` resolves it that way, so a declaration that
+ * names it must keep meaning the root rather than a subdirectory of that name.
+ */
 function normalizeCwd(cwd: string | undefined): string {
   const value = cwd?.trim();
-  if (value === "output") return "./output";
-  return !value || value === "." ? "output" : value;
+  return !value || value === "." || value === "output" ? "output" : value;
 }
 
 function asRecord(value: unknown, origin: string): Record<string, unknown> {

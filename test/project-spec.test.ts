@@ -122,7 +122,7 @@ test("Runtime declarations preserve environment, test targets, storage and comma
   assert.throws(() => parseProjectSpec({ ...FULL_SPEC, dataEnvVar: "PORT" }), /dataEnvVar/);
   assert.throws(() => parseProjectSpec({ ...FULL_SPEC, generatedPaths: ["."] }), /entire project/);
   assert.throws(() => parseProjectSpec({ ...FULL_SPEC, start: { executable: "node", cwd: "C:outside" } }), /project-relative/);
-  assert.equal(resolveRuntimeContract(parseProjectSpec({ start: { executable: "node", cwd: "output" } }), { port: 43210 }).startCommand.cwd, "./output");
+  assert.equal(resolveRuntimeContract(parseProjectSpec({ start: { executable: "node", cwd: "output" } }), { port: 43210 }).startCommand.cwd, "output");
   assert.throws(() => parseProjectSpec({ ...FULL_SPEC, tests: [{ id: "all", executable: "node" }] }), /reserved/);
 });
 

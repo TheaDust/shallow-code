@@ -254,7 +254,7 @@ test("Evolution context reaches implementation and repair modes for each startin
       assert.equal(prompt.includes(loadPrompt("system", "action-implement")), request.mode === "implement");
       if (startingPoint === "inherited_application") assert.match(prompt, /沿用现有技术栈、模型和接口/);
       else if (startingPoint === "blank_template") assert.match(prompt, /最小必要的前序支撑能力/);
-      else assert.match(prompt, /先检查 frontend、backend、ARCHITECTURE\.md/);
+      else assert.match(prompt, /先阅读项目目录、其中适用的 AGENTS\.md、ARCHITECTURE\.md/);
     }
   }
 });
