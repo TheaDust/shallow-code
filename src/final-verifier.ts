@@ -12,6 +12,7 @@ import { runtimeEnvironment } from "./process-lifecycle.js";
 import { PlaywrightProbeRunner } from "./judge/playwright-probe-runner.js";
 import { copyInheritedData } from "./inherited-data.js";
 import type { PlatformContract, ProcessCommand } from "./types.js";
+import { loadProjectSpec, resolveRuntimeContract, type ProjectSpec } from "./project-spec.js";
 
 export interface FinalVerificationReport {
   ok: boolean;
@@ -33,12 +34,21 @@ export class FinalVerifier implements FinalVerifierPort {
     private readonly runner: Pick<PlaywrightProbeRunner, "run"> = new PlaywrightProbeRunner(),
     private readonly lifecycle: AppLifecycle = new CommandAppLifecycle(),
     private readonly candidate?: CandidateRuntime,
+    private readonly expectedSpec?: ProjectSpec,
   ) {}
 
   async verify(
     outputDir: string,
     contract: PlatformContract,
   ): Promise<FinalVerificationReport> {
+    if (this.expectedSpec) {
+      try {
+        const actual = await loadProjectSpec(outputDir);
+        if (JSON.stringify(resolveRuntimeContract(actual, { port: 1 })) !== JSON.stringify(resolveRuntimeContract(this.expectedSpec, { port: 1 }))) {
+          return { ok: false, stage: "candidate", message: "Project run configuration differs from this run's declared contract" };
+        }
+      } catch (error) { return { ok: false, stage: "candidate", message: compactError(error) }; }
+    }
     if (!this.candidate) {
       const failure = await this.prepareOutputDirectory(outputDir, contract);
       if (failure) return failure;
@@ -51,6 +61,13 @@ export class FinalVerifier implements FinalVerifierPort {
     }
 
     try {
+      const browserPath = contract.browserPath ?? "/";
+      const entry = await fetch(new URL(browserPath, application.baseUrl), { signal: AbortSignal.timeout(contract.startTimeoutMs) });
+      if (!entry.ok || !entry.headers.get("content-type")?.toLowerCase().includes("text/html")) {
+        await entry.body?.cancel();
+        return { ok: false, stage: "browser", message: `Browser entry ${browserPath} must return successful HTML (received ${entry.status})` };
+      }
+      await entry.body?.cancel();
       const report = await this.runner.run(
         {
           packetId: "final-verification",
@@ -59,14 +76,8 @@ export class FinalVerifier implements FinalVerifierPort {
               id: "root-page",
               requirementIds: ["delivery"],
               purpose: "happy_path",
-              expectationBasis: ["The delivered application serves the root page."],
-              steps: [
-                { op: "goto", path: "/" },
-                {
-                  op: "expectVisible",
-                  locator: { by: "role", role: "main" },
-                },
-              ],
+              expectationBasis: ["The delivered application opens its declared browser entry."],
+              steps: [{ op: "goto", path: browserPath }],
             },
           ],
         },
@@ -88,23 +99,18 @@ export class FinalVerifier implements FinalVerifierPort {
       if (!(error instanceof CandidatePreparationError)) throw error;
       return { ok: false, stage: "candidate", message: compactError(error) };
     } finally {
-      // Stop before the grader-like start and the final identity check, since
+      // Stop before the declared extra-port check and the final identity check, since
       // shutdown hooks may write files and the probe port must be free again.
       await application.stop();
     }
 
-    // The grader runs install/build in the delivery directory before starting
-    // it. The candidate probe above ran against a private copy, so the real
-    // output directory is still unprepared; run the contract commands there too
-    // so the grader-like start sees the same state the grader will.
+    // Additional services run in the delivery directory after its declared build.
     if (this.candidate && (contract.extraPorts?.length ?? 0) > 0) {
       const failure = await this.prepareOutputDirectory(outputDir, contract);
       if (failure) return failure;
     }
-    // The platform sets only PORT, so ports the acceptance specs hard-code are
-    // bound during grading; verify that layout separately from the private probe.
-    const grader = await verifyGraderLikeStart(outputDir, contract);
-    if (!grader.ok) return grader;
+    const extraServices = await verifyDeclaredPorts(outputDir, contract);
+    if (!extraServices.ok) return extraServices;
     try {
       await application.assertUnchanged?.();
     } catch (error) {
@@ -115,7 +121,7 @@ export class FinalVerifier implements FinalVerifierPort {
       ...(application.candidate ? { candidate: application.candidate } : {}) };
   }
 
-  /** Run the platform install/build commands in the delivery directory. */
+  /** Prepare delivery files using the project's declared commands. */
   private async prepareOutputDirectory(
     outputDir: string,
     contract: PlatformContract,
@@ -139,23 +145,22 @@ export class FinalVerifier implements FinalVerifierPort {
 }
 
 const EXTRA_PORT_TIMEOUT_MS = 5_000;
-/** Paths a browser or grader may request; the server must answer and stay alive. */
+/** Requests must receive an HTTP response while the server stays alive. */
 const ROBUSTNESS_PATHS = ["/favicon.ico", "/this-path-does-not-exist", "/api/this-route-does-not-exist"];
 
 /**
- * Start the application exactly as the platform does: only PORT is set, so any
- * port the acceptance specs hard-code (for example 3301) is bound too, unknown
- * paths must return a response, and the process must never die on them.
+ * Verify additional services declared by the project, with the same environment
+ * and isolated inherited data used by the main application.
  */
-export async function verifyGraderLikeStart(
+export async function verifyDeclaredPorts(
   outputDir: string,
   contract: PlatformContract,
 ): Promise<FinalVerificationReport> {
   const extraPorts = contract.extraPorts ?? [];
   if (extraPorts.length === 0) {
-    return { ok: true, stage: "complete", message: "Grader-like extra ports not configured" };
+    return { ok: true, stage: "complete", message: "Additional service ports not configured" };
   }
-  const dataDirectory = contract.dataDirectory ?? await mkdtemp(join(tmpdir(), "shallow-grader-"));
+  const dataDirectory = contract.dataDirectory ?? await mkdtemp(join(tmpdir(), "shallow-delivery-"));
   if (!contract.dataDirectory) {
     try { await copyInheritedData(outputDir, dataDirectory, contract.dataPaths); }
     catch (error) {
@@ -165,8 +170,7 @@ export async function verifyGraderLikeStart(
   }
   const environment = runtimeEnvironment({ ...contract.env, PORT: String(contract.port),
     [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: dataDirectory });
-  // The grader never sets ARC_EXTRA_PORTS, so the extra listeners must bind.
-  delete environment.ARC_EXTRA_PORTS;
+  delete environment.SHALLOW_EXTRA_PORTS;
   const child = spawnCommand(outputDir, contract.startCommand, environment);
   let spawnError: Error | undefined;
   let stderr = "";
@@ -175,18 +179,16 @@ export async function verifyGraderLikeStart(
   child.stdout?.resume();
   child.stderr?.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-8_000); });
   const failure = (): string | undefined => spawnError?.message ?? (child.exitCode !== null || child.signalCode !== null
-    ? `Application exited during grader-like startup: ${stderr || child.exitCode || child.signalCode}` : undefined);
+    ? `Application exited during delivery startup: ${stderr || child.exitCode || child.signalCode}` : undefined);
   try {
     await waitForReadiness(`${contract.baseUrl}${contract.healthPath}`, contract.startTimeoutMs, failure);
     const missing = await waitForExtraPorts(extraPorts, contract, failure);
     if (missing.length) {
       return { ok: false, stage: "readiness", message:
-        `PORT CONTRACT violated: the acceptance specs default to http://127.0.0.1:${missing.join(", ")} while the ` +
-        `grader starts the backend with only PORT=${contract.port}; the backend bound PORT but not ${missing.join(", ")}. ` +
-        "Serve the same handler on each port with a separate http.createServer(handler).listen(port) unless ARC_EXTRA_PORTS=0." };
+        `Project port declaration violated: application started with PORT=${contract.port} but declared services did not respond on ${missing.join(", ")}.` };
     }
     await robustnessProbe(contract, failure);
-    return { ok: true, stage: "complete", message: "Grader-like startup verified" };
+    return { ok: true, stage: "complete", message: "Declared service ports verified" };
   } catch (error) {
     return { ok: false, stage: "readiness", message: compactError(error) };
   } finally {
@@ -240,10 +242,9 @@ export class CommandAppLifecycle implements AppLifecycle {
     await assertPortFree(contract);
     const child = spawnCommand(outputDir, contract.startCommand, runtimeEnvironment({
       ...contract.env,
-      // Probes run on the private probe port only: never bind the evaluation
-      // port (or spec-hardcoded extra ports like 3301) during generation.
+      // Candidate cases run independently on their private application port.
       PORT: String(contract.port),
-      ARC_EXTRA_PORTS: "0",
+      SHALLOW_EXTRA_PORTS: "0",
       ...(contract.dataDirectory ? { [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: contract.dataDirectory } : {}),
     }));
     let spawnError: Error | undefined;

@@ -13,7 +13,7 @@ import type {
 import { toBuilderShadowObservation } from "./builder/shadow-observation.js";
 import { loadRequirementCatalog } from "./catalog.js";
 import { maskRequirementLiterals } from "./requirement-text.js";
-import { evolutionImplementationCatalog, readHistoricalRequirementIds, selectEvolutionScope } from "./evolution.js";
+import { evolutionImplementationCatalog, readHistoricalRequirementIds, selectEvolutionScope, type HistoricalRequirements } from "./evolution.js";
 import type { GitOps } from "./git-ops.js";
 import type {
   FinalVerificationReport,
@@ -22,7 +22,7 @@ import type {
 import { ProbePlannerError, type ProbePlanner, type ProbePlannerUsage } from "./judge/llm-probe-planner.js";
 import type { PlaywrightProbeRunner } from "./judge/playwright-probe-runner.js";
 import { RunStateStore, sanitizeDiagnosticText, type LogSink } from "./run-state.js";
-import { featureGroupPackets, auditPackets, makePacket, DEFAULT_FEATURE_GROUP_THRESHOLDS } from "./scheduler.js";
+import { featureGroupPackets, auditPackets, makePacket as makeCatalogPacket, DEFAULT_FEATURE_GROUP_THRESHOLDS } from "./scheduler.js";
 import { parseFeatureGrouping, type FeatureGrouper } from "./feature-grouper.js";
 import { RunBudget, type PipelinePhase } from "./run-budget.js";
 import { auditPacket, type AuditResult, type AuditPolicy } from "./judge/audit.js";
@@ -31,6 +31,7 @@ import { globalControlCrossRoutePlan, overlayLifecyclePlan } from "./judge/compa
 import { resultCompatibilityPlan } from "./judge/compatibility-contracts.js";
 import { groundedLocatorNames, parseProbePlan, probePlanSha256, type ProbePlan } from "./judge/probe-schema.js";
 import { repairCaseProgress } from "./judge/repair-progress.js";
+import { scenarioOutcomes, outcomeKey } from "./judge/probe-coverage.js";
 import { PlanCache, shouldWritePlanCache, spawnPlanGeneration } from "./judge/plan-cache.js";
 import { PROGRESS_DIR_NAME } from "./progress-journal.js";
 import { memorySnapshot } from "./memory-snapshot.js";
@@ -44,6 +45,7 @@ import type {
   PlatformContract,
   RequirementCatalog,
   RequirementStatus,
+  RunScenarioResult,
   WorkPacket,
 } from "./types.js";
 
@@ -58,8 +60,7 @@ const IMPLEMENTATION_CALL_CEILING_MS = 5_400_000;
 const IMPLEMENTATION_RETRY_CEILING_MS = 2_700_000;
 /** A single Judge operation may recover from transient faults, but cannot own an unlimited run. */
 const PLANNER_RECOVERY_WINDOW_MS = 720_000;
-/** Delivery repairs get longer calls and more rounds than other fixes: the
- * candidate goes straight to the grader, so delivery must be given every chance. */
+/** Reserve bounded repair opportunities for installation and runtime delivery failures. */
 const DELIVERY_REPAIR_CALL_CEILING_MS = 1_800_000;
 const MAX_DELIVERY_REPAIR_ROUNDS = 3;
 
@@ -102,16 +103,20 @@ export interface PipelineOptions {
   totalBudgetMs: number;
   platformContract: PlatformContract;
   plannerRetryDelayMs?: number;
-  /** Product-visible journal directory (`shallow-progress`); plans mirror here. */
+  /** Product-visible journal directory (`shallow-progress`). */
   progressDir?: string;
   /** Read-only history from the input project, outside the owned development copy. */
   historicalProgressDir?: string;
+  historicalRequirements?: HistoricalRequirements;
   /** Whether this stage starts from a selected prior-stage application or the blank scaffold. */
   stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
   /** Evolution only: true includes inherited atomics in audits and delivery coverage. Default false. */
   auditInheritedRequirements?: boolean;
   /** Whether final/delivery audits may ask the Planner to replace a missing plan. Default false. */
   generateFinalAuditPlans?: boolean;
+  /** Runnable requirement implementations recovered from an owned checkpoint; all are re-audited. */
+  resumedRequirementIds?: string[];
+  requirementDigests?: Record<string, string>;
 }
 
 export interface RunSummary {
@@ -127,17 +132,24 @@ export interface RunSummary {
   inconclusiveByKind?: Partial<Record<InconclusiveKind, string[]>>;
   auditRequirementIds?: string[];
   skippedRequirementIds?: string[];
+  delivery?: FinalVerificationReport;
+  scenarioResults?: RunScenarioResult[];
 }
 
 export async function runPipeline(options: PipelineOptions, deps: PipelineDeps): Promise<RunSummary> {
+  const makePacket = (...args: Parameters<typeof makeCatalogPacket>): WorkPacket => ({
+    ...makeCatalogPacket(...args), browserEntry: options.platformContract.browserPath ?? "/",
+  });
   const catalog = await loadRequirementCatalog(options.requirementsFile, {
     inheritedApplication: options.stageStartingPoint === "inherited_application",
   });
   // Freeze provenance before any current progress event or plan mirror write.
   const history = options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution
-    ? await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, PROGRESS_DIR_NAME))
+    ? options.historicalRequirements
+      ? { ...options.historicalRequirements, requirementIds: new Set(options.historicalRequirements.requirementIds) }
+      : await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, PROGRESS_DIR_NAME))
     : undefined;
-  const evolutionScope = history ? selectEvolutionScope(catalog, history.requirementIds) : undefined;
+  const evolutionScope = history ? selectEvolutionScope(catalog, history.requirementIds, history.requirementDigests, options.requirementDigests) : undefined;
   const auditInheritedRequirements = options.auditInheritedRequirements ?? false;
   const startedAt = deps.clock.nowMs();
   const budget = new RunBudget(options.totalBudgetMs, startedAt, () => deps.clock.nowMs());
@@ -148,7 +160,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
   const inherited = new Set<string>();
   const skipped = new Set<string>();
   let implementationCatalog: RequirementCatalog = catalog;
-  let packets = auditPackets(catalog);
+  let packets: WorkPacket[] = auditPackets(catalog).map(packet => ({ ...packet, browserEntry: options.platformContract.browserPath ?? "/" }));
   let featureGrouping = featureGroupPackets(catalog);
   const requirementById = new Map(catalog.requirements.map(item => [item.id, item]));
   const auditPacketByRequirementId = new Map(packets.flatMap(packet =>
@@ -410,7 +422,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     // Structural samples cannot verify a whole requirement or replace its plan.
     // Detection also checks them, so a missing business plan cannot hide an entry loss.
     for (const packet of packets.filter(auditEligible)) {
-      const plan = publicEntryPlan(packet);
+      const plan = publicEntryPlan(packet, options.platformContract.browserPath);
       if (!plan) continue;
       const entry = await checkPublicEntry(packet, plan, name);
       if (entry.status === "verified") continue;
@@ -556,7 +568,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     // Keep their results and plans out of the business cache and verification map.
     let publicChecks = new Map<string, { packet: WorkPacket; plan: ProbePlan; result: AuditResult }>();
     for (const packet of packets.filter(auditEligible)) {
-      const plan = publicEntryPlan(packet);
+      const plan = publicEntryPlan(packet, options.platformContract.browserPath);
       if (!plan) continue;
       const result = await checkPublicEntry(packet, plan, "audit");
       publicChecks.set(packet.id, { packet, plan, result });
@@ -869,6 +881,15 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       : { grouping: featureGrouping.stats }), ...deps.runMetadata } });
   try {
     await phase("implementation");
+    if (options.resumedRequirementIds?.length) {
+      const ids = options.resumedRequirementIds.filter(id => requirementById.has(id));
+      const candidate = await runnable();
+      await checkpoint(ids, "resumed application", candidate);
+      for (const id of ids) { implemented.add(id); inherited.add(id); }
+      implementationCatalog = evolutionImplementationCatalog(catalog, inherited);
+      featureGrouping = featureGroupPackets(implementationCatalog);
+      await state.record({ at: now(), type: "run_resumed", detail: { requirementIds: ids } });
+    }
     if (evolutionScope && history) {
       let reason: string | undefined;
       let ready = false;
@@ -1236,10 +1257,31 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       if (result?.status !== "inconclusive") continue;
       (inconclusiveByKind[result.failureKind ?? "unreproduced"] ??= []).push(...packet.requirementIds);
     }
+    const scenarioResults: RunScenarioResult[] = auditedRequirements.flatMap(requirement => {
+      const packet = auditPacketByRequirementId.get(requirement.id);
+      const result = packet ? results.get(packet.id) : undefined;
+      const outcomes = scenarioOutcomes([requirement]);
+      return (requirement.scenarioContracts ?? []).map(scenario => {
+        const expected = outcomes.filter(outcome => outcome.scenarioId === scenario.id);
+        const cases = result?.plan?.cases.filter(c => c.requirementIds.includes(requirement.id) &&
+          c.outcomeChecks?.some(check => check.scenarioId === scenario.id)) ?? [];
+        const covered = new Set(cases.flatMap(c => c.outcomeChecks ?? []).map(outcomeKey));
+        const failures = result?.report?.failures.filter(failure => cases.some(c => c.id === failure.caseId)) ?? [];
+        const complete = expected.length > 0 && expected.every(outcome => covered.has(outcomeKey(outcome)));
+        const passed = complete && cases.length > 0 && cases.every(c => result?.report?.passedCases.includes(c.id));
+        return { requirementId: requirement.id, scenarioId: scenario.id, name: scenario.name,
+          status: !implemented.has(requirement.id) ? "not_run" as const
+            : failures.some(f => f.category === "assertion") ? "failed" as const
+            : passed && result?.status === "verified" ? "verified" as const : "inconclusive" as const,
+          caseIds: cases.map(c => c.id),
+          ...(result?.status !== "verified" || !passed ? { reason: result?.reason ?? "No complete current scenario evidence" } : {}) };
+      });
+    });
     const summary: RunSummary = { status: !finalReport.ok ? "failed" : verifiedRequirementIds.length === auditedRequirements.length ? "delivered" : "partial",
-      acceptedSha: state.snapshot.acceptedSha, implementedRequirementIds: [...implemented].filter(id => !skipped.has(id)), verifiedRequirementIds,
+      acceptedSha: state.snapshot.acceptedSha, delivery: finalReport,
+      implementedRequirementIds: [...implemented].filter(id => !skipped.has(id)), verifiedRequirementIds,
       blockedRequirementIds: ids("blocked"), failedRequirementIds: ids("failed"), inconclusiveRequirementIds: ids("inconclusive"), pendingRequirementIds: ids("todo"),
-      missingPlanRequirementIds, inconclusiveByKind,
+      missingPlanRequirementIds, inconclusiveByKind, scenarioResults,
       ...(skipped.size > 0 ? { auditRequirementIds: auditedRequirements.map(item => item.id), skippedRequirementIds: [...skipped] } : {}) };
     await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo"), memory: await memorySnapshot() } });
     return summary;
@@ -1308,10 +1350,10 @@ function dedupeAncestors(
 
 const expectedByStage = {
   candidate: "验收与接受对应同一份未变化的候选文件和构建产物",
-  install: "平台安装命令成功退出",
-  build: "平台构建命令成功退出并生成生产构建产物",
-  readiness: "应用使用随机端口启动且健康检查返回成功；只设置 PORT 时额外端口也必须绑定，未知路径必须返回响应且进程不退出",
-  browser: "根页面可访问并显示主要内容区域",
+  install: "项目声明的安装命令成功退出",
+  build: "项目声明的构建命令成功退出并生成构建产物",
+  readiness: "应用按声明启动且就绪检查返回成功；项目声明的额外端口也可访问",
+  browser: "项目声明的浏览器入口返回成功的 HTML 并可在浏览器打开",
   complete: "完整交付验证成功",
 } satisfies Record<FinalVerificationReport["stage"], string>;
 

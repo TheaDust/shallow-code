@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadRequirementCatalog } from "../src/catalog.js";
-import { evolutionImplementationCatalog, readHistoricalPlanIds, readHistoricalRequirementIds, selectEvolutionScope } from "../src/evolution.js";
+import { evolutionImplementationCatalog, readHistoricalPlanIds, readHistoricalRequirementIds, selectEvolutionScope, requirementDigest, saveRequirementDigests } from "../src/evolution.js";
 import { HumanRunFormatter } from "../src/human-log.js";
 import { ProgressJournal } from "../src/progress-journal.js";
 import { featureGroupPackets, featureGroupingFromIds } from "../src/scheduler.js";
@@ -11,6 +11,34 @@ import { withModulePipeline } from "./helpers/module-pipeline.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 const modified = "Original Feature Description\n\nDisplay the old workspace.\n\nModified Feature Description\n\nDisplay the updated workspace.";
+
+test("Incremental identity detects changed descriptions and ancestors with stable requirement IDs", async () => {
+  await withModulePipeline(async f => {
+    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
+    const old = Object.fromEntries(catalog.requirements.map(r => [r.id, requirementDigest(r)]));
+    const directory = join(f.options.outputDir, "shallow-progress");
+    await saveRequirementDigests(directory, old, ["A", "B", "C"]);
+    const history = await readHistoricalRequirementIds(directory);
+    assert.deepEqual([...history.requirementIds], ["A", "B", "C"]);
+    const changed = structuredClone(catalog);
+    changed.requirements[0].text = "Display the updated workspace.";
+    assert.deepEqual(selectEvolutionScope(changed, history.requirementIds, history.requirementDigests), {
+      addedRequirementIds: [], changedRequirementIds: ["A"], inheritedRequirementIds: ["B", "C"],
+    });
+    changed.requirements[1].ancestors[0].description = "Use the updated folder contract.";
+    assert.deepEqual(selectEvolutionScope(changed, history.requirementIds, history.requirementDigests).changedRequirementIds, ["A", "B"]);
+    // Stage labels alone do not change a behavior contract.
+    const staged = structuredClone(catalog.requirements[2]);
+    staged.product.rootName += " - Stage 2";
+    assert.equal(requirementDigest(staged), old.C);
+    assert.equal(requirementDigest(staged, { "reference.png": "new" }), old.C);
+    const rootChanged = structuredClone(staged);
+    rootChanged.product.description = "Updated root behavior contract.";
+    assert.notEqual(requirementDigest(rootChanged), old.C);
+    staged.references = ["reference.png"];
+    assert.notEqual(requirementDigest(staged, { "reference.png": "new" }), requirementDigest(staged, { "reference.png": "old" }));
+  });
+});
 
 function checkpointLine(requirementIds: string[], reason = "feature-history"): string {
   const line = new HumanRunFormatter().format(JSON.stringify({ at: "2026-10-07T00:00:00Z", type: "checkpoint_saved",

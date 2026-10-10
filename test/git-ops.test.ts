@@ -373,7 +373,7 @@ test("GitOps open keeps dependency and build output out of an evolution baseline
     await mkdir(join(directory, "frontend", "dist"), { recursive: true });
     await writeFile(join(directory, "frontend", "dist", "index.html"), "<main></main>\n", "utf8");
 
-    const git = await GitCliOps.open(directory, { allowExisting: true });
+    const git = await GitCliOps.open(directory, { allowExisting: true, generatedPaths: ["frontend/dist"] });
     await git.captureAccepted("shallow: initial state");
 
     const tracked = await execFileAsync("git", ["ls-files"], { cwd: directory });

@@ -71,14 +71,14 @@ test("Catalog carries ancestor visuals and quoted UI contracts without including
   });
 });
 
-test("Catalog classifies known product roots exactly and unknown roots as generic web", async () => {
+test("Catalog loads Web requirements independently of legacy product titles", async () => {
   await withYaml(
     `id: ROOT\nname: GitHub Collaboration Platform Core Requirements\ntype: FOLDER\ndependencies: []\nchildren:\n  - id: X\n    name: One\n    type: ATOMIC\n    dependencies: []\n    description: One\n`,
     async (file) => {
       const catalog = await loadRequirementCatalog(file);
       assert.equal(
         catalog.requirements[0].product.kind,
-        "repository_collaboration",
+        "generic_web",
       );
     },
   );
@@ -86,7 +86,7 @@ test("Catalog classifies known product roots exactly and unknown roots as generi
     `id: ROOT\nname: GitHub - Stage 2\ntype: FOLDER\ndependencies: []\nchildren:\n  - id: X\n    name: One\n    type: ATOMIC\n    dependencies: []\n    description: One\n`,
     async (file) => {
       const catalog = await loadRequirementCatalog(file);
-      assert.equal(catalog.requirements[0].product.kind, "repository_collaboration");
+      assert.equal(catalog.requirements[0].product.kind, "generic_web");
       assert.equal(catalog.requirements[0].product.stage?.index, 2);
     },
   );
@@ -94,7 +94,7 @@ test("Catalog classifies known product roots exactly and unknown roots as generi
     `id: ROOT\nname: Core Requirements for an Online Spreadsheet Data Workspace\ntype: FOLDER\ndependencies: []\nchildren:\n  - id: X\n    name: One\n    type: ATOMIC\n    dependencies: []\n    description: One\n`,
     async (file) => {
       const catalog = await loadRequirementCatalog(file);
-      assert.equal(catalog.requirements[0].product.kind, "spreadsheet");
+      assert.equal(catalog.requirements[0].product.kind, "generic_web");
     },
   );
   await withYaml(
@@ -146,23 +146,23 @@ children:
   );
 });
 
-test("Catalog recognises Evolution increments and preserves product classification and optional stages", async () => {
+test("Catalog recognises Evolution increments independently of product titles and preserves optional stages", async () => {
   for (const [name, kind, stageIndex] of [
-    ["GitHub - Evolution", "repository_collaboration", undefined],
-    ["Evolution - GitHub", "repository_collaboration", undefined],
-    ["GitHub - eVoLuTiOn 2", "repository_collaboration", undefined],
-    ["GitHub (Evolution)", "repository_collaboration", undefined],
-    ["GitHub [Evolution]", "repository_collaboration", undefined],
-    ["Evolution 2 - GitHub", "repository_collaboration", undefined],
-    ["GitHub：Evolution", "repository_collaboration", undefined],
-    ["GitHub Collaboration Platform Core Requirements - Evolution", "repository_collaboration", undefined],
-    ["Core Requirements for an Online Spreadsheet Data Workspace - Evolution", "spreadsheet", undefined],
-    ["Evolution Requirements for an Online Spreadsheet Data Workspace", "spreadsheet", undefined],
+    ["GitHub - Evolution", "generic_web", undefined],
+    ["Evolution - GitHub", "generic_web", undefined],
+    ["GitHub - eVoLuTiOn 2", "generic_web", undefined],
+    ["GitHub (Evolution)", "generic_web", undefined],
+    ["GitHub [Evolution]", "generic_web", undefined],
+    ["Evolution 2 - GitHub", "generic_web", undefined],
+    ["GitHub：Evolution", "generic_web", undefined],
+    ["GitHub Collaboration Platform Core Requirements - Evolution", "generic_web", undefined],
+    ["Core Requirements for an Online Spreadsheet Data Workspace - Evolution", "generic_web", undefined],
+    ["Evolution Requirements for an Online Spreadsheet Data Workspace", "generic_web", undefined],
     ["Evolution Requirements for Inventory Workspace", "generic_web", undefined],
     ["Inventory Workspace - Evolution", "generic_web", undefined],
-    ["GitHub - Evolution - Stage 2", "repository_collaboration", 2],
-    ["GitHub - Stage 2 - Evolution", "repository_collaboration", 2],
-    ["GitHub (Evolution) - Phase 3", "repository_collaboration", 3],
+    ["GitHub - Evolution - Stage 2", "generic_web", 2],
+    ["GitHub - Stage 2 - Evolution", "generic_web", 2],
+    ["GitHub (Evolution) - Phase 3", "generic_web", 3],
   ] as const) {
     await withYaml(JSON.stringify({ id: "ROOT", name, type: "FOLDER", children: [
       { id: "REQ-3", name: "New area", type: "FOLDER", dependencies: ["REQ-1"], children: [
@@ -212,7 +212,7 @@ test("An inherited application establishes Evolution context without changing th
     const [requirement] = catalog.requirements;
     assert.equal(catalog.tree.name, "GitHub");
     assert.equal(requirement.product.rootName, "GitHub");
-    assert.equal(requirement.product.kind, "repository_collaboration");
+    assert.equal(requirement.product.kind, "generic_web");
     assert.equal(requirement.product.evolution, true);
     assert.deepEqual(requirement.externalDependencyIds, ["REQ-OLD"]);
     assert.deepEqual(requirement.dependencyIds, []);
@@ -222,8 +222,8 @@ test("An inherited application establishes Evolution context without changing th
 
 test("Final requirement trees preserve their full current scope and inherited dependencies", async () => {
   for (const [product, kind, requirementCount, scenarioCount, expectedExternal] of [
-    ["github", "repository_collaboration", 52, 114, []],
-    ["sheet", "spreadsheet", 10, 30, ["REQ-1-1-1", "REQ-1-3-2", "REQ-3-1-3", "REQ-4-1-1"]],
+    ["github", "generic_web", 52, 114, []],
+    ["sheet", "generic_web", 10, 30, ["REQ-1-1-1", "REQ-1-3-2", "REQ-3-1-3", "REQ-4-1-1"]],
   ] as const) {
     const file = resolve(`data/final/hackathon-evolution--${product}/requirements.yaml`);
     const catalog = await loadRequirementCatalog(file, { inheritedApplication: true });

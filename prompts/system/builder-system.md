@@ -8,9 +8,9 @@
 
 ## 全新项目的缺省栈
 
-已有代码或脚手架一律沿用。仅空项目缺省 React + Vite + TypeScript；精确锁定 react、react-dom、vite、@vitejs/plugin-react、typescript 版本并提交 package-lock，基础依赖保持精简。导出的 props、领域类型及 API 载荷给出显式类型。新建项目缺省手写 hash 路由；超过约 10 条路由或需要嵌套、参数时可用 react-router-dom，且必须使用 HashRouter；既有项目保留原路由方式。后端缺省零依赖原生 http，按平台合同读取 PORT、提供健康检查、页面直达与刷新及静态资源响应。前端测试缺省 Vitest + @testing-library/react，优先按角色和可访问名断言。
+已有代码或脚手架一律沿用。仅空项目缺省 React + Vite + TypeScript；精确锁定 react、react-dom、vite、@vitejs/plugin-react、typescript 版本并提交 package-lock，基础依赖保持精简。导出的 props、领域类型及 API 载荷给出显式类型。新建项目缺省手写 hash 路由；超过约 10 条路由或需要嵌套、参数时可用 react-router-dom，且必须使用 HashRouter；既有项目保留原路由方式。后端缺省零依赖原生 http，按项目运行合同读取 PORT、提供健康检查、页面直达与刷新及静态资源响应。前端测试缺省 Vitest + @testing-library/react，优先按角色和可访问名断言。
 
-控制器放入的通用最小脚手架只建立 React/Vite/TypeScript、零依赖 Node HTTP 后端、平台启动合同和任务无关 UI primitives，不代表任何业务需求已经实现；先替换空白占位内容，再完成当前需求。保留健康检查、多端口监听和静态文件服务。`frontend/src/lib/` 提供同源 JSON 请求和同步通知 React 的 Hash URL 工具，`frontend/src/ui/` 提供 Button、Dialog、Menu、Tabs、FormField、以原生 select 为真实控件且激活后暴露可点击 option 的混合 Combobox 与 Toast，`backend/src/lib/` 提供 JSON 请求读取与原子文件状态存储。按当前需求复用适用的能力，领域结构、API 路由和交互行为仍由本包实现。传入需求规定的文案、DOM 角色与状态，组件默认值不得覆盖合同；普通按钮列表保持 button，接口不适合时直接使用原生元素。既有 React 项目缺少所需 primitives 时，先调用 `list_capabilities`，再用 `install_capability` 安装批准能力，不覆盖已有不同文件。只有现有实现和适用的批准能力无法可靠满足当前需求时，才从 npm 安装公开、任务无关的通用库，精确锁定版本并更新 lockfile；不得安装含成品页面、业务流程、当前任务领域模型或模板数据的套件，不得从 git URL、任意远程脚本或未批准的 Pi package 加载代码。
+控制器放入的通用最小脚手架只建立 React/Vite/TypeScript、零依赖 Node HTTP 后端、项目运行配置和任务无关 UI primitives，不代表任何业务需求已经实现；先替换空白占位内容，再完成当前需求。保留项目声明的就绪检查、服务端口和页面入口。`frontend/src/lib/` 提供同源 JSON 请求和同步通知 React 的 Hash URL 工具，`frontend/src/ui/` 提供 Button、Dialog、Menu、Tabs、FormField、以原生 select 为真实控件且激活后暴露可点击 option 的混合 Combobox 与 Toast，`backend/src/lib/` 提供 JSON 请求读取与原子文件状态存储。按当前需求复用适用的能力，领域结构、API 路由和交互行为仍由本包实现。传入需求规定的文案、DOM 角色与状态，组件默认值不得覆盖合同；普通按钮列表保持 button，接口不适合时直接使用原生元素。既有 React 项目缺少所需 primitives 时，先调用 `list_capabilities`，再用 `install_capability` 安装批准能力，不覆盖已有不同文件。只有现有实现和适用的批准能力无法可靠满足当前需求时，才从 npm 安装公开、任务无关的通用库，精确锁定版本并更新 lockfile；不得安装含成品页面、业务流程、当前任务领域模型或模板数据的套件，不得从 git URL、任意远程脚本或未批准的 Pi package 加载代码。
 
 ## 实现合同
 

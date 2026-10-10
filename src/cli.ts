@@ -17,6 +17,33 @@ export interface CliParseOptions {
   defaultOutputDir?: string;
 }
 
+export type CliInvocation = { command: "run"; options: CliOptions }
+  | { command: "resume"; runDirectory: string; budgetMs: number }
+  | { command: "apply"; runDirectory: string; allowPartial: boolean };
+
+export function parseInvocation(argv: string[], options: CliParseOptions = {}): CliInvocation {
+  if (argv[0] !== "resume" && argv[0] !== "apply") {
+    return { command: "run", options: parseCliArgs(argv[0] === "run" ? argv.slice(1) : argv, options) };
+  }
+  const command = argv[0];
+  const values = new Map<string, string>();
+  let allowPartial = false;
+  for (let i = 1; i < argv.length; i++) {
+    const key = argv[i];
+    if (command === "apply" && key === "--allow-partial") { allowPartial = true; continue; }
+    if (key !== "--run-dir" && !(command === "resume" && key === "--budget-ms")) throw new Error(`Unknown argument: ${key}`);
+    const value = argv[++i];
+    if (!value || value.startsWith("--")) throw new Error(`Missing value for ${key}`);
+    if (values.has(key)) throw new Error(`Duplicate argument: ${key}`);
+    values.set(key, value);
+  }
+  const runDirectory = resolve(required(values, "--run-dir"));
+  if (command === "apply") return { command, runDirectory, allowPartial };
+  const budgetMs = Number(values.get("--budget-ms") ?? "0");
+  if (!Number.isSafeInteger(budgetMs) || budgetMs < 0) throw new Error("--budget-ms must be a non-negative integer");
+  return { command, runDirectory, budgetMs };
+}
+
 export function localDefaultOutputDir(entry: "main" | "baseline"): string {
   return join(tmpdir(), "shallowcode-local", entry);
 }

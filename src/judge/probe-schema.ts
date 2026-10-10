@@ -347,7 +347,7 @@ export function applyLocatorPatches(original: ProbePlan, failures: readonly Pick
 
 export function parseProbePlan(
   value: unknown,
-  packet?: Pick<WorkPacket, "id" | "requirementIds"> & Partial<Pick<WorkPacket, "requirements" | "prerequisites">>,
+  packet?: Pick<WorkPacket, "id" | "requirementIds"> & Partial<Pick<WorkPacket, "requirements" | "prerequisites" | "browserEntry">>,
 ): ProbePlan {
   const received = record(value, "ProbePlan");
   // Some JSON-mode gateways add a root id echo. It carries no probe behavior;
@@ -397,16 +397,16 @@ export function parseProbePlan(
           enforceGlobalSearchBannerScope(locator, { requirements: scoped, prerequisites: packet.prerequisites },
             `ProbePlan case ${probeCase.id} step ${stepIndex}`);
           assertDeclaredLocatorRole(locator, { requirements: scoped, prerequisites: packet.prerequisites },
-            step.op, false, `ProbePlan case ${probeCase.id} step ${stepIndex}`, isHomeEntryStep(probeCase, stepIndex));
+            step.op, false, `ProbePlan case ${probeCase.id} step ${stepIndex}`, isHomeEntryStep(probeCase, stepIndex, packet.browserEntry));
         }
-        if (step.op === "goto" && step.path !== "/") {
+        if (step.op === "goto" && step.path !== "/" && step.path !== packet.browserEntry) {
           // A guessed server path cannot reach a hash-routed page. Only public
           // requirement text can authorize a deep link; never infer it from a name.
           const declaredPaths = evidence.flatMap(item => [item.product.description, item.text, ...item.scenarios, ...item.ancestors.map(ancestor => ancestor.description)])
             .flatMap(value => [...value.replace(/!\[[^\]]*\]\([^)]*\)/g, "").matchAll(/(?<![\w./])(?:https?:\/\/[^\s/]+)?(\/[^\s<>"'`，。；、（）\[\]()]+)/g)]
               .map(match => match[1].replace(/[.,;:!?]+$/, "")));
           if (!declaredPaths.includes(step.path)) {
-            throw new Error(`ProbePlan case ${probeCase.id} step ${stepIndex}: undeclared goto path ${step.path}; start at / and use visible navigation`);
+            throw new Error(`ProbePlan case ${probeCase.id} step ${stepIndex}: undeclared goto path ${step.path}; start at ${packet.browserEntry ?? "/"} and use visible navigation`);
           }
         }
         const textTargets = "locator" in step ? [step.locator,
@@ -491,7 +491,7 @@ export function assertLocatorOnlyRefinement(
   original: ProbePlan,
   refined: ProbePlan,
   failures: readonly Pick<ProbeFailure, "caseId" | "stepIndex">[] = [],
-  packet?: Pick<WorkPacket, "requirements" | "prerequisites">,
+  packet?: Pick<WorkPacket, "requirements" | "prerequisites"> & Partial<Pick<WorkPacket, "browserEntry">>,
 ): void {
   if (original.packetId !== refined.packetId || original.cases.length !== refined.cases.length) {
     throw new Error("Refinement may change only locator fields");
@@ -535,7 +535,7 @@ export function assertLocatorOnlyRefinement(
         assertRefinementKeepsStrength(before.locator, after.locator);
         if (packet) {
           const evidence = { ...packet, requirements: packet.requirements.filter(item => beforeCase.requirementIds.includes(item.id)) };
-          const homeEntry = isHomeEntryStep(beforeCase, stepIndex);
+          const homeEntry = isHomeEntryStep(beforeCase, stepIndex, packet?.browserEntry);
           const roles = declaredLocatorRoles(before.locator, evidence, before.op, false, homeEntry);
           const wrongRole = roles.length ? locatorCandidates(after.locator).find(candidate =>
             !matchesDeclaredLocatorRole(candidate, roles)) : undefined;
@@ -858,7 +858,8 @@ function validateScenarioActions(probeCase: ProbeCase, evidence: readonly Atomic
   const description = evidence.flatMap(item => [item.text, ...item.scenarios]).join(" ");
   const fileLabels = [...description.matchAll(/file control labeled\s*[“"']([^”"']+)[”"']/gi)]
     .map(match => match[1].toLowerCase());
-  const spreadsheet = evidence.some(item => item.product.kind === "spreadsheet");
+  const spreadsheet = evidence.some(item => item.product.kind === "spreadsheet") ||
+    /\b(?:spreadsheet|workbook|worksheet|cells?|grid\s+context\s+menu)\b|工作簿|工作表|单元格/i.test(maskRequirementLiterals(description));
   let contextMenuOpen = false;
   let clipboardReady = false;
   for (const [index, step] of probeCase.steps.entries()) {
@@ -1175,10 +1176,10 @@ const CONTROL_OPERATIONS = new Set<ProbeStep["op"]>([
 ]);
 
 /** Identify the initial home-page entry, before navigation or form input. */
-export function isHomeEntryStep(probeCase: Pick<ProbeCase, "steps">, stepIndex: number): boolean {
+export function isHomeEntryStep(probeCase: Pick<ProbeCase, "steps">, stepIndex: number, browserEntry = "/"): boolean {
   for (let index = stepIndex - 1; index >= 0; index--) {
     const step = probeCase.steps[index];
-    if (step.op === "goto") return step.path === "/";
+    if (step.op === "goto") return step.path === browserEntry;
     if (!step.op.startsWith("expect") && step.op !== "reload") return false;
   }
   return false;

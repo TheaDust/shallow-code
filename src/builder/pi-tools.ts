@@ -34,10 +34,16 @@ export async function assertToolPath(root: string, input: string): Promise<strin
   return path;
 }
 
-export function assertToolCommand(command: string): void {
+export function assertToolCommand(command: string, privateDirectory?: string, workspaceDirectory?: string): void {
   // Defense in depth, not an OS sandbox. Deployment controls filesystem visibility.
-  if (/\.arc|run-ledger|run-log|shallow-progress|\/workspace\/tests|\.codex|\.pi[\\/]|(?:^|[\s"'])\.\.[\\/]/i.test(command)) {
+  if (/\.arc|run-ledger|run-log|shallow-progress|\/workspace\/tests|\.codex|\.pi[\\/]|(?:^|[\s"'\\/])\.\.[\\/]/i.test(command)) {
     throw new Error("Command accesses controller/private or external paths");
+  }
+  if (privateDirectory && workspaceDirectory) {
+    const normalize = (value: string) => value.replaceAll("\\", "/").toLowerCase();
+    const workspace = normalize(resolve(workspaceDirectory)).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const masked = normalize(command).replace(new RegExp(workspace + "(?=$|[\\s/\"'])", "g"), "[workspace]");
+    if (masked.includes(normalize(resolve(privateDirectory)))) throw new Error("Command accesses private run files");
   }
 }
 
@@ -127,7 +133,7 @@ function scriptNameIsTest(name: string): boolean {
   return normalized.split(/[:.\-]/).some(part => part === "test" || part === "tests");
 }
 
-export function createPiTools(cwd: string, managedApp = false, contract?: PlatformContract): ToolDefinition[] {
+export function createPiTools(cwd: string, managedApp = false, contract?: PlatformContract, privateDirectory?: string): ToolDefinition[] {
   const read = createReadToolDefinition(cwd) as unknown as ToolDefinition;
   const guardedRead = { ...read, execute: async (...args: Parameters<typeof read.execute>) => {
     const params = args[1] as { path: string };
@@ -142,7 +148,7 @@ export function createPiTools(cwd: string, managedApp = false, contract?: Platfo
   } })) as ToolDefinition[];
   const shell = createBashToolDefinition(cwd, { operations: {
     exec: async (command, directory, { onData, signal, timeout }) => {
-      assertToolCommand(command);
+      assertToolCommand(command, privateDirectory, cwd);
       assertNotTestCommand(command);
       await assertToolPath(cwd, directory);
       signal?.throwIfAborted();

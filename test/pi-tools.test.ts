@@ -3,6 +3,17 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
+test("Shell guards use the actual private run directory while allowing absolute application paths", async () => {
+  await withTempDir("shallow-private-run-", async run => {
+    const workspace = join(run, "workspace");
+    assert.throws(() => assertToolCommand(`type "${join(run, "run.json")}"`, run, workspace), /private/);
+    assert.throws(() => assertToolCommand(`type "${join(run, "plans/case.json")}"`, run, workspace), /private/);
+    assert.throws(() => assertToolCommand(`type "${workspace}/../run.json"`, run, workspace), /private/);
+    assert.doesNotThrow(() => assertToolCommand(`node "${join(workspace, "server.mjs")}"`, run, workspace));
+    assert.doesNotThrow(() => assertToolCommand("npm run build", run, workspace));
+  });
+});
+
 import { assertNotTestCommand, assertToolCommand, assertToolPath, createPiTools } from "../src/builder/pi-tools.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 

@@ -61,7 +61,7 @@ test("starter scaffold installs the generic platform shell into metadata-only ou
     assert.match(combobox, /\\u2060/);
     assert.doesNotMatch(`${frontend}\n${primitives}\n${backend}\n${store}`, /github|spreadsheet|repository|workbook/i);
     assert.match(backend, /\/api\/health/);
-    assert.match(backend, /ARC_EXTRA_PORTS/);
+    assert.match(backend, /SHALLOW_EXTRA_PORTS/);
     assert.match(backend, /frontend\/dist/);
     await assert.rejects(access(join(directory, "frontend", "node_modules")));
     await assert.rejects(access(join(directory, "frontend", "dist")));

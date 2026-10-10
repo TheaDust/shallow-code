@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,38 @@ import {
   type AgentExecutionContext,
 } from "../index.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { loadRunRecord } from "../src/run-record.js";
+
+test("The production entry resumes an owned checkpoint with fresh artifacts and applies without gateway credentials", { timeout: 60_000 }, async () => {
+  await withTempDir("shallow-entry-resume-", async root => {
+    const source = join(root, "project"), requirements = join(root, "requirements"), runs = join(root, "runs");
+    await mkdir(source); await mkdir(requirements);
+    await writeFile(join(source, "server.mjs"), `import { createServer } from 'node:http';
+createServer((req,res) => { if(req.url==='/health') return res.end('ok');
+if(req.url==='/web') { res.setHeader('content-type','text/html'); return res.end('<html><body>Ready</body></html>'); }
+res.statusCode=404; res.end('missing'); }).listen(Number(process.env.PORT),'127.0.0.1');`);
+    await writeFile(join(source, "shallowcode.config.json"), JSON.stringify({ start: { executable: process.execPath, args: ["server.mjs"] }, browserPath: "/web" }));
+    const requirementFile = join(requirements, "requirements.yaml");
+    await writeFile(requirementFile, "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
+    const env = { ...gatewayEnv(), SHALLOW_RUN_DIR: runs };
+    assert.equal(await main(["--requirements-dir", requirements, "--project", source], env, undefined, null), 0);
+    const first = join(runs, (await readdir(runs))[0]);
+    const record = await loadRunRecord(first);
+    const originalLedger = await readFile(join(first, "run-ledger.jsonl"), "utf8");
+    await writeFile(join(record.outputDir, "interrupted.txt"), "unaccepted work");
+    assert.equal(await main(["resume", "--run-dir", first], env, undefined, null), 0);
+    await assert.rejects(access(join(record.outputDir, "interrupted.txt")));
+    assert.equal(await readFile(join(first, "run-ledger.jsonl"), "utf8"), originalLedger);
+    const second = join(runs, (await readdir(runs)).find(name => join(runs, name) !== first)!);
+    const resumed = await loadRunRecord(second);
+    assert.equal(resumed.resumedFrom, first);
+    assert.equal(resumed.inputBaseline, record.inputBaseline);
+    assert.equal(await main(["apply", "--run-dir", second], {}, undefined, null), 0);
+    await writeFile(requirementFile, "id: ROOT\nname: Changed\ntype: ROOT\nchildren: []\n");
+    await assert.rejects(main(["resume", "--run-dir", second], env, undefined, null), /Resume inputs changed/);
+    assert.equal((await readdir(runs)).length, 2);
+  });
+});
 
 test("Existing project entry develops in a separate copy and passes its declared runtime", async () => {
   await withTempDir("shallow-entry-project-", async root => {
@@ -78,7 +110,8 @@ test("Agent entry validates paths and passes bounded production context", async 
 
     assert.equal(exitCode, 0);
     assert.equal(received?.gateway.model, "provider/model");
-    assert.equal(received?.pipelineOptions.requirementsFile, join(requirementsDir, "requirements.yaml"));
+    assert.equal(received?.pipelineOptions.requirementsFile, join(dirname(received!.pipelineOptions.ledgerFile), "requirements", "requirements.yaml"));
+    assert.equal(await readFile(received!.pipelineOptions.requirementsFile, "utf8"), await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
     assert.equal(received?.pipelineOptions.outputDir, outputDir);
     assert.equal(received?.pipelineOptions.totalBudgetMs, 600_000);
     assert.equal(received?.pipelineOptions.platformContract.port, 3100);

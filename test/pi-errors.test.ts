@@ -43,7 +43,7 @@ for (const timeout of [false, true]) {
       else ready(response);
     }, async (client, app) => {
       await writeFile(join(app, "server.cjs"), `
-require('node:http').createServer((req,res)=>res.end(JSON.stringify({data:process.env.SHALLOW_DATA_DIR,extra:process.env.ARC_EXTRA_PORTS}))).listen(Number(process.env.PORT),'127.0.0.1');
+require('node:http').createServer((req,res)=>res.end(JSON.stringify({data:process.env.SHALLOW_DATA_DIR,extra:process.env.SHALLOW_EXTRA_PORTS}))).listen(Number(process.env.PORT),'127.0.0.1');
 `);
       const platformContract = minimalWebContract({ port: await pickFreePort([3000, 3301]) });
       platformContract.startCommand = { executable: process.execPath, args: ["server.cjs"], cwd: "output" };

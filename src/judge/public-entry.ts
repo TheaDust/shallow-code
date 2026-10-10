@@ -3,7 +3,7 @@ import { maskRequirementLiterals } from "../requirement-text.js";
 import { declaredGlobalSearchControls, parseProbePlan, requirementEvidenceTexts, type ProbePlan } from "./probe-schema.js";
 
 /** A structural sample, kept separate from complete scenario plans and verdicts. */
-export function publicEntryPlan(packet: WorkPacket): ProbePlan | undefined {
+export function publicEntryPlan(packet: WorkPacket, browserPath = "/"): ProbePlan | undefined {
   // Do not invent login, credentials or a visitor entry for a protected search.
   const visitorHome = requirementEvidenceTexts(packet.requirements).some(text =>
     /\b(?:visitor|unauthenticated)\b[^.!?]*\bhome\s+page\b|\bhome\s+page\b[^.!?]*\b(?:visitor|unauthenticated)\b/i
@@ -22,7 +22,7 @@ export function publicEntryPlan(packet: WorkPacket): ProbePlan | undefined {
   return parseProbePlan({ packetId: packet.id, cases: [{
     id: "public-entry-contract", requirementIds: packet.requirementIds,
     purpose: "happy_path", expectationBasis: [control.evidence], steps: [
-      { op: "goto", path: "/" },
+      { op: "goto", path: browserPath },
       { op: "expectCount", locator: banner, count: 1 },
       { op: "expectCount", locator: search, count: 1 },
       { op: "expectVisible", locator: search },

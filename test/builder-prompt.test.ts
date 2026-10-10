@@ -386,7 +386,7 @@ test("Repair prompt carries only the cleaned shadow observation", () => {
   assert.match(compiled.taskPrompt, /允许使用的失败观测/);
   assert.match(compiled.taskPrompt, /save-profile/);
   assert.match(compiled.taskPrompt, /Expected Saved, received Error/);
-  assert.doesNotMatch(compiled.taskPrompt, /"verdict"|JSON|black-box report/i);
+  assert.doesNotMatch(compiled.taskPrompt, /"verdict"|(?:^|\s)JSON(?:\s|$)|black-box report/i);
   assert.match(compiled.taskPrompt, /ARCHITECTURE\.md/);
   assert.match(compiled.taskPrompt, /结果：完成 \| 阻塞/);
 });
@@ -467,23 +467,23 @@ test("Builder distinguishes the evaluation default from the probe port", () => {
   request.platformContract.port = 3210;
   request.platformContract.baseUrl = "http://127.0.0.1:3210";
   const compiled = compileBuilderPrompt(request);
-  assert.match(compiled.taskPrompt, /未设置时使用 3000/);
+  assert.match(compiled.taskPrompt, /应用读取 PORT 环境变量/);
   assert.match(compiled.taskPrompt, /PORT=3210/);
 });
 
 test("Builder receives every discovered extra port and omits the clause when there are none", () => {
   const withoutExtra = compileBuilderPrompt(implementRequest());
   assert.doesNotMatch(withoutExtra.taskPrompt, /额外监听/);
-  assert.doesNotMatch(withoutExtra.taskPrompt, /ERR_SERVER_ALREADY_LISTEN/);
+  assert.doesNotMatch(withoutExtra.taskPrompt, /为各端口建立独立的服务实例/);
 
   const request = implementRequest();
   request.platformContract.extraPorts = [3301, 4400];
   const compiled = compileBuilderPrompt(request);
   assert.match(compiled.taskPrompt, /3301/);
   assert.match(compiled.taskPrompt, /4400/);
-  assert.match(compiled.taskPrompt, /所有端口服务同一个应用/);
-  assert.match(compiled.taskPrompt, /ARC_EXTRA_PORTS=0/);
-  assert.match(compiled.taskPrompt, /ERR_SERVER_ALREADY_LISTEN/);
+  assert.match(compiled.taskPrompt, /项目声明了额外服务端口/);
+  assert.match(compiled.taskPrompt, /SHALLOW_EXTRA_PORTS=0/);
+  assert.match(compiled.taskPrompt, /为各端口建立独立的服务实例/);
 });
 
 test("FakeBuilder copies only the test fixture app into output", async () => {

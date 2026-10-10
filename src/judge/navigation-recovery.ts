@@ -10,7 +10,7 @@ export function rootSearchNavigationPlan(packet: WorkPacket, plan: ProbePlan, re
     const probeCase = plan.cases.find(item => item.id === failure.caseId);
     const start = probeCase?.steps[0];
     const entry = probeCase?.steps[failure.stepIndex];
-    if (!probeCase || start?.op !== "goto" || start.path !== "/" ||
+    if (!probeCase || start?.op !== "goto" || start.path !== (packet.browserEntry ?? "/") ||
       !entry || (entry.op !== "click" && entry.op !== "expectVisible") ||
       entry.locator.by !== "role" || entry.locator.role !== "link" || !entry.locator.name) continue;
     const target = entry.locator.name;

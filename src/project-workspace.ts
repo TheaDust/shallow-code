@@ -56,7 +56,7 @@ export async function writeProjectPatch(directory: string, baseline: string, run
   };
   await invoke(["read-tree", "HEAD"]);
   await invoke(["add", "-A", ...paths]);
-  const content = await invoke(["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv", baseline, ...paths]);
+  const content = await invoke(["diff", "--cached", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", baseline, ...paths]);
   await writeFile(patch, content, "utf8");
   return patch;
 }

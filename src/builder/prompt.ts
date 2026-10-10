@@ -279,8 +279,9 @@ function platformContractSection(contract: PlatformContract): string {
     BUILD_COMMANDS: contract.buildCommands.map(renderCommand).join("\n") || "无",
     START_COMMAND: renderCommand(contract.startCommand),
     HEALTH_PATH: contract.healthPath,
+    BROWSER_PATH: contract.browserPath ?? "/",
     BASE_URL: contract.baseUrl,
-    TEST_TARGETS: (contract.testTargets ?? []).map(target => `${target.id}: ${renderCommand(target)}`).join("\n") || "未声明；先在项目运行配置中声明开发测试目标",
+    TEST_TARGETS: (contract.testTargets ?? []).map(target => `${target.id}: ${renderCommand(target)}`).join("\n") || "本轮未登记开发测试目标",
     DATA_ENV_VAR: contract.dataEnvVar ?? "SHALLOW_DATA_DIR",
     DATA_PATHS: contract.dataPaths?.join("、") || "未声明继承数据目录",
   });

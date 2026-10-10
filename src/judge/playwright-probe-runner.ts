@@ -21,6 +21,7 @@ const MAX_DOWNLOAD_BYTES = 64 * 1_024;
 
 export interface ProbeRunOptions {
   baseUrl: string;
+  browserPath?: string;
   stepTimeoutMs: number;
   caseTimeoutMs: number;
   /** Controller-owned fresh application data, preserving one browser launch per plan. */
@@ -138,6 +139,7 @@ export class PlaywrightProbeRunner {
             options.baseUrl,
             timeoutMs,
             namedSessions,
+            options.browserPath ?? "/",
           );
         } catch (error) {
           if (session.crashed || !browser.isConnected()) {
@@ -185,6 +187,7 @@ async function executeStep(
   baseUrl: string,
   timeoutMs: number,
   namedSessions: Map<string, BrowserSession>,
+  browserPath: string,
 ): Promise<BrowserSession> {
   if (step.op === "newContext") {
     // Keep named sessions available for switchContext; an unnamed session that
@@ -210,7 +213,7 @@ async function executeStep(
     }
     try {
       await session.page.goto(target.href, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-      if (step.path === "/") session.homeRoute = routeIdentity(session.page.url());
+      if (step.path === browserPath) session.homeRoute = routeIdentity(session.page.url());
       return session;
     } catch (error) {
       throw new ProbeExecutionError("navigation", compactError(error));

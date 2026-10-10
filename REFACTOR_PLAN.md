@@ -4,7 +4,7 @@
 
 迁移依据是 2026-10-09 检查的原项目提交 `6d4cd70`。本文定义首版方案与完成条件；原项目继续承担 ARC 运行职责。
 
-实施进度：批次 A 已提交。批次 B 的项目声明、开发测试、应用环境、数据隔离、工作区副本与补丁导出已实现，并通过 Windows 本地完整回归。批次 C 的 resume/apply 子命令及其增量、交付收敛仍待实现；当前 CLI 的可用参数与产物以 README 为准。真实模型端到端开发任务单独验证。
+实施进度：批次 A 已提交。批次 B 的项目声明、开发测试、应用环境、数据隔离、工作区副本与补丁导出已实现，并通过 Windows 本地完整回归。批次 C 已实现恢复检查点、重新验收、冲突检查写回、普通增量合同摘要、通用浏览器入口和逐场景报告；Windows 完整回归通过：类型检查通过，控制器测试 830 项（827 通过、3 环境跳过、0 失败），浏览器测试 52 项全通过。CLI 的可用参数与产物以 README 为准。真实模型端到端开发任务单独验证。
 
 **1. 首版范围与核心流程**
 
@@ -91,9 +91,8 @@ ProjectSpec 与需求 YAML 分别加载，描述安装和构建命令、开发�
 ```powershell
 npm start -- --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
 npm start -- --requirements-dir E:\requirements\demo --project E:\projects\existing-web
-npm start -- plan --requirements-dir E:\requirements\demo --project E:\projects\existing-web
-npm start -- resume --run-id <run-id>
-npm start -- apply --run-id <run-id>
+npm start -- resume --run-dir "E:\runs\<运行目录>"
+npm start -- apply --run-dir "E:\runs\<运行目录>"
 ```
 
 **5. Web Judge 的职责与改动范围**

@@ -31,6 +31,16 @@ const FULL_SPEC = {
   dataPaths: ["web/storage", "./server/data"],
 };
 
+test("Browser entry is independent of readiness and remains within the project origin", () => {
+  const spec = parseProjectSpec({ start: { executable: "node" }, readyPath: "/status", browserPath: "/workspace#/home" });
+  const contract = resolveRuntimeContract(spec, { port: 43001 });
+  assert.equal(contract.browserPath, "/workspace#/home");
+  assert.equal(contract.healthPath, "/status");
+  for (const browserPath of ["//other.example", "/\\other.example", "/bad\npath", "/unencoded space", "/../outside"]) {
+    assert.throws(() => parseProjectSpec({ start: { executable: "node" }, browserPath }), /browserPath/);
+  }
+});
+
 test("The shipped template declares the previous frontend/backend process contract per platform", () => {
   const linux = minimalWebContract({ port: 3000, extraPorts: [3301] }, "linux");
   const windows = minimalWebContract({ port: 3000 }, "win32");

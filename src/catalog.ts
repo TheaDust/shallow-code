@@ -6,7 +6,6 @@ import { maskRequirementLiterals, requirementSentences } from "./requirement-tex
 import type {
   AtomicRequirement,
   ProductContext,
-  ProductKind,
   RequirementCatalog,
   RequirementNode,
   SeedDataCategory,
@@ -50,7 +49,7 @@ export async function loadRequirementCatalog(
 
   const requirements: AtomicRequirement[] = [];
   const product: ProductContext = {
-    kind: classifyProduct(productName),
+    kind: "generic_web",
     rootId: root.id,
     rootName: root.name,
     description: root.description,
@@ -91,20 +90,6 @@ export async function loadRequirementCatalog(
   };
 }
 
-function classifyProduct(
-  rootName: string,
-): ProductKind {
-  const productName = stripProgressiveStageSuffix(rootName);
-  if (productName === "GitHub" || productName === "GitHub Collaboration Platform Core Requirements") {
-    return "repository_collaboration";
-  }
-  if (productName === "Core Requirements for an Online Spreadsheet Data Workspace"
-    || productName === "Requirements for an Online Spreadsheet Data Workspace") {
-    return "spreadsheet";
-  }
-  return "generic_web";
-}
-
 function parseProgressiveStage(rootName: string): ProductContext["stage"] | undefined {
   const match = progressiveStageMatch(rootName);
   if (!match) return undefined;
@@ -116,11 +101,6 @@ function parseProgressiveStage(rootName: string): ProductContext["stage"] | unde
     index,
     currentStageTestsOnly: true,
   };
-}
-
-function stripProgressiveStageSuffix(rootName: string): string {
-  const match = progressiveStageMatch(rootName);
-  return match ? rootName.slice(0, match.index).trim() : rootName.trim();
 }
 
 function stripEvolutionMarker(rootName: string): string | undefined {

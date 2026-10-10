@@ -80,7 +80,7 @@ export async function installStarterScaffold(
   await writeFile(join(root, "shallowcode.config.json"), JSON.stringify({
     install: contract.installCommands.map(command), build: contract.buildCommands.map(command),
     tests: contract.testTargets?.map(target => ({ ...command(target), id: target.id })), start: command(contract.startCommand),
-    env: contract.env, readyPath: contract.healthPath, extraPorts: contract.extraPorts,
+    env: contract.env, readyPath: contract.healthPath, browserPath: contract.browserPath, extraPorts: contract.extraPorts,
     dependencyPaths: contract.dependencyPaths, generatedPaths: contract.generatedPaths,
     dataPaths: contract.dataPaths ?? ["backend/data", "backend/.data"], dataEnvVar: contract.dataEnvVar,
   }, null, 2) + "\n", "utf8");

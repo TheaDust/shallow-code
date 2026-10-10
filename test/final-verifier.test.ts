@@ -4,12 +4,12 @@ import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import { CommandAppLifecycle, FinalVerifier, runCommand, verifyGraderLikeStart } from "../src/final-verifier.js";
+import { CommandAppLifecycle, FinalVerifier, runCommand, verifyDeclaredPorts } from "../src/final-verifier.js";
 import type { PlatformContract, ProcessCommand } from "../src/types.js";
 import { reservePort } from "./helpers/fixture-server.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-test("Final Verifier runs fixed commands, readiness, and a real browser smoke", async () => {
+test("Final Verifier runs declared commands, readiness, and a real browser smoke", async () => {
   await withTempDir("shallow-final-", async (outputDir) => {
     await cp(resolve("test/fixtures/app"), outputDir, { recursive: true, force: true });
     const port = await reservePort();
@@ -43,6 +43,17 @@ test("Final Verifier stops before launch and reports the failing build command",
     assert.match(report.message, /build broke/);
     await assert.rejects(access(join(outputDir, "started.txt")));
     await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
+  });
+});
+
+test("Delivery rejects a changed run configuration before checking the application", async () => {
+  await withTempDir("shallow-contract-change-", async outputDir => {
+    await writeFile(join(outputDir, "shallowcode.config.json"), JSON.stringify({ start: { executable: "node", args: ["changed.mjs"] } }));
+    const report = await new FinalVerifier(undefined, undefined, undefined, { start: { executable: "node", args: ["original.mjs"] } })
+      .verify(outputDir, contractFor(await reservePort(), [], []));
+    assert.equal(report.ok, false);
+    assert.equal(report.stage, "candidate");
+    assert.match(report.message, /configuration differs/);
   });
 });
 
@@ -175,7 +186,7 @@ test("Final Verifier stops a POSIX launcher's server child as well as the launch
   });
 });
 
-test("Grader-like verification requires extra spec ports and survival of unknown paths", async () => {
+test("Declared port verification requires extra spec ports and survival of unknown paths", async () => {
   await withTempDir("shallow-grader-", async (outputDir) => {
     const port = await reservePort();
     const extra = await reservePort();
@@ -188,19 +199,19 @@ test("Grader-like verification requires extra spec ports and survival of unknown
         res.writeHead(404); res.end("not found");
       };
       createServer(handler).listen(Number(process.env.PORT), "127.0.0.1");
-      if (process.env.ARC_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
+      if (process.env.SHALLOW_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
     `);
     contract.startCommand = { executable: process.execPath, args: ["grader-server.mjs"], cwd: "output" };
 
-    const report = await verifyGraderLikeStart(outputDir, contract);
+    const report = await verifyDeclaredPorts(outputDir, contract);
 
-    assert.deepEqual(report, { ok: true, stage: "complete", message: "Grader-like startup verified" });
+    assert.deepEqual(report, { ok: true, stage: "complete", message: "Declared service ports verified" });
     await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
     await assert.rejects(fetch(`http://127.0.0.1:${extra}/health`));
   });
 });
 
-test("Grader-like verification exposes an isolated copy of inherited default data", async () => {
+test("Declared port verification exposes an isolated copy of inherited default data", async () => {
   await withTempDir("shallow-grader-data-", async outputDir => {
     const port = await reservePort();
     const extra = await reservePort();
@@ -218,16 +229,16 @@ test("Grader-like verification exposes an isolated copy of inherited default dat
       writeFileSync(state, '{"legacy":"kept","migrated":true}');
       const handler = (req, res) => { res.writeHead(req.url === "/health" ? 200 : 404); res.end("ok"); };
       createServer(handler).listen(Number(process.env.PORT), "127.0.0.1");
-      if (process.env.ARC_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
+      if (process.env.SHALLOW_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
     `);
     contract.startCommand = { executable: process.execPath, args: ["grader-server.mjs"], cwd: "output" };
-    const report = await verifyGraderLikeStart(outputDir, contract);
+    const report = await verifyDeclaredPorts(outputDir, contract);
     assert.equal(report.ok, true, report.message);
     assert.equal(await readFile(join(outputDir, "backend/data/state.json"), "utf8"), '{"legacy":"kept"}');
   });
 });
 
-test("Grader-like verification fails with an actionable message when only PORT is bound", async () => {
+test("Declared port verification fails with an actionable message when only PORT is bound", async () => {
   await withTempDir("shallow-grader-", async (outputDir) => {
     const port = await reservePort();
     const extra = await reservePort();
@@ -239,16 +250,16 @@ test("Grader-like verification fails with an actionable message when only PORT i
     `);
     contract.startCommand = { executable: process.execPath, args: ["grader-server.mjs"], cwd: "output" };
 
-    const report = await verifyGraderLikeStart(outputDir, contract);
+    const report = await verifyDeclaredPorts(outputDir, contract);
 
     assert.equal(report.ok, false);
     assert.equal(report.stage, "readiness");
-    assert.match(report.message, /bound PORT but not/);
+    assert.match(report.message, /declared services did not respond/);
     await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
   });
 });
 
-test("Grader-like verification fails when the app dies on an unknown path", async () => {
+test("Declared port verification fails when the app dies on an unknown path", async () => {
   await withTempDir("shallow-grader-", async (outputDir) => {
     const port = await reservePort();
     const extra = await reservePort();
@@ -261,18 +272,18 @@ test("Grader-like verification fails when the app dies on an unknown path", asyn
         throw new Error("boom");
       };
       createServer(handler).listen(Number(process.env.PORT), "127.0.0.1");
-      if (process.env.ARC_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
+      if (process.env.SHALLOW_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
     `);
     contract.startCommand = { executable: process.execPath, args: ["grader-server.mjs"], cwd: "output" };
 
-    const report = await verifyGraderLikeStart(outputDir, contract);
+    const report = await verifyDeclaredPorts(outputDir, contract);
 
     assert.equal(report.ok, false);
     assert.match(report.message, /no HTTP response|exited/);
   });
 });
 
-test("Grader-like verification fails when a foreign process squats a required extra port", async () => {
+test("Declared port verification fails when a foreign process squats a required extra port", async () => {
   await withTempDir("shallow-grader-", async (outputDir) => {
     const port = await reservePort();
     const extra = await reservePort();
@@ -285,7 +296,7 @@ test("Grader-like verification fails when a foreign process squats a required ex
         res.writeHead(404); res.end("not found");
       };
       createServer(handler).listen(Number(process.env.PORT), "127.0.0.1");
-      if (process.env.ARC_EXTRA_PORTS !== "0") {
+      if (process.env.SHALLOW_EXTRA_PORTS !== "0") {
         const extraServer = createServer(handler);
         extraServer.on("error", () => {});
         extraServer.listen(${extra}, "127.0.0.1");
@@ -296,7 +307,7 @@ test("Grader-like verification fails when a foreign process squats a required ex
     const squatter = createServer(() => { /* accepts connections but never answers */ });
     await new Promise<void>((resolveListen) => squatter.listen(extra, "127.0.0.1", () => resolveListen()));
     try {
-      const report = await verifyGraderLikeStart(outputDir, contract);
+      const report = await verifyDeclaredPorts(outputDir, contract);
       assert.equal(report.ok, false);
       assert.equal(report.stage, "readiness");
     } finally {
@@ -306,9 +317,9 @@ test("Grader-like verification fails when a foreign process squats a required ex
   });
 });
 
-test("Grader-like verification is skipped when the contract declares no extra ports", async () => {
+test("Declared port verification is skipped when the contract declares no extra ports", async () => {
   await withTempDir("shallow-grader-", async (outputDir) => {
-    const report = await verifyGraderLikeStart(outputDir, contractFor(await reservePort(), [], []));
+    const report = await verifyDeclaredPorts(outputDir, contractFor(await reservePort(), [], []));
     assert.equal(report.ok, true);
     assert.match(report.message, /not configured/);
   });

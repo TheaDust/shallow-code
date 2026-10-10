@@ -629,7 +629,7 @@ test("Root product contract can ground a probe expectation", () => {
 
 test("Spreadsheet plans require real file, menu, and clipboard setup", () => {
   const input = packet('A file control labeled "CSV file" imports CSV. The grid context menu provides "Paste".');
-  input.requirements[0].product.kind = "spreadsheet";
+  input.requirements[0].product.kind = "generic_web";
   const csv = plan();
   csv.cases[0].expectationBasis = ["A file control labeled"];
   csv.cases[0].steps = [

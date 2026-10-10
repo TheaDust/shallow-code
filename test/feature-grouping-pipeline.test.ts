@@ -71,7 +71,7 @@ test("Tagged and untagged inherited increments schedule and audit only current r
       f.deps.planner.plan = async packet => {
         plannedIds.push(packet.requirementIds);
         assert.deepEqual(packet.externalPrerequisiteIds, ["REQ-1"]);
-        assert.equal(packet.requirements[0].product.kind, "repository_collaboration");
+        assert.equal(packet.requirements[0].product.kind, "generic_web");
         return { packetId: packet.id, cases: [{ id: "case-evolution", requirementIds: packet.requirementIds,
           purpose: "happy_path", expectationBasis: [packet.requirements[0].text],
           steps: [{ op: "goto", path: "/" }, { op: "expectVisible", locator: { by: "role", role: "main" } }] }] };

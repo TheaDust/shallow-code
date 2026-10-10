@@ -328,7 +328,7 @@ function groundedPreparationTarget(packet: WorkPacket, plan: ProbePlan, failure:
   return locators.length > 0 && locators.every(locator => groundedLocatorNames(locator, packet).length > 0 &&
     (!locator.scope || (locator.scope.by === "role" && !locator.scope.name) ||
       groundedLocatorNames(locator.scope, packet).length > 0) && groundedControlRole(locator, packet, failure, step.op,
-        isHomeEntryStep(probeCase, failure.stepIndex)));
+        isHomeEntryStep(probeCase, failure.stepIndex, packet.browserEntry)));
 }
 
 function groundedControlRole(locator: ProbeLocator, packet: WorkPacket, failure: ShadowReport["failures"][number], operation: ProbeStep["op"], homeEntry: boolean): boolean {
@@ -356,7 +356,7 @@ function diagnosticFailures(packet: WorkPacket, plan: ProbePlan, report: ShadowR
     // an absent initial page locator alone is not evidence against the app.
     return probeCase && step && ["click", "fill", "select", "doubleClick"].includes(step.op) && "locator" in step &&
       groundedLocatorNames(step.locator, packet).length > 0 &&
-      groundedControlRole(step.locator, packet, failure, step.op, isHomeEntryStep(probeCase, failure.stepIndex)) &&
+      groundedControlRole(step.locator, packet, failure, step.op, isHomeEntryStep(probeCase, failure.stepIndex, packet.browserEntry)) &&
       probeCase.steps.slice(0, failure.stepIndex).some(item => ["click", "fill", "select"].includes(item.op));
   });
 }
@@ -434,7 +434,7 @@ async function runShadowProbes(
           detail: { cases: currentPlan.cases.length, retryCount: recovery.browserRetries,
             planSha256: probePlanSha256(currentPlan) } });
         try {
-          const report = await deps.runner.run(currentPlan, { baseUrl: application.baseUrl, ...runOptions, prepareCase,
+          const report = await deps.runner.run(currentPlan, { baseUrl: application.baseUrl, browserPath: options.platformContract.browserPath, ...runOptions, prepareCase,
             caseTimeoutMs: Math.max(1, Math.min(runOptions.caseTimeoutMs, remaining())) });
           await application.assertUnchanged?.();
           if (application.candidate) report.candidate = application.candidate;

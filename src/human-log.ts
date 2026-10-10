@@ -58,6 +58,8 @@ function describe(type: string, event: RunEvent): string | null {
   const message = pickString(detail, "message");
   const reason = pickString(detail, "reason");
   switch (type) {
+    case "run_resumed":
+      return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
     case "phase_started":
       return `进入${({ implementation: "模块实现", audit: "独立验收", repair: "修复", delivery: "最终交付" } as Record<string, string>)[pickString(detail, "phase") ?? ""] ?? "运行"}阶段${detail?.round ? `；第 ${detail.round} 轮` : ""}${typeof detail?.remainingMs === "number" ? `；阶段剩余 ${renderDuration(detail.remainingMs)}` : ""}`;
     case "checkpoint_saved":

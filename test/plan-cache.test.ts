@@ -67,6 +67,26 @@ test("Plan cache mirrors writes into the product-visible directory", async () =>
   });
 });
 
+test("A declared entry can bootstrap a cached plan without authorizing other business deep links", async () => {
+  await withTempDir("shallow-entry-plan-", async directory => {
+    const packet: WorkPacket = { id: "packet-entry", requirementIds: ["A"], attempt: 1,
+      requirements: [{ id: "A", name: "Workspace", text: "Display the main workspace.", folderPath: ["ROOT"], declarationIndex: 0,
+        dependencyIds: [], scenarios: [], references: [], exactUiStrings: [], seedDeclarations: [], ancestors: [],
+        product: { kind: "generic_web", rootId: "ROOT", rootName: "Web", description: "", seedData: [] } }],
+      browserEntry: "/web" };
+    const cache = new PlanCache(directory);
+    const entryPlan = plan(packet.id, ["A"]);
+    entryPlan.cases[0].expectationBasis = [packet.requirements[0].text];
+    entryPlan.cases[0].steps[0] = { op: "goto", path: "/web" };
+    await cache.write(packet.id, entryPlan);
+    assert.equal((await cache.read(packet))?.packetId, packet.id);
+    assert.equal(await cache.read({ ...packet, browserEntry: "/other" }), undefined);
+    entryPlan.cases[0].steps[0] = { op: "goto", path: "/web/admin" };
+    await cache.write(packet.id, entryPlan);
+    assert.equal(await cache.read(packet), undefined);
+  });
+});
+
 test("An inherited plan mirror cannot bootstrap a new run even for the same packet ID", async () => {
   await withTempDir("shallow-plan-inherited-", async directory => {
     const mirror = join(directory, "shallow-progress", "plans");

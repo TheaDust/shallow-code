@@ -3,6 +3,15 @@ import type { ProbeLocator, ProbePlan } from "./judge/probe-schema.js";
 export type RequirementStatus = "todo" | "verified" | "blocked" | "failed" | "inconclusive";
 export type InconclusiveKind = "planning" | "coverage" | "preparation" | "locator" | "execution" | "review" | "gateway" | "budget" | "unreproduced";
 
+export interface RunScenarioResult {
+  requirementId: string;
+  scenarioId: string;
+  name: string;
+  status: "verified" | "failed" | "inconclusive" | "not_run";
+  caseIds: string[];
+  reason?: string;
+}
+
 export type ProductKind =
   | "repository_collaboration"
   | "spreadsheet"
@@ -82,6 +91,8 @@ export interface RequirementNode {
 }
 
 export interface WorkPacket {
+  /** Project-declared public entry for navigation preparation, not business evidence. */
+  browserEntry?: string;
   prerequisites?: AtomicRequirement[];
   /** Earlier-increment capabilities are context, not requirements audited in this packet. */
   externalPrerequisiteIds?: string[];
@@ -116,6 +127,8 @@ export interface PlatformContract {
   buildCommands: ProcessCommand[];
   startCommand: ProcessCommand;
   healthPath: string;
+  /** Public browser entry, independent of the HTTP readiness endpoint. */
+  browserPath?: string;
   /** Additional application ports declared by the project. */
   extraPorts?: number[];
   buildTimeoutMs: number;
@@ -143,7 +156,9 @@ interface RunEventDetails {
     historicalPlanRequirementCount: number; historicalCheckpointRequirementCount: number;
     historicalCheckpointSupplementCount: number; historicalRequirementCount: number; addedRequirementIds: string[];
     changedRequirementIds: string[]; inheritedRequirementIds: string[]; implementationRequirementIds: string[]; reason?: string;
-    auditRequirementIds?: string[]; skippedRequirementIds?: string[] };
+    auditRequirementIds?: string[]; skippedRequirementIds?: string[];
+    delivery?: { ok: boolean; stage: string; message: string; candidate?: CandidateEvidence };
+    scenarioResults?: RunScenarioResult[] };
   gateway_wait: { source: "builder" | "planner"; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
   builder_work_preserved: { preserved: boolean; requirementIds: string[]; reason?: string };
   implementation_retry: { requirementIds: string[]; timeoutMs: number; reason?: "timeout" | import("./builder/port.js").BuilderResult["terminationReason"] };
@@ -153,6 +168,7 @@ interface RunEventDetails {
   implementation_stopped: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
   phase_started: { phase: "implementation" | "audit" | "repair" | "delivery"; remainingMs?: number; round?: number; memory?: Record<string, unknown> };
   checkpoint_saved: { requirementIds: string[]; reason: string; candidate?: CandidateEvidence };
+  run_resumed: { requirementIds: string[] };
   module_failed: { requirementIds: string[]; reason: string };
   module_rescued: { requirementIds: string[]; reason: string };
   audit_result: { requirementIds: string[]; status: "verified" | "failed" | "inconclusive"; reason?: string;

@@ -31,7 +31,7 @@ export function globalControlCrossRoutePlan(
   const sequence = sources.flatMap(source => {
     const controls = declaredGlobalSearchControls(source.packet);
     if (controls.length !== 1) return [];
-    return source.plan.cases.map(probeCase => globalSearchSequence(probeCase, controls[0].name));
+    return source.plan.cases.map(probeCase => globalSearchSequence(probeCase, controls[0].name, source.packet.browserEntry));
   }).find((value): value is ProbeStep[] => value !== undefined);
   if (!sequence) return undefined;
   const source = prefix.probeCase;
@@ -124,12 +124,12 @@ function locatorStepName(step: ProbeStep): string | undefined {
   return step.locator.by === "role" ? step.locator.name : step.locator.text;
 }
 
-function globalSearchSequence(probeCase: ProbeCase, name: string): ProbeStep[] | undefined {
+function globalSearchSequence(probeCase: ProbeCase, name: string, browserEntry?: string): ProbeStep[] | undefined {
   const sameControl = (step: ProbeStep): boolean => "locator" in step && step.locator.by === "role" &&
     ["search", "searchbox"].includes(step.locator.role) && step.locator.name === name &&
     step.locator.scope?.by === "role" && step.locator.scope.role === "banner";
   const start = probeCase.steps.findIndex(step => step.op === "fill" && sameControl(step));
-  if (start < 0 || !isHomeEntryStep(probeCase, start)) return undefined;
+  if (start < 0 || !isHomeEntryStep(probeCase, start, browserEntry)) return undefined;
   const endOffset = probeCase.steps.slice(start + 1).findIndex(step => step.op === "expectVisible" &&
     step.locator.by === "role" && step.locator.role === "link" && step.locator.exact === true);
   if (endOffset < 0) return undefined;

@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { AuthStorage, ModelRegistry, SessionManager, SettingsManager, DefaultResourceLoader, createAgentSession } from "@mariozechner/pi-coding-agent";
 import { createPiTools } from "./pi-tools.js";
 import { installSseCapture } from "./sse-capture.js";
@@ -47,7 +47,7 @@ async function run(input: PiWorkerRequest): Promise<PiWorkerResult> {
     settingsManager, resourceLoader, sessionManager: manager,
     tools: ["read", "edit", "write", "shell", "run_tests", "browser", "list_capabilities", "install_capability",
       ...(input.platformContract ? ["app"] : [])],
-    customTools: createPiTools(input.outputDir, Boolean(input.platformContract), input.platformContract) });
+    customTools: createPiTools(input.outputDir, Boolean(input.platformContract), input.platformContract, dirname(input.sessionDir)) });
   if (modelFallbackMessage) throw new Error(modelFallbackMessage);
   let toolCalls = 0;
   let compactions = 0;

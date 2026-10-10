@@ -66,11 +66,12 @@ export function planValidationFeedback(error: unknown): ProbePlannerFeedback | u
 export class LlmProbePlanner implements ProbePlanner {
   private readonly client: PlannerJsonClient;
   constructor(
-    private readonly config: ProbePlannerConfig,
+    private readonly config: ProbePlannerConfig & { browserPath?: string },
     fetchFn: typeof fetch = globalThis.fetch,
   ) { this.client = new PlannerJsonClient(config, fetchFn); }
 
   async plan(packet: WorkPacket, feedback?: ProbePlannerFeedback, options?: ProbePlanOptions): Promise<ProbePlan> {
+    packet = { ...packet, browserEntry: packet.browserEntry ?? this.config.browserPath ?? "/" };
     const startedAt = Date.now();
     const messages: Array<{ role: "system" | "user"; content: string }> = [
       {
@@ -80,6 +81,7 @@ export class LlmProbePlanner implements ProbePlanner {
       {
         role: "user",
         content: JSON.stringify({
+          browserEntry: packet.browserEntry ?? this.config.browserPath ?? "/",
           product: packet.requirements[0] && {
             name: packet.requirements[0].product.rootName,
             description: packet.requirements[0].product.description,
@@ -203,6 +205,7 @@ export class LlmProbePlanner implements ProbePlanner {
   }
 
   async reviewPlan(packet: WorkPacket, original: ProbePlan, failures: ProbeFailure[], feedback?: ProbePlannerFeedback, options?: ProbePlanOptions): Promise<PlanReview> {
+    packet = { ...packet, browserEntry: packet.browserEntry ?? this.config.browserPath ?? "/" };
     const preparationOnlyCaseIds = options?.preparationOnlyCaseIds;
     const reviewTargets = {
       preparationOnlyCaseIds: preparationOnlyCaseIds ?? [],
@@ -218,6 +221,7 @@ export class LlmProbePlanner implements ProbePlanner {
       {
         role: "user",
         content: JSON.stringify({
+          browserEntry: packet.browserEntry ?? this.config.browserPath ?? "/",
           product: packet.requirements[0] && {
             name: packet.requirements[0].product.rootName,
             description: packet.requirements[0].product.description,

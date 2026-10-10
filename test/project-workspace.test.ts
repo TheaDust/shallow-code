@@ -70,3 +70,16 @@ test("Explicitly owned application inputs can have any layout and their rejected
     assert.equal(await readFile(join(root, "web/index.js"), "utf8"), "existing");
   });
 });
+
+test("An owned project keeps source directories named build unless declared as generated", async () => {
+  await withTempDir("shallow-source-build-", async root => {
+    await mkdir(join(root, "build"));
+    await writeFile(join(root, "build/source.js"), "source");
+    const git = await GitCliOps.open(root, { allowExisting: true, generatedPaths: ["out"] });
+    const baseline = await git.captureAccepted("input");
+    assert.equal((await runGit(root, ["show", `${baseline}:build/source.js`], false)).stdout, "source");
+    await writeFile(join(root, "build/source.js"), "attempt");
+    await git.restoreAccepted(baseline);
+    assert.equal(await readFile(join(root, "build/source.js"), "utf8"), "source");
+  });
+});

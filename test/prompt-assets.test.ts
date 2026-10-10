@@ -111,15 +111,15 @@ test("fixed system assets keep their Chinese anchors", () => {
   assert.match(loadPrompt("system", "evolution-audit-all"), /覆盖当前需求树，包括沿用项/);
   assert.match(loadPrompt("system", "evolution-audit-changes"), /只覆盖新增、历史记录缺失或明确修改项/);
   const platform = loadPrompt("system", "platform-contract");
-  assert.match(platform, /未设置时使用 3000/);
-  assert.match(platform, /<main>/);
-  assert.match(platform, /\/api\/health/);
+  assert.match(platform, /应用读取 PORT 环境变量/);
+  assert.match(platform, /具体页面内容、控件与角色按需求实现/);
+  assert.match(platform, /返回成功的 HTTP 响应/);
   const extraPorts = loadPrompt("system", "platform-extra-ports");
   assert.ok(extraPorts.includes("{{EXTRA_PORTS}}"));
-  assert.match(extraPorts, /ARC_EXTRA_PORTS/);
-  assert.match(extraPorts, /ERR_SERVER_ALREADY_LISTEN/);
-  assert.match(extraPorts, /0\.0\.0\.0/);
-  for (const key of ["PROBE_PORT", "RESERVED_PORT_CLAUSE", "INSTALL_COMMANDS", "BUILD_COMMANDS", "START_COMMAND", "HEALTH_PATH", "BASE_URL", "EXTRA_PORTS_SECTION"]) {
+  assert.match(extraPorts, /SHALLOW_EXTRA_PORTS/);
+  assert.match(extraPorts, /为各端口建立独立的服务实例/);
+  assert.match(extraPorts, /监听方式沿用项目技术栈/);
+  for (const key of ["PROBE_PORT", "RESERVED_PORT_CLAUSE", "INSTALL_COMMANDS", "BUILD_COMMANDS", "START_COMMAND", "HEALTH_PATH", "BROWSER_PATH", "BASE_URL", "EXTRA_PORTS_SECTION"]) {
     assert.ok(platform.includes(`{{${key}}}`));
   }
   assert.ok(

@@ -486,7 +486,7 @@ const handler = (req, res) => {
   res.setHeader('content-type', 'text/html'); res.writeHead(200); res.end('<main>ready</main>');
 };
 require('node:http').createServer(handler).listen(Number(process.env.PORT), '127.0.0.1');
-if (process.env.ARC_EXTRA_PORTS !== '0') require('node:http').createServer(handler).listen(${extra}, '127.0.0.1');`);
+if (process.env.SHALLOW_EXTRA_PORTS !== '0') require('node:http').createServer(handler).listen(${extra}, '127.0.0.1');`);
     const port = await reservePort();
     const contract: PlatformContract = { port, baseUrl: `http://127.0.0.1:${port}`, evaluationPort: 3000, healthPath: "/health",
       extraPorts: [extra],

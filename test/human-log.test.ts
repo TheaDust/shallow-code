@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+test("Resume logs distinguish restored implementation from new behavior evidence", () => {
+  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-10T00:00:00Z", "run_resumed", { detail: { requirementIds: ["A", "B"] } }));
+  assert.match(line, /恢复可运行实现/);
+  assert.match(line, /重新独立验收：A、B/);
+});
+
 test("Public entry samples report their evidence boundary", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-10-07T00:00:00Z", "public_entry_checked", {

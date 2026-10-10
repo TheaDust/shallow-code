@@ -1,5 +1,5 @@
-import { access, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { access, copyFile, cp, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
-import { localDefaultOutputDir, parseCliArgs } from "./src/cli.js";
+import { localDefaultOutputDir, parseInvocation, type CliOptions } from "./src/cli.js";
 import { FinalVerifier } from "./src/final-verifier.js";
 import { CandidateRuntime } from "./src/candidate-runtime.js";
 import { GitCliOps } from "./src/git-ops.js";
@@ -43,8 +43,13 @@ import {
 } from "./src/runtime-config.js";
 import { loadProjectSpec, minimalWebProjectSpec, npmExecutable, resolveRuntimeContract, type ProjectSpec } from "./src/project-spec.js";
 import { copyProjectWorkspace, hasProjectFiles, writeProjectPatch } from "./src/project-workspace.js";
+import { applyRun, digest, loadRunRecord, lockWorkspace, readResumeCheckpoint, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
+import { loadRequirementCatalog } from "./src/catalog.js";
+import { readHistoricalRequirementIds, requirementDigest, saveRequirementDigests } from "./src/evolution.js";
 
 export interface AgentExecutionContext {
+  runRecord: RunRecord;
+  resumeCheckpointSha?: string;
   sourceProjectDir?: string;
   gateway: GatewayConfig;
   pipelineOptions: PipelineOptions;
@@ -70,7 +75,16 @@ export async function main(
   execute: AgentExecution = executeProduction,
   envFile: string | null = ".env",
 ): Promise<number> {
-  const cli = parseCliArgs(argv, { defaultOutputDir: localDefaultOutputDir("main") });
+  const invocation = parseInvocation(argv, { defaultOutputDir: localDefaultOutputDir("main") });
+  if (invocation.command === "apply") {
+    const directory = await applyRun(invocation.runDirectory, invocation.allowPartial);
+    process.stderr.write(`[ShallowCode] 已应用项目改动：${directory}\n`);
+    return 0;
+  }
+  const prior = invocation.command === "resume" ? await loadRunRecord(invocation.runDirectory) : undefined;
+  const cli: CliOptions = invocation.command === "run" ? invocation.options : {
+    requirementsDir: prior!.requirementsDir, outputDir: prior!.outputDir, budgetMs: invocation.budgetMs,
+  };
   const mergedEnv = await mergeGatewayEnv(env, envFile);
   const gateway = readGatewayConfig(mergedEnv);
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
@@ -81,10 +95,17 @@ export async function main(
   }
   if (cli.projectDir) await access(cli.projectDir);
   await mkdir(cli.outputDir, { recursive: true });
-  const runId = `${process.pid}-${Date.now()}`;
+  const runId = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
   // An existing Web project declares how it runs; a blank output directory gets
   // the shipped minimal-web template's declared contract.
-  const spec = await loadProjectSpecOrDefault(cli.outputDir);
+  const spec = prior?.projectSpec ?? await loadProjectSpecOrDefault(cli.outputDir);
+  const requirementFiles = await snapshotFiles(cli.requirementsDir);
+  const requirementsDigest = digest(JSON.stringify(requirementFiles));
+  const contractDigest = await controllerContractDigest(spec);
+  if (prior && (prior.requirementsDigest !== requirementsDigest || prior.contractDigest !== contractDigest)) {
+    throw new Error("Resume inputs changed (requirements, project contract, prompts or engine); start a new run for the updated inputs");
+  }
+  const checkpoint = prior && invocation.command === "resume" ? await readResumeCheckpoint(invocation.runDirectory, prior) : undefined;
   const evaluationPort = parseEvaluationPort(mergedEnv);
   const declaredExtraPorts = spec.extraPorts ?? [];
   const probePortOverride = parseProbePortOverride(mergedEnv);
@@ -99,12 +120,26 @@ export async function main(
   const referenceImages = referenceImagesEnabled(mergedEnv);
   const runDirectory = join(runDir, runId);
   await assertPrivateRunDirectory(cli.outputDir, runDirectory);
-  const inheritedProject = cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
-  const workingDirectory = inheritedProject
+  await assertPrivateRunDirectory(cli.requirementsDir, runDirectory);
+  const requirementSnapshot = join(runDirectory, "requirements");
+  for (const path of Object.keys(requirementFiles)) {
+    const destination = join(requirementSnapshot, path);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(join(cli.requirementsDir, path), destination);
+  }
+  if (digest(JSON.stringify(await snapshotFiles(requirementSnapshot))) !== requirementsDigest) throw new Error("Requirements changed while copying the run inputs");
+  const inheritedProject = prior ? prior.sourceProjectDir !== undefined || prior.stageStartingPoint === "inherited_application" : cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
+  const workingDirectory = inheritedProject && !prior
     ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), spec.generatedPaths)
     : cli.outputDir;
+  const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
+  const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
+  const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME)) : undefined;
+  const historicalRequirements = prior?.historicalRequirements ?? (sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined);
   const pipelineOptions: PipelineOptions = {
-    requirementsFile,
+    requirementDigests,
+    historicalRequirements,
+    requirementsFile: join(requirementSnapshot, "requirements.yaml"),
     outputDir: workingDirectory,
     ledgerFile: join(runDir, runId, "run-ledger.jsonl"),
     totalBudgetMs: cli.budgetMs,
@@ -114,12 +149,31 @@ export async function main(
       ...(declaredExtraPorts.length > 0 ? { extraPorts: declaredExtraPorts } : {}),
     }),
     progressDir: join(workingDirectory, PROGRESS_DIR_NAME),
-    ...(inheritedProject ? { historicalProgressDir: join(cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
-    auditInheritedRequirements: parseEvolutionAuditInherited(mergedEnv),
-    generateFinalAuditPlans: parseFinalAuditGeneratePlan(mergedEnv),
+    ...(inheritedProject ? { historicalProgressDir: join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
+    auditInheritedRequirements: prior?.auditInheritedRequirements ?? parseEvolutionAuditInherited(mergedEnv),
+    generateFinalAuditPlans: prior?.generateFinalAuditPlans ?? parseFinalAuditGeneratePlan(mergedEnv),
+    ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
   };
+  const runRecord: RunRecord = {
+    version: 1, requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
+    outputDir: workingDirectory,
+    ...(prior?.sourceProjectDir ? { sourceProjectDir: prior.sourceProjectDir } : inheritedProject && !prior ? { sourceProjectDir: cli.outputDir } : {}),
+    inputFiles: prior?.inputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
+    requirementDigests,
+    historicalRequirements,
+    ...(prior ? { inputBaseline: prior.inputBaseline, stageStartingPoint: prior.stageStartingPoint, resumedFrom: invocation.command === "resume" ? invocation.runDirectory : undefined } : {}),
+    auditInheritedRequirements: pipelineOptions.auditInheritedRequirements ?? false,
+    generateFinalAuditPlans: pipelineOptions.generateFinalAuditPlans ?? false,
+  };
+  await saveRunRecord(runDirectory, runRecord);
+  if (invocation.command === "resume") {
+    try { await cp(join(invocation.runDirectory, "plans"), join(runDirectory, "plans"), { recursive: true }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
   const summary = await execute({
-    ...(inheritedProject ? { sourceProjectDir: cli.outputDir } : {}),
+    runRecord, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
+    ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
     gateway,
     pipelineOptions,
     modelTimeouts: deriveModelTimeouts(cli.budgetMs),
@@ -129,7 +183,23 @@ export async function main(
   }).catch((error: unknown) => {
     throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), [gateway.apiKey]));
   });
-  return summary.status === "failed" ? 1 : 0;
+  const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
+  await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
+    [...summary.verifiedRequirementIds, ...(summary.skippedRequirementIds ?? [])]);
+  if (patch) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
+  await writeRunReport(runDirectory, summary, patch);
+  return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
+}
+
+async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
+  const promptDir = new URL("./prompts/", import.meta.url);
+  const hash = createHash("sha256").update(JSON.stringify(resolveRuntimeContract(spec, { port: 1 })))
+    .update(JSON.stringify(PROBE_PLAN_JSON_SCHEMA)).update(await readFile(new URL("./package-lock.json", import.meta.url)));
+  for (const name of (await readdir(promptDir, { recursive: true })).filter(name => name.endsWith(".md")).sort()) {
+    const path = name.replaceAll("\\", "/");
+    hash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
+  }
+  return hash.digest("hex");
 }
 
 /**
@@ -174,6 +244,7 @@ async function executeProduction(
   process.stderr.write(`[ShallowCode] 最终验收补生成 plan：${pipelineOptions.generateFinalAuditPlans ? "已开启" : "已关闭（仅复用已有 plan）"}\n`);
   const candidate = new CandidateRuntime(pipelineOptions.outputDir,
     join(dirname(runLogFile), "candidate"), pipelineOptions.platformContract);
+  let releaseWorkspace: (() => Promise<void>) | undefined;
   try {
     const builder = new PromptBuilder(new PiWorkerClient(gateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined), {
       timeoutMs: modelTimeouts.builderTimeoutMs,
@@ -184,14 +255,24 @@ async function executeProduction(
     });
     const planner = new LlmProbePlanner({
       ...gateway,
+      browserPath: pipelineOptions.platformContract.browserPath,
       timeoutMs: modelTimeouts.plannerTimeoutMs,
     });
     const runner = new PlaywrightProbeRunner();
     const lifecycle = candidate;
     const git = await GitCliOps.open(pipelineOptions.outputDir, {
-      allowExisting: sourceProjectDir !== undefined, generatedPaths: pipelineOptions.platformContract.generatedPaths,
+      allowExisting: sourceProjectDir !== undefined || context.resumeCheckpointSha !== undefined, generatedPaths: pipelineOptions.platformContract.generatedPaths,
     });
-    const inputBaseline = await git.captureAccepted("shallow: input baseline");
+    releaseWorkspace = await lockWorkspace(pipelineOptions.outputDir);
+    if (context.resumeCheckpointSha) {
+      if (await git.hasApplicationChanges(context.resumeCheckpointSha)) await git.captureAccepted("shallow: interrupted work before resume");
+      await git.restoreAccepted(context.resumeCheckpointSha);
+      const actualSpec = await loadProjectSpecOrDefault(pipelineOptions.outputDir);
+      if (await controllerContractDigest(actualSpec) !== context.runRecord.contractDigest) throw new Error("Checkpoint project configuration changed; start a new run using that project configuration");
+    }
+    const inputBaseline = context.runRecord.inputBaseline ?? await git.captureAccepted("shallow: input baseline");
+    context.runRecord.inputBaseline = inputBaseline;
+    await saveRunRecord(dirname(runLogFile), context.runRecord);
     if (sourceProjectDir) {
       await writeFile(join(dirname(runLogFile), "workspace.json"), JSON.stringify({
         sourceDirectory: sourceProjectDir, directory: pipelineOptions.outputDir, baseline: inputBaseline,
@@ -204,13 +285,17 @@ async function executeProduction(
       pipelineOptions.outputDir,
       pipelineOptions.platformContract,
     );
-    const stageStartingPoint = sourceProjectDir !== undefined ? "inherited_application" as const : starterScaffold.status === "skipped_existing_application"
+    const stageStartingPoint = context.resumeCheckpointSha && context.runRecord.stageStartingPoint
+      ? context.runRecord.stageStartingPoint
+      : sourceProjectDir !== undefined ? "inherited_application" as const : starterScaffold.status === "skipped_existing_application"
       ? "inherited_application" as const
       : starterScaffold.status === "installed"
         ? "blank_template" as const
         : "unknown" as const;
+    context.runRecord.stageStartingPoint = context.resumeCheckpointSha ? context.runRecord.stageStartingPoint : stageStartingPoint;
+    await saveRunRecord(dirname(runLogFile), context.runRecord);
     process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
-    const finalVerifier = new FinalVerifier(runner, lifecycle, candidate);
+    const finalVerifier = new FinalVerifier(runner, lifecycle, candidate, context.runRecord.projectSpec);
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir));
     const promptDir = new URL("./prompts/", import.meta.url);
     const promptHash = createHash("sha256");
@@ -218,34 +303,26 @@ async function executeProduction(
       const path = name.replaceAll("\\", "/");
       promptHash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
     }
-    try {
-      const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
-        grouper: new LlmFeatureGrouper({ ...gateway, timeoutMs: Infinity }),
-        builder,
-        planner,
-        runner,
-        git,
-        appLifecycle: lifecycle,
-        candidate,
-        clock: { nowMs: () => Date.now() },
-        finalVerifier,
-        logSink,
-        diagnosticSecrets: [gateway.apiKey],
-        runMetadata: { model: gateway.model, builderTimeoutMs: modelTimeouts.builderTimeoutMs,
-          builderContextWindow,
-          starterScaffold,
-          promptSha256: promptHash.digest("hex"),
-          probeSchemaSha256: createHash("sha256").update(JSON.stringify(PROBE_PLAN_JSON_SCHEMA)).digest("hex"),
-        },
-      });
-      if (sourceProjectDir) {
-        const patch = await writeProjectPatch(pipelineOptions.outputDir, inputBaseline, dirname(runLogFile));
-        process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
-      }
-      return summary;
-    } finally {
-      // Nothing else owns the run directory; the ledger and run log are the record.
-    }
+    const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
+      grouper: new LlmFeatureGrouper({ ...gateway, timeoutMs: Infinity }),
+      builder,
+      planner,
+      runner,
+      git,
+      appLifecycle: lifecycle,
+      candidate,
+      clock: { nowMs: () => Date.now() },
+      finalVerifier,
+      logSink,
+      diagnosticSecrets: [gateway.apiKey],
+      runMetadata: { model: gateway.model, builderTimeoutMs: modelTimeouts.builderTimeoutMs,
+        builderContextWindow,
+        starterScaffold,
+        promptSha256: promptHash.digest("hex"),
+        probeSchemaSha256: createHash("sha256").update(JSON.stringify(PROBE_PLAN_JSON_SCHEMA)).digest("hex"),
+      },
+    });
+    return summary;
   } finally {
     try {
       await candidate.dispose();
@@ -253,6 +330,7 @@ async function executeProduction(
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`[ShallowCode] 候选工作区清理失败：${sanitizeDiagnosticText(message, [gateway.apiKey])}\n`);
     }
+    await releaseWorkspace?.();
   }
 }
 

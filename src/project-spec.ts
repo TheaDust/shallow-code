@@ -36,6 +36,7 @@ export interface ProjectSpec {
   env?: Record<string, string>;
   /** Path probed on the base URL to decide the application is ready. */
   readyPath?: string;
+  browserPath?: string;
   /** Additional ports the application must bind, declared rather than inferred. */
   extraPorts?: number[];
   /** Project-relative directories whose manifests define the dependency inputs. */
@@ -123,6 +124,7 @@ export function parseProjectSpec(raw: unknown, origin = PROJECT_SPEC_FILENAME): 
   if (record.tests !== undefined) spec.tests = parseTestTargets(record.tests, `${origin}.tests`);
   if (record.env !== undefined) spec.env = parseEnv(record.env, `${origin}.env`);
   if (record.readyPath !== undefined) spec.readyPath = parseReadyPath(record.readyPath, `${origin}.readyPath`);
+  if (record.browserPath !== undefined) spec.browserPath = parseReadyPath(record.browserPath, `${origin}.browserPath`);
   if (record.extraPorts !== undefined) spec.extraPorts = parsePorts(record.extraPorts, `${origin}.extraPorts`);
   if (record.dependencyPaths !== undefined) {
     spec.dependencyPaths = parseRelativePaths(record.dependencyPaths, `${origin}.dependencyPaths`);
@@ -169,6 +171,7 @@ export function resolveRuntimeContract(spec: ProjectSpec, ports: RuntimePorts): 
     ...(spec.dependencyPaths ? { dependencyPaths: [...spec.dependencyPaths] } : {}),
     generatedPaths: [...(spec.generatedPaths ?? [])],
     healthPath: spec.readyPath ?? DEFAULT_READY_PATH,
+    browserPath: spec.browserPath ?? "/",
     ...(extraPorts.length > 0 ? { extraPorts } : {}),
     buildTimeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
     startTimeoutMs: spec.start.timeoutMs ?? DEFAULT_START_TIMEOUT_MS,
@@ -247,7 +250,8 @@ function parseEnv(value: unknown, location: string): Record<string, string> {
 }
 
 function parseReadyPath(value: unknown, location: string): string {
-  if (typeof value !== "string" || !value.startsWith("/")) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") ||
+    /[\\\u0000-\u0020\u007f]/.test(value) || /(^|\/)\.\.(\/|$)/.test(value)) {
     throw new Error(`${location} must be an absolute path beginning with "/"`);
   }
   return value;

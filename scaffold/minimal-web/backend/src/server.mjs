@@ -58,7 +58,7 @@ if (!Number.isInteger(primaryPort) || primaryPort <= 0 || primaryPort > 65535) {
 }
 const ports = [
   primaryPort,
-  ...(process.env.ARC_EXTRA_PORTS === "0" ? [] : extraPorts),
+  ...(process.env.SHALLOW_EXTRA_PORTS === "0" ? [] : extraPorts),
 ].filter((port, index, all) => Number.isInteger(port) && port > 0 && port <= 65535 && all.indexOf(port) === index);
 
 const servers = ports.map((port) => createServer((request, response) => {

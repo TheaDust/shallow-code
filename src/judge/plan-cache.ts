@@ -9,7 +9,7 @@ import { assertCoverageAccountedFor, assertOutcomeAccounting } from "./probe-cov
 
 /** A packet as `parseProbePlan` accepts it: the cache must re-validate on read. */
 type CachedPacket = Pick<WorkPacket, "id" | "requirementIds"> &
-  Partial<Pick<WorkPacket, "requirements" | "prerequisites">>;
+  Partial<Pick<WorkPacket, "requirements" | "prerequisites" | "browserEntry">>;
 
 /**
  * Disk-backed probe plan cache keyed by audit packet ID.

@@ -1,18 +1,62 @@
-import { readFile, readdir } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { progressPlansDirectory } from "./progress-journal.js";
-import type { RequirementCatalog } from "./types.js";
+import type { AtomicRequirement, RequirementCatalog } from "./types.js";
+
+export interface HistoricalRequirements {
+  requirementIds: string[];
+  requirementDigests: Record<string, string>;
+  plans: number;
+  ignoredPlans: number;
+  planRequirementCount: number;
+  checkpointRequirementCount: number;
+  checkpointSupplementCount: number;
+}
+
+export function requirementDigest(requirement: AtomicRequirement, referenceFiles: Readonly<Record<string, string>> = {}): string {
+  return createHash("sha256").update(JSON.stringify({ name: requirement.name, text: requirement.text,
+    dependencyIds: requirement.dependencyIds, externalDependencyIds: requirement.externalDependencyIds ?? [],
+    ancestors: requirement.ancestors.map(a => a.id === requirement.product.rootId ? { id: a.id, description: a.description } : a),
+    scenarios: requirement.scenarioContracts ?? requirement.scenarios,
+    references: requirement.references.map(path => [path, referenceFiles[path] ?? null]),
+    productDescription: requirement.product.description, seedData: requirement.product.seedData,
+  })).digest("hex");
+}
+
+export async function saveRequirementDigests(directory: string, digests: Record<string, string>, acceptedIds: readonly string[]): Promise<void> {
+  await mkdir(directory, { recursive: true });
+  if ((await lstat(directory)).isSymbolicLink()) throw new Error("Progress directory must not be a link");
+  const file = join(directory, "requirements.json");
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  const current = Object.fromEntries(acceptedIds.filter(id => digests[id]).map(id => [id, digests[id]]));
+  await writeFile(temporary, JSON.stringify({ version: 1, digests: current }, null, 2) + "\n", { flag: "wx" });
+  await rename(temporary, file);
+}
+
+async function readRequirementDigests(directory: string): Promise<Record<string, string> | undefined> {
+  try {
+    const raw: unknown = JSON.parse(await readFile(join(directory, "requirements.json"), "utf8"));
+    if (!record(raw) || raw.version !== 1 || !record(raw.digests) ||
+      !Object.entries(raw.digests).every(([id, hash]) => id && typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return {};
+    return raw.digests as Record<string, string>;
+  } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? undefined : {}; }
+}
 
 /** Freeze historical identity only; checkpoints never supply a current SHA or verdict. */
 export async function readHistoricalRequirementIds(progressDirectory: string) {
-  const [plans, log] = await Promise.all([
+  const [plans, log, requirementDigests] = await Promise.all([
     readHistoricalPlanIds(progressPlansDirectory(progressDirectory)),
     readFile(join(progressDirectory, "progress.log"), "utf8").catch(() => ""),
+    readRequirementDigests(progressDirectory),
   ]);
   const checkpointIds = historicalCheckpointIds(log);
-  const requirementIds = new Set([...plans.requirementIds, ...checkpointIds]);
+  // New provenance lists completed contracts. Legacy runnable checkpoints may
+  // include unfinished behavior, so they cannot supplement this newer record.
+  const requirementIds = requirementDigests === undefined
+    ? new Set([...plans.requirementIds, ...checkpointIds]) : new Set(Object.keys(requirementDigests));
   return {
-    requirementIds, plans: plans.plans, ignoredPlans: plans.ignoredPlans,
+    requirementIds, requirementDigests: requirementDigests ?? {}, plans: plans.plans, ignoredPlans: plans.ignoredPlans,
     planRequirementCount: plans.requirementIds.size, checkpointRequirementCount: checkpointIds.size,
     checkpointSupplementCount: [...checkpointIds].filter(id => !plans.requirementIds.has(id)).length,
   };
@@ -68,13 +112,16 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function selectEvolutionScope(catalog: RequirementCatalog, historicalIds: ReadonlySet<string>): {
+export function selectEvolutionScope(catalog: RequirementCatalog, historicalIds: ReadonlySet<string>,
+  historicalDigests: Readonly<Record<string, string>> = {}, currentDigests: Readonly<Record<string, string>> = {}): {
   addedRequirementIds: string[]; changedRequirementIds: string[]; inheritedRequirementIds: string[];
 } {
   const scope = { addedRequirementIds: [] as string[], changedRequirementIds: [] as string[], inheritedRequirementIds: [] as string[] };
   for (const requirement of catalog.requirements) {
     // Match the explicit, ordered section headings of the current Evolution format.
     if (/^[ \t]*Original Feature Description[ \t]*\r?\n[\s\S]*?^[ \t]*Modified Feature Description[ \t]*\r?\n/m.test(requirement.text)) {
+      scope.changedRequirementIds.push(requirement.id);
+    } else if (historicalDigests[requirement.id] && historicalDigests[requirement.id] !== (currentDigests[requirement.id] ?? requirementDigest(requirement))) {
       scope.changedRequirementIds.push(requirement.id);
     } else if (!historicalIds.has(requirement.id)) {
       scope.addedRequirementIds.push(requirement.id);

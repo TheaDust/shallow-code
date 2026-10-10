@@ -4,11 +4,49 @@ import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
 import { compileBuilderPrompt } from "../src/builder/prompt.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
+import { readHistoricalRequirementIds, requirementDigest, saveRequirementDigests } from "../src/evolution.js";
 import { HumanRunFormatter } from "../src/human-log.js";
 import { PlanCache } from "../src/judge/plan-cache.js";
 import { ProgressJournal } from "../src/progress-journal.js";
 import { auditPackets } from "../src/scheduler.js";
 import { fail, pass, testPlan, withModulePipeline, type PipelineFixture } from "./helpers/module-pipeline.js";
+
+test("Ordinary inherited edits with unchanged IDs schedule changed contracts and audit restored dependencies", async () => {
+  await withModulePipeline(async f => {
+    const original = await loadRequirementCatalog(f.options.requirementsFile);
+    const old = Object.fromEntries(original.requirements.map(r => [r.id, requirementDigest(r)]));
+    const directory = join(f.options.outputDir, "shallow-progress");
+    await saveRequirementDigests(directory, old, ["A", "B", "C"]);
+    const source = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    source.children[0].children[0].description = "Display the updated main workspace.";
+    await writeFile(f.options.requirementsFile, JSON.stringify(source));
+    f.options.stageStartingPoint = "inherited_application";
+    f.deps.grouper = { group: async catalog => {
+      assert.deepEqual(catalog.requirements.map(r => r.id), ["A"]);
+      return { groups: [{ requirementIds: ["A"], purpose: "Updated workspace" }] };
+    } };
+    const summary = await f.run();
+    assert.equal(summary.status, "delivered");
+    assert.deepEqual(f.builder.requests.flatMap(r => "packet" in r ? r.packet.requirementIds : []), ["A"]);
+    assert.deepEqual(summary.verifiedRequirementIds, ["A", "B", "C"]);
+  });
+});
+
+test("Resume keeps the original increment scope even when source provenance is updated later", async () => {
+  await withModulePipeline(async f => {
+    f.options.stageStartingPoint = "inherited_application";
+    f.options.auditInheritedRequirements = false;
+    const history = await readHistoricalRequirementIds(join(f.options.outputDir, "shallow-progress"));
+    f.options.historicalRequirements = { ...history, requirementIds: [...history.requirementIds] };
+    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
+    await saveRequirementDigests(join(f.options.outputDir, "shallow-progress"), Object.fromEntries(catalog.requirements.map(r => [r.id, requirementDigest(r)])), ["A", "B", "C"]);
+    f.options.resumedRequirementIds = ["A", "B", "C"];
+    const summary = await f.run();
+    assert.equal(summary.status, "delivered");
+    assert.deepEqual(summary.skippedRequirementIds, undefined);
+    assert.deepEqual(summary.verifiedRequirementIds, ["A", "B", "C"]);
+  });
+});
 
 const modified = "Original Feature Description\n\nDisplay the original workspace.\n\nModified Feature Description\n\nDisplay the updated workspace.";
 

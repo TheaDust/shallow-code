@@ -45,7 +45,7 @@ export class GitCliOps implements GitOps {
       throw new Error("Output directory must be a Git repository root: " + canonical);
     }
     if (options.allowExisting) await ensureLocalExclude(canonical, options.generatedPaths);
-    await ensureIgnoreRules(canonical);
+    await ensureIgnoreRules(canonical, options.generatedPaths ?? (options.allowExisting ? [] : undefined));
     return new GitCliOps(canonical);
   }
 
@@ -205,7 +205,7 @@ export function runGit(
   });
 }
 
-async function ensureIgnoreRules(root: string): Promise<void> {
+async function ensureIgnoreRules(root: string, generatedPaths?: readonly string[]): Promise<void> {
   const gitignorePath = join(root, ".gitignore");
   try {
     await readFile(gitignorePath, "utf8");
@@ -213,7 +213,9 @@ async function ensureIgnoreRules(root: string): Promise<void> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
-  await writeFile(gitignorePath, GITIGNORE_CONTENT, "utf8");
+  const content = generatedPaths === undefined ? GITIGNORE_CONTENT
+    : ["node_modules/", ".env", ...generatedPaths.map(path => `/${path}/`), ""].join("\n");
+  await writeFile(gitignorePath, content, "utf8");
   await requireGit(root, ["add", ".gitignore"]);
   await requireGit(root, [
     "-c",
@@ -234,7 +236,7 @@ async function requireEmptyOutputDirectory(root: string): Promise<void> {
   if (unexpected.length) throw new Error("Output directory must be empty before the first run: " + root);
 }
 
-const LOCAL_EXCLUDE_RULES = ["node_modules/", "dist/", "build/", ".next/", ".env"];
+const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env"];
 
 /** Keep dependency and build output out of the base commit without rewriting
  * the template's own .gitignore, which its author still owns. */
