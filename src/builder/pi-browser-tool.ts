@@ -1,6 +1,6 @@
 import type { Browser, BrowserContext, Page } from "@playwright/test";
 import { Type } from "typebox";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { BuilderTool } from "./tool-contract.js";
 
 const SCRIPT_TIMEOUT_MS = 60_000;
 const NAVIGATION_TIMEOUT_MS = 30_000;
@@ -46,7 +46,7 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as
   ...args: string[]
 ) => (page: Page, context: BrowserContext, assertion: PlaywrightRuntime["expect"]) => Promise<unknown>;
 
-export function createBrowserTool(): ToolDefinition<typeof parameters> {
+export function createBrowserTool(): BuilderTool<typeof parameters> {
   return {
     name: "browser",
     label: "Browser (expensive)",

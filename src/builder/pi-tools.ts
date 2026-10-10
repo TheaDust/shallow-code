@@ -2,7 +2,7 @@ import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { Type } from "typebox";
-import { createReadToolDefinition, createEditToolDefinition, createWriteToolDefinition, createBashToolDefinition, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { BuilderTool, ShellExecutor } from "./tool-contract.js";
 import { toolEnvironment } from "../process-lifecycle.js";
 import { PROGRESS_DIR_NAME } from "../progress-journal.js";
 import type { PlatformContract } from "../types.js";
@@ -133,57 +133,43 @@ function scriptNameIsTest(name: string): boolean {
   return normalized.split(/[:.\-]/).some(part => part === "test" || part === "tests");
 }
 
-export function createPiTools(cwd: string, managedApp = false, contract?: PlatformContract, privateDirectory?: string): ToolDefinition[] {
-  const read = createReadToolDefinition(cwd) as unknown as ToolDefinition;
-  const guardedRead = { ...read, execute: async (...args: Parameters<typeof read.execute>) => {
-    const params = args[1] as { path: string };
-    await assertToolPath(cwd, params.path);
-    return (read.execute as ToolDefinition["execute"])(args[0], args[1], args[2], args[3], args[4]);
-  } } as ToolDefinition;
-  const writable = [createEditToolDefinition(cwd), createWriteToolDefinition(cwd)] as unknown as ToolDefinition[];
-  const guardedWritable = writable.map(tool => ({ ...tool, execute: async (...args: Parameters<typeof tool.execute>) => {
-    const params = args[1] as { path: string };
-    await assertToolPath(cwd, params.path);
-    return (tool.execute as ToolDefinition["execute"])(args[0], args[1], args[2], args[3], args[4]);
-  } })) as ToolDefinition[];
-  const shell = createBashToolDefinition(cwd, { operations: {
-    exec: async (command, directory, { onData, signal, timeout }) => {
-      assertToolCommand(command, privateDirectory, cwd);
-      assertNotTestCommand(command);
-      await assertToolPath(cwd, directory);
+export function createShellExecutor(cwd: string, contract?: PlatformContract, privateDirectory?: string): ShellExecutor {
+  return async (command, directory, { onData, signal, timeout }) => {
+    assertToolCommand(command, privateDirectory, cwd);
+    assertNotTestCommand(command);
+    await assertToolPath(cwd, directory);
+    signal?.throwIfAborted();
+    const windows = process.platform === "win32";
+    const child = spawn(windows ? "powershell.exe" : "/bin/bash",
+      windows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] : ["--noprofile", "--norc", "-c", command],
+      { cwd: directory, env: { ...toolEnvironment(), ...contract?.env,
+        ...(contract?.dataDirectory ? { [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: contract.dataDirectory } : {}) },
+        windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"] });
+    child.stdout.on("data", onData); child.stderr.on("data", onData);
+    let timer: NodeJS.Timeout | undefined;
+    const abort = () => child.kill();
+    signal?.addEventListener("abort", abort, { once: true });
+    let timedOut = false;
+    if (timeout && timeout > 0) timer = setTimeout(() => { timedOut = true; abort(); }, timeout * 1000);
+    try {
+      const exitCode = await new Promise<number | null>((res, rej) => { child.once("error", rej); child.once("exit", res); });
       signal?.throwIfAborted();
-      const windows = process.platform === "win32";
-      const child = spawn(windows ? "powershell.exe" : "/bin/bash",
-        windows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] : ["--noprofile", "--norc", "-c", command],
-        { cwd: directory, env: { ...toolEnvironment(), ...contract?.env,
-          ...(contract?.dataDirectory ? { [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: contract.dataDirectory } : {}) },
-          windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"] });
-      child.stdout.on("data", onData); child.stderr.on("data", onData);
-      let timer: NodeJS.Timeout | undefined;
-      const abort = () => child.kill();
-      signal?.addEventListener("abort", abort, { once: true });
-      let timedOut = false;
-      if (timeout && timeout > 0) timer = setTimeout(() => { timedOut = true; abort(); }, timeout * 1000);
-      try {
-        const exitCode = await new Promise<number | null>((res, rej) => { child.once("error", rej); child.once("exit", res); });
-        signal?.throwIfAborted();
-        if (timedOut) throw new Error("Command timed out");
-        return { exitCode };
-      } finally {
-        if (timer) clearTimeout(timer);
-        signal?.removeEventListener("abort", abort);
-        child.stdout.destroy(); child.stderr.destroy();
-      }
-    },
-  } });
-  // Retain the SDK schema and output truncation, replace only the execution backend.
-  shell.name = "shell";
-  shell.description = `Run a short ${process.platform === "win32" ? "PowerShell" : "Bash"} command in the application. Use this for file searches, builds and type checks; run tests with the run_tests tool instead. ${managedApp ? "Use the app tool to start and stop the application for browser checks." : "Do not start persistent servers; briefly starting the app in the background for a browser-tool check is allowed when instructed."}`;
+      if (timedOut) throw new Error("Command timed out");
+      return { exitCode };
+    } finally {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      child.stdout.destroy(); child.stderr.destroy();
+    }
+  };
+}
+
+export function createBuilderTools(cwd: string, managedApp = false, contract?: PlatformContract): BuilderTool[] {
   const listCapabilityParameters = Type.Object({});
   const installCapabilityParameters = Type.Object({
     id: Type.String({ description: "Approved capability id returned by list_capabilities" }),
   });
-  const listCapabilityTool: ToolDefinition<typeof listCapabilityParameters> = {
+  const listCapabilityTool: BuilderTool<typeof listCapabilityParameters> = {
     name: "list_capabilities",
     label: "List approved capabilities",
     description: "List controller-approved, task-neutral capability packs and whether each is already installed. The catalog never exposes business code or arbitrary packages.",
@@ -196,7 +182,7 @@ export function createPiTools(cwd: string, managedApp = false, contract?: Platfo
       return { content: [{ type: "text" as const, text: JSON.stringify(capabilities, null, 2) }], details: { capabilities } };
     },
   };
-  const installCapabilityTool: ToolDefinition<typeof installCapabilityParameters> = {
+  const installCapabilityTool: BuilderTool<typeof installCapabilityParameters> = {
     name: "install_capability",
     label: "Install approved capability",
     description: "Install one controller-approved, task-neutral capability pack. Existing differing files are never overwritten; arbitrary npm/git sources are not accepted.",
@@ -209,6 +195,6 @@ export function createPiTools(cwd: string, managedApp = false, contract?: Platfo
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
     },
   };
-  return [guardedRead, ...guardedWritable, shell as unknown as ToolDefinition, createTestTool(cwd, { contract }), createBrowserTool(),
+  return [createTestTool(cwd, { contract }), createBrowserTool(),
     listCapabilityTool, installCapabilityTool, ...(managedApp ? [createAppTool()] : [])];
 }

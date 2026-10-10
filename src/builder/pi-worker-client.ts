@@ -21,6 +21,7 @@ export interface PiWorkerRequest extends CodingAgentRequest {
   sseCaptureDir?: string;
 }
 export interface PiWorkerResult extends CodingAgentResult {
+  engineVersion?: string;
   sessionFile?: string;
   imageUnsupported?: boolean;
   toolCalls?: number;
@@ -32,6 +33,7 @@ export interface PiWorkerResult extends CodingAgentResult {
 }
 export interface PiWorkerProgress {
   type: "builder_progress";
+  engineVersion: string;
   sessionId: string;
   toolCalls: number;
   compactions: number;
@@ -138,7 +140,7 @@ export class PiWorkerClient implements CodingAgentPort {
     if (result.termination?.recoveryError) {
       result.termination.recoveryError = sanitizeDiagnosticText(result.termination.recoveryError, [this.gateway.apiKey], 1000);
     }
-    result.execution = { engine: "pi", version: "0.73.1", nodeVersion: process.version, workerPid: child.pid!,
+    result.execution = { engine: "pi", version: result.engineVersion ?? "unavailable", nodeVersion: process.version, workerPid: child.pid!,
       resumed: Boolean(prior), durationMs: Date.now() - started, cleanupMs, toolCalls: result.toolCalls,
       compactions: result.compactions, peakRssBytes: result.peakRssBytes,
       usage: result.usage ?? { status: "unavailable" }, ...(result.timing ? { timing: result.timing } : {}),

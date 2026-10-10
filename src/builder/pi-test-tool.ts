@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { access, readFile, readdir } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { BuilderTool } from "./tool-contract.js";
 import { toolEnvironment } from "../process-lifecycle.js";
 import { spawnProcess } from "../process-spawn.js";
 import { stopProcess } from "../final-verifier.js";
@@ -36,7 +36,7 @@ interface SuiteResult {
 const DIGEST_IGNORED_DIRECTORIES = new Set(["node_modules", ".git", ".arc", PROGRESS_DIR_NAME]);
 
 /** Execute the frozen project declaration; template tests use single-worker commands. */
-export function createTestTool(cwd: string, options: TestToolOptions = {}): ToolDefinition<typeof parameters> {
+export function createTestTool(cwd: string, options: TestToolOptions = {}): BuilderTool<typeof parameters> {
   const targets = options.contract ? options.contract.testTargets ?? [] : minimalWebProjectSpec(process.execPath).tests!;
   const successful = new Map<string, SuiteResult>();
   const environment = { ...toolEnvironment(), ...options.contract?.env, CI: "1",

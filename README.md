@@ -22,6 +22,10 @@ Copy-Item .env.example .env
 
 在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。
 
+Pi 通过 `CodingAgentPort` 在独立 Worker 中执行。[pi-sdk-adapter.ts](src/builder/pi-sdk-adapter.ts) 集中 SDK 导入、工具转换、会话恢复、压缩重试和完成判断；项目工具使用 [tool-contract.ts](src/builder/tool-contract.ts)，运行日志记录实际 SDK 版本。模型描述与上下文窗口配置位于 `pi-model-config.ts`。
+
+Pi 保持精确版本与锁文件，按所需功能或修复主动升级。升级时先运行 `npx tsx --test test/pi-*.test.ts`，再运行 `npm run test:all`；真实网关冒烟按下方凭证验证说明启用。
+
 **创建和修改 Web 应用**
 
 ```powershell

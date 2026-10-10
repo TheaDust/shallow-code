@@ -49,7 +49,7 @@ async function makeApp(root: string, { frontend = true, backend = true } = {}): 
 }
 
 function execute(tool: ReturnType<typeof createTestTool>, params: { target: string; filter?: string; reuse?: boolean }, signal?: AbortSignal) {
-  return tool.execute("call-1", params as never, signal as never, {} as never, {} as never);
+  return tool.execute("call-1", params, signal);
 }
 
 test("Declared tests run from a custom directory with project environment and isolated data", async () => {

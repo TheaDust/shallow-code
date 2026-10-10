@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
+import type { BuilderTool } from "./tool-contract.js";
 import type { AppAction, AppStatus } from "./builder-app.js";
 
 const parameters = Type.Object({ action: Type.Union([Type.Literal("start"), Type.Literal("status"), Type.Literal("stop")]) });
 
-export function createAppTool(): ToolDefinition<typeof parameters> {
+export function createAppTool(): BuilderTool<typeof parameters> {
   return {
     name: "app", label: "Manage development app",
     description: "Start, inspect or stop the Web app using its declared project commands, environment, readiness path and isolated data. Install dependencies and build first. start waits for readiness and returns baseUrl for browser. stop only stops this call's owned app. Stop before rebuilding, then start to load changes.",

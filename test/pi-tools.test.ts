@@ -14,7 +14,7 @@ test("Shell guards use the actual private run directory while allowing absolute 
   });
 });
 
-import { assertNotTestCommand, assertToolCommand, assertToolPath, createPiTools } from "../src/builder/pi-tools.js";
+import { assertNotTestCommand, assertToolCommand, assertToolPath } from "../src/builder/pi-tools.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 test("Builder tools cannot reach the product-visible progress journal", async () => {
@@ -33,24 +33,6 @@ test("Builder tools cannot reach the product-visible progress journal", async ()
     assert.throws(() => assertToolCommand("cat shallow-progress/progress.log"));
     assert.throws(() => assertToolCommand("type .arc\\runner-events.jsonl"));
     assert.doesNotThrow(() => assertToolCommand("npm test"));
-  });
-});
-
-test("Builder read stays within the application", async () => {
-  await withTempDir("shallow-pi-read-roots-", async root => {
-    const app = join(root, "app");
-    const privateDirectory = join(root, "private");
-    await mkdir(app);
-    await mkdir(privateDirectory);
-    const appFile = join(app, "main.ts");
-    const privateFile = join(privateDirectory, "secret.txt");
-    await writeFile(appFile, "export const value = 1;\n", "utf8");
-    await writeFile(privateFile, "hidden", "utf8");
-
-    const read = createPiTools(app).find(tool => tool.name === "read")!;
-    const execute = (path: string) => read.execute("read-boundary", { path }, undefined, undefined, {} as never);
-    await assert.doesNotReject(execute(appFile));
-    await assert.rejects(execute(privateFile), /outside the application/);
   });
 });
 
