@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { spawnProcess } from "./process-spawn.js";
@@ -23,32 +23,28 @@ const GITIGNORE_CONTENT = ["node_modules/", "dist/", "build/", ".next/", ".env",
 export class GitCliOps implements GitOps {
   private constructor(private readonly repositoryRoot: string) {}
 
-  static async open(outputDirectory: string): Promise<GitCliOps> {
+  static async open(outputDirectory: string, options: {
+    allowExisting?: boolean; generatedPaths?: readonly string[];
+  } = {}): Promise<GitCliOps> {
     const requested = resolve(outputDirectory);
     await mkdir(requested, { recursive: true });
     const canonical = await realpath(requested);
     const rootResult = await runGit(canonical, ["rev-parse", "--show-toplevel"], true);
     const existingRoot = rootResult.code === 0 ? await realpath(rootResult.stdout.trim()) : undefined;
-    // A parent repository (such as the ShallowCode workspace) is never the output
-    // repository: only a directory that is its own top level counts as one.
     const hadRepository = existingRoot !== undefined && samePath(existingRoot, canonical);
-    // A directory that already holds a delivered application is an evolution
-    // template: the platform hands one back as the next run's output directory.
-    const evolutionTemplate = await isDeliveredApplication(canonical);
     if (!hadRepository) {
-      await requireEmptyOutputDirectory(canonical, evolutionTemplate);
+      if (!options.allowExisting) await requireEmptyOutputDirectory(canonical);
       await requireGit(canonical, ["init"]);
+      if (options.allowExisting) await requireGit(canonical, ["config", "core.autocrlf", "false"]);
+    } else if (!options.allowExisting) {
+      const dirt = await uncommittedEntries(canonical);
+      if (dirt.length) throw new Error("Output directory has uncommitted changes from outside ShallowCode; use an isolated project workspace");
     }
     const actualRoot = await requireGit(canonical, ["rev-parse", "--show-toplevel"]);
     if (!samePath(await realpath(actualRoot.stdout.trim()), canonical)) {
-      throw new Error(`Output directory must be a Git repository root: ${canonical}`);
+      throw new Error("Output directory must be a Git repository root: " + canonical);
     }
-    if (hadRepository) {
-      await discardPreviousRunResidue(canonical, evolutionTemplate);
-    }
-    if (evolutionTemplate) {
-      await ensureLocalExclude(canonical);
-    }
+    if (options.allowExisting) await ensureLocalExclude(canonical, options.generatedPaths);
     await ensureIgnoreRules(canonical);
     return new GitCliOps(canonical);
   }
@@ -151,10 +147,12 @@ export function runGit(
   args: string[],
   allowFailure: boolean,
   timeoutMs: number = GIT_TIMEOUT_MS,
+  env?: NodeJS.ProcessEnv,
 ): Promise<CommandResult> {
   return new Promise((resolvePromise, reject) => {
     const child = spawnProcess("git", args, {
       cwd,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
       shell: false,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
@@ -229,41 +227,18 @@ async function ensureIgnoreRules(root: string): Promise<void> {
   ]);
 }
 
-const SHALLOW_ROOT_COMMIT_SUBJECTS = new Set([
-  "shallow: initial state",
-  "chore: add ShallowCode ignore rules",
-]);
+const FIRST_RUN_ALLOWED_ENTRIES = new Set([".gitignore", ".arc", "requirements", "shallowcode.config.json"]);
 
-const FIRST_RUN_ALLOWED_ENTRIES = new Set([".gitignore", ".arc", "requirements"]);
-
-/** A delivered application: frontend/ and backend/ both exist as directories. */
-async function isDeliveredApplication(root: string): Promise<boolean> {
-  const isDirectory = async (name: string): Promise<boolean> => {
-    try {
-      return (await stat(join(root, name))).isDirectory();
-    } catch {
-      return false;
-    }
-  };
-  return (await isDirectory("frontend")) && (await isDirectory("backend"));
-}
-
-async function requireEmptyOutputDirectory(root: string, evolutionTemplate = false): Promise<void> {
-  if (evolutionTemplate) return;
-  const entries = await readdir(root);
-  const unexpected = entries.filter((name) => !FIRST_RUN_ALLOWED_ENTRIES.has(name));
-  if (unexpected.length > 0) {
-    throw new Error(
-      `Output directory must be empty before the first run: ${root} (found: ${unexpected.slice(0, 5).join(", ")})`,
-    );
-  }
+async function requireEmptyOutputDirectory(root: string): Promise<void> {
+  const unexpected = (await readdir(root)).filter(name => !FIRST_RUN_ALLOWED_ENTRIES.has(name));
+  if (unexpected.length) throw new Error("Output directory must be empty before the first run: " + root);
 }
 
 const LOCAL_EXCLUDE_RULES = ["node_modules/", "dist/", "build/", ".next/", ".env"];
 
 /** Keep dependency and build output out of the base commit without rewriting
  * the template's own .gitignore, which its author still owns. */
-async function ensureLocalExclude(root: string): Promise<void> {
+async function ensureLocalExclude(root: string, generatedPaths: readonly string[] = []): Promise<void> {
   const infoDir = join(root, ".git", "info");
   const excludeFile = join(infoDir, "exclude");
   await mkdir(infoDir, { recursive: true });
@@ -274,40 +249,11 @@ async function ensureLocalExclude(root: string): Promise<void> {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const present = new Set(content.split(/\r?\n/).map((line) => line.trim()));
-  const missing = LOCAL_EXCLUDE_RULES.filter((rule) => !present.has(rule));
+  const rules = [...LOCAL_EXCLUDE_RULES, ...generatedPaths.map(path => `/${path}/`)];
+  const missing = rules.filter((rule) => !present.has(rule));
   if (missing.length === 0) return;
   const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
   await writeFile(excludeFile, `${content}${separator}${missing.join("\n")}\n`, "utf8");
-}
-
-async function discardPreviousRunResidue(root: string, evolutionTemplate = false): Promise<void> {
-  const rootCommit = await runGit(root, ["rev-list", "--max-parents=0", "HEAD"], true);
-  const dirt = await uncommittedEntries(root);
-  const ours =
-    rootCommit.code === 0 &&
-    SHALLOW_ROOT_COMMIT_SUBJECTS.has(
-      (await requireGit(root, ["log", "-1", "--format=%s", rootCommit.stdout.trim()]))
-        .stdout.trim(),
-    );
-  if (!ours) {
-    if (dirt.length > 0 && !evolutionTemplate) {
-      throw new Error(
-        `Output directory has uncommitted changes from outside ShallowCode: ${root} (${dirt.length} entries: ${dirt
-          .slice(0, 3)
-          .map((entry) => entry.slice(3))
-          .join(", ")})`,
-      );
-    }
-    return;
-  }
-  // Delivered files are the platform's new baseline, including staged edits,
-  // deletions and untracked source. Old Shallow history does not authorize
-  // resetting them to the previous run's HEAD.
-  if (dirt.length > 0 && !evolutionTemplate) {
-    await requireGit(root, ["reset", "--hard", "HEAD"]);
-    await requireGit(root, ["clean", "-fd", "-e", ".arc/", "-e", `${PROGRESS_DIR_NAME}/`]);
-  }
-  await rm(join(root, ".arc", "runner-events.jsonl"), { force: true });
 }
 
 async function uncommittedEntries(root: string): Promise<string[]> {

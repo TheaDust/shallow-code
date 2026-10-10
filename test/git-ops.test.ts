@@ -201,7 +201,7 @@ async function initRepoWithRootCommit(
   );
 }
 
-test("GitOps open cleans crash residue left by an interrupted ShallowCode run", async () => {
+test("GitOps open refuses dirty inputs even when their root commit resembles controller history", async () => {
   await withTempDir("shallow-git-", async (directory) => {
     await initRepoWithRootCommit(directory, "shallow: initial state");
     await writeFile(join(directory, "app.txt"), "half-written orphan", "utf8");
@@ -211,15 +211,15 @@ test("GitOps open cleans crash residue left by an interrupted ShallowCode run", 
     const events = join(directory, ".arc", "runner-events.jsonl");
     await writeFile(events, "stale event\n", "utf8");
 
-    await GitCliOps.open(directory);
+    await assert.rejects(GitCliOps.open(directory), /uncommitted changes/);
 
-    assert.equal(await readFile(join(directory, "app.txt"), "utf8"), "committed");
-    await assert.rejects(access(join(directory, "backend", "leftover.js")));
-    await assert.rejects(access(events));
+    assert.equal(await readFile(join(directory, "app.txt"), "utf8"), "half-written orphan");
+    assert.equal(await readFile(join(directory, "backend", "leftover.js"), "utf8"), "orphan");
+    assert.equal(await readFile(events, "utf8"), "stale event\n");
   });
 });
 
-test("GitOps open removes the stale runner event stream from a clean ShallowCode repository", async () => {
+test("GitOps open preserves private records in an existing repository", async () => {
   await withTempDir("shallow-git-", async (directory) => {
     await initRepoWithRootCommit(directory, "shallow: initial state");
     await mkdir(join(directory, ".arc"));
@@ -229,7 +229,7 @@ test("GitOps open removes the stale runner event stream from a clean ShallowCode
     await GitCliOps.open(directory);
 
     assert.equal(await readFile(join(directory, "app.txt"), "utf8"), "committed");
-    await assert.rejects(access(events));
+    assert.equal(await readFile(events, "utf8"), "stale event\n");
   });
 });
 
@@ -354,7 +354,7 @@ test("GitOps open accepts an evolution template that already holds frontend/ and
     await writeDeliveredApp(directory);
     await writeFile(join(directory, "README.md"), "template\n", "utf8");
 
-    const git = await GitCliOps.open(directory);
+    const git = await GitCliOps.open(directory, { allowExisting: true });
     const baseline = await git.captureAccepted("shallow: initial state");
 
     assert.match(baseline, /^[0-9a-f]{40}$/);
@@ -373,7 +373,7 @@ test("GitOps open keeps dependency and build output out of an evolution baseline
     await mkdir(join(directory, "frontend", "dist"), { recursive: true });
     await writeFile(join(directory, "frontend", "dist", "index.html"), "<main></main>\n", "utf8");
 
-    const git = await GitCliOps.open(directory);
+    const git = await GitCliOps.open(directory, { allowExisting: true });
     await git.captureAccepted("shallow: initial state");
 
     const tracked = await execFileAsync("git", ["ls-files"], { cwd: directory });
@@ -390,7 +390,7 @@ test("GitOps open adopts a dirty foreign repository that holds a delivered app",
     const scratch = join(directory, "scratch.txt");
     await writeFile(scratch, "template scratch", "utf8");
 
-    const git = await GitCliOps.open(directory);
+    const git = await GitCliOps.open(directory, { allowExisting: true });
     const baseline = await git.captureAccepted("shallow: initial state");
 
     assert.match(baseline, /^[0-9a-f]{40}$/);
@@ -421,7 +421,7 @@ test("GitOps adopts injected files from old Shallow history and rollback preserv
       await writeFile(backendFile, "injected untracked source\n");
       await rm(join(directory, "app.txt"));
 
-      const git = await GitCliOps.open(directory);
+      const git = await GitCliOps.open(directory, { allowExisting: true });
       assert.equal((await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: directory })).stdout.trim(), previousHead);
       assert.equal(await readFile(frontendFile, "utf8"), "injected baseline\n");
       assert.equal(await readFile(backendFile, "utf8"), "injected untracked source\n");

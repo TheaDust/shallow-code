@@ -67,7 +67,7 @@ export class CandidateRuntime {
   recordAccepted(evidence: CandidateEvidence): void { this.acceptedInputDigest = evidence.inputDigest; }
 
   async assertAcceptedInput(): Promise<void> {
-    if (this.acceptedInputDigest && await restorableInputDigest(this.outputDir) !== this.acceptedInputDigest) {
+    if (this.acceptedInputDigest && await restorableInputDigest(this.outputDir, this.contract.generatedPaths) !== this.acceptedInputDigest) {
       throw new CandidatePreparationError("candidate", "Accepted candidate changed before delivery; verification evidence is invalid");
     }
   }
@@ -125,9 +125,9 @@ export class CandidateRuntime {
         return;
       }
       this.build = undefined;
-      const inputs = await snapshot(this.outputDir);
+      const inputs = await snapshot(this.outputDir, this.contract.generatedPaths);
       const fullInputDigest = digestSnapshot(inputs);
-      const inputDigest = await restorableInputDigest(this.outputDir);
+      const inputDigest = await restorableInputDigest(this.outputDir, this.contract.generatedPaths);
       const installKey = await dependencyKey(this.outputDir, inputs, this.contract);
       const dependencies = await dependencyState(this.directory);
       const reuseInstall = this.installedKey === installKey && this.installedState === dependencies;
@@ -139,7 +139,7 @@ export class CandidateRuntime {
         await copyFile(join(this.outputDir, path), target);
       }
       if (digestSnapshot(await snapshot(this.directory)) !== fullInputDigest ||
-        digestSnapshot(await snapshot(this.outputDir)) !== fullInputDigest) {
+        digestSnapshot(await snapshot(this.outputDir, this.contract.generatedPaths)) !== fullInputDigest) {
         throw new Error("Candidate changed while copying build inputs");
       }
       signal.throwIfAborted();
@@ -151,7 +151,7 @@ export class CandidateRuntime {
         const at = Date.now();
         await this.memoryGate.waitForHeadroom(CANDIDATE_INSTALL_HEADROOM_BYTES, signal);
         for (const command of this.contract.installCommands) {
-          await runCommand(this.directory, command, this.contract.buildTimeoutMs, signal);
+          await runCommand(this.directory, command, this.contract.buildTimeoutMs, signal, this.contract.env);
         }
         installMs = Date.now() - at;
       }
@@ -159,12 +159,12 @@ export class CandidateRuntime {
       const buildAt = Date.now();
       await this.memoryGate.waitForHeadroom(CANDIDATE_BUILD_HEADROOM_BYTES, signal);
       for (const command of this.contract.buildCommands) {
-        await runCommand(this.directory, command, this.contract.buildTimeoutMs, signal);
+        await runCommand(this.directory, command, this.contract.buildTimeoutMs, signal, this.contract.env);
       }
       const buildMs = Date.now() - buildAt;
       signal.throwIfAborted();
       stage = "candidate";
-      if (digestSnapshot(await snapshot(this.outputDir)) !== fullInputDigest) throw new Error("Candidate changed during preparation");
+      if (digestSnapshot(await snapshot(this.outputDir, this.contract.generatedPaths)) !== fullInputDigest) throw new Error("Candidate changed during preparation");
       const applicationDigest = digestSnapshot(await snapshot(this.directory));
       const currentDependencies = await dependencyState(this.directory);
       this.installedKey = installKey;
@@ -189,8 +189,8 @@ export class CandidateRuntime {
   }
 
   private async matches(build: Build): Promise<boolean> {
-    const inputs = await snapshot(this.outputDir);
-    return await restorableInputDigest(this.outputDir) === build.inputDigest &&
+    const inputs = await snapshot(this.outputDir, this.contract.generatedPaths);
+    return await restorableInputDigest(this.outputDir, this.contract.generatedPaths) === build.inputDigest &&
       await dependencyKey(this.outputDir, inputs, this.contract) === this.installedKey &&
       digestSnapshot(await snapshot(this.directory)) === build.applicationDigest &&
       await dependencyState(this.directory) === build.dependencyState;
@@ -207,7 +207,7 @@ export class CandidateRuntime {
     this.dataDirectory = dataDirectory;
     let application: RunningApp;
     try {
-      await copyInheritedData(this.directory, dataDirectory);
+      await copyInheritedData(this.directory, dataDirectory, this.contract.dataPaths);
       application = await this.lifecycle.start(this.directory, { ...this.contract, dataDirectory });
     }
     catch (error) { await this.stop(); throw error; }
@@ -224,12 +224,13 @@ function inside(parent: string, child: string): boolean {
   return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith(`..\\`) && !path.startsWith("../"));
 }
 
-async function snapshot(root: string): Promise<Snapshot> {
+async function snapshot(root: string, generatedPaths: readonly string[] = []): Promise<Snapshot> {
   const files: Snapshot = new Map();
   async function visit(directory: string, prefix = ""): Promise<void> {
     for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name < b.name ? -1 : 1)) {
       if (entry.name === "node_modules" || (!prefix && [".git", ".arc", PROGRESS_DIR_NAME].includes(entry.name))) continue;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (generatedPaths.some(p => path === p || path.startsWith(p + "/"))) continue;
       const absolute = join(directory, entry.name);
       if (entry.isSymbolicLink()) throw new Error(`Application links are not supported: ${path}`);
       if (entry.isDirectory()) await visit(absolute, path);
@@ -284,7 +285,7 @@ function normalizesLineEndings(info: string, autoCrlf: boolean): boolean {
  * Falls back to the full snapshot when the output directory is not its own
  * repository root (unit-test fixtures).
  */
-async function restorableInputDigest(root: string): Promise<string> {
+async function restorableInputDigest(root: string, generatedPaths: readonly string[] = []): Promise<string> {
   try {
     const canonical = await realpath(root);
     const toplevel = await runGit(canonical, ["rev-parse", "--show-toplevel"], true);
@@ -298,7 +299,7 @@ async function restorableInputDigest(root: string): Promise<string> {
           const separator = entry.indexOf("\t");
           if (separator < 0) throw new Error("Unexpected git ls-files --eol output");
           const path = entry.slice(separator + 1);
-          if (path === ".arc" || path.startsWith(".arc/") || isProgressPath(path)) continue;
+          if (path === ".arc" || path.startsWith(".arc/") || isProgressPath(path) || generatedPaths.some(p => path === p || path.startsWith(p + "/"))) continue;
           paths.set(path, normalizesLineEndings(entry.slice(0, separator), autoCrlf));
         }
         const files: Snapshot = new Map();
@@ -319,7 +320,7 @@ async function restorableInputDigest(root: string): Promise<string> {
   } catch (error) {
     if (error instanceof Error && error.message === "Application changed while hashing") throw error;
   }
-  return digestSnapshot(await snapshot(root));
+  return digestSnapshot(await snapshot(root, generatedPaths));
 }
 
 function samePathish(left: string, right: string): boolean {
@@ -341,6 +342,7 @@ async function dependencyKey(root: string, inputs: Snapshot, contract: PlatformC
   const entries: unknown[] = [process.version, process.platform, process.arch, process.execPath, process.env, contract];
   let sourceSensitive = false;
   for (const [path, value] of inputs) {
+    if (contract.dependencyPaths && !contract.dependencyPaths.some(p => p === "." || path.startsWith(p + "/"))) continue;
     const name = path.split("/").at(-1)!;
     if (["package.json", "package-lock.json", "npm-shrinkwrap.json", ".npmrc", "yarn.lock", "pnpm-lock.yaml"].includes(name)) entries.push([path, value]);
     if (name === "package.json") {

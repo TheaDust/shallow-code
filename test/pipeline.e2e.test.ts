@@ -3,6 +3,16 @@ import { readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 
+test("Current Judge plans remain in the private run directory rather than the application progress folder", async () => {
+  await withModulePipeline(async f => {
+    f.options.progressDir = join(f.options.outputDir, "shallow-progress");
+    await f.run();
+    const plans = await readdir(join(dirname(f.options.ledgerFile), "plans"));
+    assert.ok(plans.some(name => name.endsWith(".json")));
+    await assert.rejects(readdir(join(f.options.progressDir, "plans")), { code: "ENOENT" });
+  });
+});
+
 test("Partial case improvements are confirmed and retained across the existing two repair rounds", async () => {
   await withModulePipeline(async f => {
     f.deps.planner.plan = async packet => {
@@ -442,7 +452,7 @@ test("A passing prerequisite cannot hide a sibling control regression during ano
   });
 });
 
-test("An accepted target repair persists its recovered plan to the cache and product mirror", async () => {
+test("An accepted target repair persists its recovered plan to the private cache", async () => {
   await withModulePipeline(async f => {
     f.options.progressDir = join(f.options.outputDir, "shallow-progress");
     let refined = false;
@@ -461,12 +471,12 @@ test("An accepted target repair persists its recovered plan to the cache and pro
     const summary = await f.run();
     assert.equal(summary.status, "delivered");
     assert.ok(refined);
-    for (const directory of [join(dirname(f.options.ledgerFile), "plans"), join(f.options.outputDir, "shallow-progress", "plans")]) {
-      const file = (await readdir(directory)).find(name => name.startsWith("packet-c-"));
-      assert.ok(file);
-      const plan = JSON.parse(await readFile(join(directory, file), "utf8"));
-      assert.equal(plan.cases[0].steps[1].locator.name, "Repaired workspace");
-    }
+    const directory = join(dirname(f.options.ledgerFile), "plans");
+    const file = (await readdir(directory)).find(name => name.startsWith("packet-c-"));
+    assert.ok(file);
+    const plan = JSON.parse(await readFile(join(directory, file), "utf8"));
+    assert.equal(plan.cases[0].steps[1].locator.name, "Repaired workspace");
+    await assert.rejects(readdir(join(f.options.outputDir, "shallow-progress", "plans")), { code: "ENOENT" });
   });
 });
 

@@ -33,7 +33,7 @@ require('node:http').createServer((req,res) => {res.setHeader('content-type','te
 fs.writeFileSync(path.join(process.env.SHALLOW_DATA_DIR, 'requests.txt'), 'data');
 res.end(req.url === '/health' ? 'ok' : fs.readFileSync('dist/index.html'));}).listen(Number(process.env.PORT),'127.0.0.1');`);
     const port = await reservePort();
-    const contract: PlatformContract = { port, baseUrl: `http://127.0.0.1:${port}`, evaluationPort: 3000, healthPath: "/health",
+    const contract: PlatformContract = { port, baseUrl: `http://127.0.0.1:${port}`, evaluationPort: 3000, healthPath: "/health", dataPaths: ["backend/data", "backend/.data"],
       installCommands: [{ executable: process.execPath, args: ["install.cjs"], cwd: "output" }],
       buildCommands: [{ executable: process.execPath, args: ["build.cjs"], cwd: "output" }],
       startCommand: { executable: process.execPath, args: ["server.cjs"], cwd: "output" },
@@ -45,6 +45,52 @@ res.end(req.url === '/health' ? 'ok' : fs.readFileSync('dist/index.html'));}).li
     finally { await candidate.close(); }
   });
 }
+
+test("Declared data paths, environment and generated output work through a real candidate lifecycle", async () => {
+  await fixture(async ({ output, candidate, contract, counts }) => {
+    contract.env = { PROJECT_FLAG: "declared" };
+    contract.dataPaths = ["storage"];
+    contract.dataEnvVar = "APP_DATA_DIR";
+    contract.generatedPaths = ["dist"];
+    contract.healthPath = "/ready";
+    await mkdir(join(output, "storage"));
+    await writeFile(join(output, "storage/state.json"), '{"legacy":"kept"}');
+    for (const file of ["install.cjs", "build.cjs"]) {
+      await writeFile(join(output, file), "require('node:assert/strict').equal(process.env.PROJECT_FLAG, 'declared');\n" + await readFile(join(output, file), "utf8"));
+    }
+    await writeFile(join(output, "server.cjs"), `const fs = require('node:fs'); const path = require('node:path');
+      const data = path.join(process.env.APP_DATA_DIR, 'state.json');
+      const state = JSON.parse(fs.readFileSync(data, 'utf8')); fs.writeFileSync(data, '{"migrated":true}');
+      require('node:http').createServer((req,res)=>res.end(req.url==='/ready' ? 'ok' : '<main>'+process.env.PROJECT_FLAG+':'+state.legacy+'</main>')).listen(Number(process.env.PORT), '127.0.0.1');`);
+    const app = await candidate.start(output, contract);
+    assert.match(await (await fetch(app.baseUrl)).text(), /declared:kept/);
+    await app.assertUnchanged?.();
+    await app.stop();
+    assert.equal(await readFile(join(output, "storage/state.json"), "utf8"), '{"legacy":"kept"}');
+    await mkdir(join(output, "dist"));
+    await writeFile(join(output, "dist/stale.html"), "ignored output");
+    await candidate.prepare();
+    assert.equal(await counts(), "install\nbuild\n");
+    const second = await candidate.start(output, contract);
+    assert.match(await (await fetch(second.baseUrl)).text(), /declared:kept/);
+    await second.stop();
+  });
+});
+
+test("Declared dependency inputs govern install reuse while other source still triggers a build", async () => {
+  await fixture(async ({ output, candidate, contract, counts }) => {
+    contract.dependencyPaths = ["web"];
+    await mkdir(join(output, "web"));
+    await writeFile(join(output, "web/package.json"), "{}");
+    await candidate.prepare();
+    await writeFile(join(output, "package.json"), '{"irrelevant":"metadata"}');
+    await candidate.prepare();
+    assert.equal(await counts(), "install\nbuild\nbuild\n");
+    await writeFile(join(output, "web/package.json"), '{"dependencies":{"example":"1.0"}}');
+    await candidate.prepare();
+    assert.equal(await counts(), "install\nbuild\nbuild\ninstall\nbuild\n");
+  });
+});
 
 test("one owned build serves independent module checks, Judge and final Chromium smoke", async () => {
   await fixture(async ({ output, workspace, candidate, contract, counts, events }) => {

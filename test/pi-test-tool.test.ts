@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { createTestTool } from "../src/builder/pi-test-tool.js";
+import { resolveRuntimeContract } from "../src/project-spec.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 interface SpawnCall { file: string; args: string[]; cwd: string }
@@ -19,7 +20,7 @@ class FakeChild extends EventEmitter {
   killed = false;
   kill(): boolean {
     this.killed = true;
-    queueMicrotask(() => this.emit("exit", null));
+    queueMicrotask(() => this.emit("close", null));
     return true;
   }
 }
@@ -32,7 +33,7 @@ function fakeSpawn(behavior?: (child: FakeChild, call: SpawnCall) => void) {
     const child = new FakeChild();
     queueMicrotask(() => {
       if (behavior) behavior(child, call);
-      else { child.stdout.emit("data", "ok\n"); child.emit("exit", 0); }
+      else { child.stdout.emit("data", "ok\n"); child.emit("close", 0); }
     });
     return child;
   };
@@ -51,6 +52,49 @@ function execute(tool: ReturnType<typeof createTestTool>, params: { target: stri
   return tool.execute("call-1", params as never, signal as never, {} as never, {} as never);
 }
 
+test("Declared tests run from a custom directory with project environment and isolated data", async () => {
+  await withTempDir("shallow-custom-test-", async root => {
+    await mkdir(join(root, "web"));
+    await writeFile(join(root, "web/check.cjs"), `require('node:assert/strict').equal(process.env.FLAG, 'declared');
+      require('node:assert/strict').equal(process.env.APP_DATA_DIR, 'isolated'); console.log(process.argv[2]);`);
+    const contract = resolveRuntimeContract({ start: { executable: "node" }, env: { FLAG: "declared", APP_DATA_DIR: "wrong" },
+      dataEnvVar: "APP_DATA_DIR", tests: [{ id: "unit", executable: process.execPath, args: ["check.cjs"], cwd: "web" }] }, { port: 3100 });
+    contract.dataDirectory = "isolated";
+    const tool = createTestTool(root, { contract });
+    const result = await execute(tool, { target: "unit", filter: "specific-case" });
+    assert.equal((result.details as { results: Array<{ exitCode: number }> }).results[0].exitCode, 0);
+    assert.match((result.content[0] as { text: string }).text, /specific-case/);
+    await assert.rejects(execute(tool, { target: "backend" }), /No declared test target/);
+    await assert.rejects(execute(tool, { target: "unit", filter: "../outside" }), /inside the project/);
+  });
+});
+
+test("A project without test targets reports the missing declaration", async () => {
+  await withTempDir("shallow-no-tests-", async root => {
+    const contract = resolveRuntimeContract({ start: { executable: "node" } }, { port: 3100 });
+    await assert.rejects(execute(createTestTool(root, { contract }), { target: "all" }), /configure tests/);
+  });
+});
+
+test("Source in a directory named build still invalidates explicit reuse", async () => {
+  await withTempDir("shallow-test-input-", async root => {
+    await mkdir(join(root, "build"));
+    await writeFile(join(root, "build/value.cjs"), "module.exports = 'valid';");
+    await writeFile(join(root, "check.cjs"), "require('node:assert/strict').equal(require('./build/value.cjs'), 'valid');");
+    const contract = resolveRuntimeContract({ start: { executable: "node" }, tests: [
+      { id: "unit", executable: process.execPath, args: ["check.cjs"] },
+    ] }, { port: 3100 });
+    const tool = createTestTool(root, { contract });
+    const first = await execute(tool, { target: "unit", reuse: true });
+    assert.equal((first.details as { results: Array<{ exitCode: number }> }).results[0].exitCode, 0);
+    await writeFile(join(root, "build/value.cjs"), "module.exports = 'invalid';");
+    const next = await execute(tool, { target: "unit", reuse: true });
+    const result = (next.details as { results: Array<{ exitCode: number; cached: boolean }> }).results[0];
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.cached, false);
+  });
+});
+
 test("run_tests runs the frontend Vitest suite single-worker in frontend/", async () => {
   await withTempDir("shallow-test-tool-", async root => {
     await makeApp(root);
@@ -64,7 +108,7 @@ test("run_tests runs the frontend Vitest suite single-worker in frontend/", asyn
     assert.match(calls[0].cwd, /frontend$/);
     const text = (result.content[0] as { text: string }).text;
     assert.match(text, /exit code 0/);
-    assert.match(text, /vitest run --maxWorkers=1 HomePage/);
+    assert.match(text, /vitest.mjs run --maxWorkers=1 HomePage/);
   });
 });
 
@@ -179,7 +223,7 @@ test("run_tests never caches a failed result", async () => {
     await makeApp(root);
     const { calls, spawnFn } = fakeSpawn(child => {
       child.stderr.emit("data", "failure\n");
-      child.emit("exit", 1);
+      child.emit("close", 1);
     });
     const tool = createTestTool(root, { spawnFn });
     await execute(tool, { target: "backend", reuse: true });
@@ -193,7 +237,7 @@ test("run_tests reports failures with the output tail and a non-zero exit code",
     await makeApp(root);
     const { spawnFn } = fakeSpawn(child => {
       child.stderr.emit("data", "FAIL src/App.test.tsx > renders\n");
-      child.emit("exit", 1);
+      child.emit("close", 1);
     });
     const tool = createTestTool(root, { spawnFn });
     const result = await execute(tool, { target: "frontend" });
@@ -208,7 +252,7 @@ test("run_tests abbreviates successful output while retaining the suite summary"
     await makeApp(root);
     const { spawnFn } = fakeSpawn(child => {
       child.stdout.emit("data", `start-marker${"x".repeat(40_000)}end-marker`);
-      child.emit("exit", 0);
+      child.emit("close", 0);
     });
     const tool = createTestTool(root, { spawnFn });
     const result = await execute(tool, { target: "frontend" });
@@ -225,7 +269,7 @@ test("run_tests retains the longer failure tail for diagnosis", async () => {
     await makeApp(root);
     const { spawnFn } = fakeSpawn(child => {
       child.stdout.emit("data", `start-marker${"x".repeat(40_000)}FAIL final assertion`);
-      child.emit("exit", 1);
+      child.emit("close", 1);
     });
     const result = await execute(createTestTool(root, { spawnFn }), { target: "frontend" });
     const text = (result.content[0] as { text: string }).text;
@@ -253,7 +297,7 @@ test("run_tests points at installation when the frontend Vitest entry is missing
     await makeApp(root, { frontend: false });
     const { calls, spawnFn } = fakeSpawn();
     const tool = createTestTool(root, { spawnFn });
-    await assert.rejects(execute(tool, { target: "frontend" }), /Vitest is not installed.*install command first/s);
+    await assert.rejects(execute(tool, { target: "frontend" }), /Test (entry|working directory).*install command first/s);
     assert.equal(calls.length, 0);
   });
 });

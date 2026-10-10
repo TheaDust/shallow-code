@@ -108,6 +108,24 @@ test("Declared test targets keep their ids and project-relative directories", ()
   assert.deepEqual(spec.dataPaths, ["web/storage", "server/data"]);
 });
 
+test("Runtime declarations preserve environment, test targets, storage and command timeouts", () => {
+  const spec = parseProjectSpec({ ...FULL_SPEC, dataEnvVar: "APP_DATA_DIR", start: { ...FULL_SPEC.start, timeoutMs: 1234 } });
+  const contract = resolveRuntimeContract(spec, { port: 43210 });
+  assert.deepEqual(contract.env, { NODE_ENV: "test" });
+  assert.equal(contract.testTargets?.[1].cwd, "tests/e2e");
+  assert.deepEqual(contract.dataPaths, ["web/storage", "server/data"]);
+  assert.equal(contract.dataEnvVar, "APP_DATA_DIR");
+  assert.equal(contract.buildCommands[0].timeoutMs, 120_000);
+  assert.equal(contract.startTimeoutMs, 1234);
+  assert.deepEqual(contract.generatedPaths, ["web/dist"]);
+  assert.deepEqual(contract.dependencyPaths, ["web"]);
+  assert.throws(() => parseProjectSpec({ ...FULL_SPEC, dataEnvVar: "PORT" }), /dataEnvVar/);
+  assert.throws(() => parseProjectSpec({ ...FULL_SPEC, generatedPaths: ["."] }), /entire project/);
+  assert.throws(() => parseProjectSpec({ ...FULL_SPEC, start: { executable: "node", cwd: "C:outside" } }), /project-relative/);
+  assert.equal(resolveRuntimeContract(parseProjectSpec({ start: { executable: "node", cwd: "output" } }), { port: 43210 }).startCommand.cwd, "./output");
+  assert.throws(() => parseProjectSpec({ ...FULL_SPEC, tests: [{ id: "all", executable: "node" }] }), /reserved/);
+});
+
 test("Relative paths are normalized and escaping or absolute paths are rejected", () => {
   assert.deepEqual(parseProjectSpec(FULL_SPEC).generatedPaths, ["web/dist"]);
   assert.throws(() => parseProjectSpec({ start: { executable: "node", cwd: "/etc" } }), /project-relative/);

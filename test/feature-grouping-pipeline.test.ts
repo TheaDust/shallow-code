@@ -141,7 +141,9 @@ test("Inherited plans cannot substitute for fresh audits of updated and new requ
     assert.deepEqual(result.verifiedRequirementIds.sort(), ["NEW", "OLD"]);
     assert.ok(executed.includes("current-OLD") && executed.includes("current-NEW"));
     assert.ok(!executed.includes("inherited-case"));
-    assert.equal(JSON.parse(await readFile(join(mirror, oldFile), "utf8")).cases[0].id, "current-OLD");
+    assert.equal(JSON.parse(await readFile(join(mirror, oldFile), "utf8")).cases[0].id, "inherited-case");
+    const current = await new PlanCache(dirname(f.options.ledgerFile)).read(oldPacket);
+    assert.equal(current?.cases[0].id, "current-OLD");
   });
 });
 

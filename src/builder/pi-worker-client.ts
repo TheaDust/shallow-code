@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import type { GatewayConfig } from "../runtime-config.js";
 import type { CodingAgentRequest, CodingAgentResult, CodingAgentPort } from "./execution-port.js";
 import type { ExecutionTiming, ExecutionUsage } from "./pi-execution-stats.js";
-import { ownProcessTree, toolEnvironment } from "../process-lifecycle.js";
+import { ownProcessTree, toolEnvironment, stopDetachedToolGroup } from "../process-lifecycle.js";
 import { ExecutionFault } from "../execution-fault.js";
 import { sanitizeDiagnosticText } from "../diagnostics.js";
 import { copyInheritedData } from "../inherited-data.js";
@@ -55,7 +55,7 @@ export class PiWorkerClient implements CodingAgentPort {
     if (prior && prior.cwd !== resolve(input.outputDir)) throw new Error("Pi session workspace mismatch");
     const fallback: PiWorkerResult = { sessionId: randomUUID(), outcome: "failed", summary: "Pi worker exited before producing a result" };
     const dataDirectory = await mkdtemp(join(resolve(this.sessionDir), "data-"));
-    try { await copyInheritedData(input.outputDir, dataDirectory); }
+    try { await copyInheritedData(input.outputDir, dataDirectory, input.platformContract?.dataPaths); }
     catch (error) {
       await rm(dataDirectory, { recursive: true, force: true });
       throw new ExecutionFault("builder", "builder_start", false, { cause: error });
@@ -63,14 +63,20 @@ export class PiWorkerClient implements CodingAgentPort {
     const application = input.platformContract ? new BuilderApp(input.outputDir, { ...input.platformContract, dataDirectory }) : undefined;
     const child = fork(fileURLToPath(new URL("./pi-worker.ts", import.meta.url)), [], {
       cwd: input.outputDir, execArgv: ["--import", import.meta.resolve("tsx")],
-      env: { ...toolEnvironment(), SHALLOW_DATA_DIR: dataDirectory }, detached: process.platform !== "win32",
+      env: { ...toolEnvironment(), [input.platformContract?.dataEnvVar ?? "SHALLOW_DATA_DIR"]: dataDirectory }, detached: process.platform !== "win32",
       stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
     let finish!: () => void;
     const finished = new Promise<void>(res => { finish = res; });
     this.active = { child, finished };
+    const toolGroups = new Set<number>();
     const onAppRequest = (message: unknown) => {
-      const request = message as { type?: string; id?: string; action?: string } | null;
+      const request = message as { type?: string; id?: string; action?: string; pid?: number; active?: boolean } | null;
+      if (process.platform !== "win32" && request?.type === "builder_tool_process" && Number.isInteger(request.pid) && request.pid! > 0) {
+        if (request.active === true) toolGroups.add(request.pid!);
+        else if (request.active === false) toolGroups.delete(request.pid!);
+        return;
+      }
       if (request?.type !== "builder_app" || typeof request.id !== "string" || !["start", "stop", "status"].includes(request.action ?? "")) return;
       const respond = (detail: object) => {
         if (child.connected) child.send({ type: "builder_app_result", id: request.id, ...detail }, () => {});
@@ -104,7 +110,8 @@ export class PiWorkerClient implements CodingAgentPort {
         timer = setTimeout(() => res({ ...fallback, ...progress, outcome: "timed_out", summary: "Pi call deadline reached" }), Math.max(1, input.timeoutMs));
       });
       tree = await ownProcessTree(child);
-      child.send({ ...input, gateway: this.gateway, sessionDir: this.sessionDir, sessionFile: prior?.file,
+      child.send({ ...input, ...(input.platformContract ? { platformContract: { ...input.platformContract, dataDirectory } } : {}),
+        gateway: this.gateway, sessionDir: this.sessionDir, sessionFile: prior?.file,
         ...(this.sseCaptureDir ? { sseCaptureDir: this.sseCaptureDir } : {}) } satisfies PiWorkerRequest);
       result = await completed;
     } catch (error) {
@@ -118,7 +125,10 @@ export class PiWorkerClient implements CodingAgentPort {
         try {
           if (tree) await tree.stop();
           else child.kill("SIGKILL");
-        } finally { await application?.close(); }
+        } finally {
+          for (const pid of toolGroups) stopDetachedToolGroup(pid);
+          await application?.close();
+        }
         await rm(dataDirectory, { recursive: true, force: true });
       } catch (error) {
         throw new ExecutionFault("builder", "builder_cleanup", false, { cause: error });

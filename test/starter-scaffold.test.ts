@@ -30,6 +30,9 @@ test("starter scaffold installs the generic platform shell into metadata-only ou
     const result = await installStarterScaffold(directory, contract());
 
     assert.equal(result.status, "installed");
+    const saved = JSON.parse(await readFile(join(directory, "shallowcode.config.json"), "utf8"));
+    assert.equal(saved.start.cwd, "backend");
+    assert.deepEqual(saved.dataPaths, ["backend/data", "backend/.data"]);
     assert.ok(result.files.includes("frontend/package-lock.json"));
     assert.ok(result.files.includes("frontend/src/lib/hash-route.ts"));
     assert.ok(result.files.includes("frontend/src/lib/api.ts"));

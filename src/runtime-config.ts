@@ -76,9 +76,6 @@ export function parseProbePortOverride(
   if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
     throw new Error(`SHALLOW_PROBE_PORT must be a port number, got "${raw}"`);
   }
-  if (port === 3000) {
-    throw new Error("SHALLOW_PROBE_PORT must not use reserved evaluation port 3000");
-  }
   return port;
 }
 

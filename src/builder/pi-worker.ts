@@ -47,7 +47,7 @@ async function run(input: PiWorkerRequest): Promise<PiWorkerResult> {
     settingsManager, resourceLoader, sessionManager: manager,
     tools: ["read", "edit", "write", "shell", "run_tests", "browser", "list_capabilities", "install_capability",
       ...(input.platformContract ? ["app"] : [])],
-    customTools: createPiTools(input.outputDir, Boolean(input.platformContract)) });
+    customTools: createPiTools(input.outputDir, Boolean(input.platformContract), input.platformContract) });
   if (modelFallbackMessage) throw new Error(modelFallbackMessage);
   let toolCalls = 0;
   let compactions = 0;

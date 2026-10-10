@@ -151,7 +151,7 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.taskPrompt, /需求或场景要求悬停显示的次要操作应在悬停后出现/);
   assert.match(compiled.taskPrompt, /可访问的 option、radio、checkbox/);
   assert.match(compiled.taskPrompt, /背景不可操作/);
-  assert.match(compiled.taskPrompt, /npm --prefix frontend run build/);
+  assert.match(compiled.taskPrompt, /cwd=frontend: npm run build/);
   assert.match(compiled.taskPrompt, /http:\/\/127\.0\.0\.1:3000/);
   assert.match(compiled.taskPrompt, /PORT/);
   assert.match(compiled.taskPrompt, /同源相对路径/);
@@ -191,12 +191,12 @@ test("Builder shares its product and platform prefix across packets and repair m
   const prefix = prompts[0].taskPrompt.slice(0, boundary);
   assert.ok(prefix.includes("Root description."));
   assert.ok(prefix.includes("shared account alice"));
-  assert.ok(prefix.includes("npm --prefix frontend run build"));
+  assert.ok(prefix.includes("cwd=frontend: npm run build"));
   assert.ok(prefix.includes("结果：完成 | 阻塞"));
   for (const prompt of prompts) {
     assert.equal(prompt.systemPrompt, prompts[0].systemPrompt);
     assert.ok(prompt.taskPrompt.startsWith(prefix));
-    assert.equal(prompt.taskPrompt.split("npm --prefix frontend run build").length, 2);
+    assert.equal(prompt.taskPrompt.split("cwd=frontend: npm run build").length, 2);
   }
 });
 
@@ -438,8 +438,8 @@ test("Delivery repair renders the failure without any work packet context", () =
   );
   assert.deepEqual(compiled.fragmentIds, ["delivery_contract"]);
   assert.match(compiled.taskPrompt, /结果：完成 \| 阻塞/);
-  assert.ok(compiled.taskPrompt.indexOf("npm --prefix frontend run build") < compiled.taskPrompt.indexOf("实际观察："));
-  assert.equal(compiled.taskPrompt.split("npm --prefix frontend run build").length, 2);
+  assert.ok(compiled.taskPrompt.indexOf("cwd=frontend: npm run build") < compiled.taskPrompt.indexOf("实际观察："));
+  assert.equal(compiled.taskPrompt.split("cwd=frontend: npm run build").length, 2);
 });
 
 test("Startup failures append the delivery contract on top of the product base", () => {

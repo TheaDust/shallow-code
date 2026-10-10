@@ -205,6 +205,7 @@ test("Grader-like verification exposes an isolated copy of inherited default dat
     const port = await reservePort();
     const extra = await reservePort();
     const contract = contractFor(port, [], []);
+    contract.dataPaths = ["backend/data"];
     contract.extraPorts = [extra];
     await mkdir(join(outputDir, "backend/data"), { recursive: true });
     await writeFile(join(outputDir, "backend/data/state.json"), '{"legacy":"kept"}');

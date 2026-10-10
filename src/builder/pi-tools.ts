@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { createReadToolDefinition, createEditToolDefinition, createWriteToolDefinition, createBashToolDefinition, type ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { toolEnvironment } from "../process-lifecycle.js";
 import { PROGRESS_DIR_NAME } from "../progress-journal.js";
+import type { PlatformContract } from "../types.js";
 import { createBrowserTool } from "./pi-browser-tool.js";
 import { createTestTool } from "./pi-test-tool.js";
 import { createAppTool } from "./pi-app-tool.js";
@@ -52,7 +53,7 @@ const BINARY_RUNNERS = new Set(["npx", "pnpx", "bunx"]);
  */
 export function assertNotTestCommand(command: string): void {
   if (pipelineSegments(command).some(isTestSegment)) {
-    throw new Error("Test commands are not allowed in shell; use the run_tests tool instead: run_tests { target: 'frontend' | 'backend' | 'all', filter?: string }");
+    throw new Error("Test commands are not allowed in shell; use the run_tests tool instead: run_tests { target: 'declared target id' | 'all', filter?: string }");
   }
 }
 
@@ -126,7 +127,7 @@ function scriptNameIsTest(name: string): boolean {
   return normalized.split(/[:.\-]/).some(part => part === "test" || part === "tests");
 }
 
-export function createPiTools(cwd: string, managedApp = false): ToolDefinition[] {
+export function createPiTools(cwd: string, managedApp = false, contract?: PlatformContract): ToolDefinition[] {
   const read = createReadToolDefinition(cwd) as unknown as ToolDefinition;
   const guardedRead = { ...read, execute: async (...args: Parameters<typeof read.execute>) => {
     const params = args[1] as { path: string };
@@ -148,7 +149,9 @@ export function createPiTools(cwd: string, managedApp = false): ToolDefinition[]
       const windows = process.platform === "win32";
       const child = spawn(windows ? "powershell.exe" : "/bin/bash",
         windows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] : ["--noprofile", "--norc", "-c", command],
-        { cwd: directory, env: toolEnvironment(), windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"] });
+        { cwd: directory, env: { ...toolEnvironment(), ...contract?.env,
+          ...(contract?.dataDirectory ? { [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: contract.dataDirectory } : {}) },
+          windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"] });
       child.stdout.on("data", onData); child.stderr.on("data", onData);
       let timer: NodeJS.Timeout | undefined;
       const abort = () => child.kill();
@@ -200,6 +203,6 @@ export function createPiTools(cwd: string, managedApp = false): ToolDefinition[]
       return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
     },
   };
-  return [guardedRead, ...guardedWritable, shell as unknown as ToolDefinition, createTestTool(cwd), createBrowserTool(),
+  return [guardedRead, ...guardedWritable, shell as unknown as ToolDefinition, createTestTool(cwd, { contract }), createBrowserTool(),
     listCapabilityTool, installCapabilityTool, ...(managedApp ? [createAppTool()] : [])];
 }

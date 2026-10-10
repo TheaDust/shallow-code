@@ -30,7 +30,8 @@
 ### 项目配置、提示词与观测
 
 - 项目的安装、构建、开发测试目标、启动命令、环境、就绪条件、依赖输入、生成目录与持久化数据隔离方式由 `shallowcode.config.json`（`ProjectSpec`）声明，与需求 YAML 分开加载；命令使用项目相对 cwd，不依赖 `frontend`/`backend` 之类固定目录名。解析期拒绝绝对路径与 `..` 越界。
-- 迁移期间端口仍由 `runtime-config.ts` 的 `createArcPlatformContract` 提供；`resolveRuntimeContract` 已可用但尚未接入入口，接入时须同步提示词中的评测端口条款。
+- 入口通过 `resolveRuntimeContract` 装配运行合同；评测端口仅在显式预留时存在。Builder 测试与 app、候选及交付检查共享合同，数据路径与注入变量均按声明使用。
+- 已有项目通过 `project-workspace.ts` 复制到运行拥有的目录，包含当前 staged 和未跟踪源码。原目录与 Git index 保持不动；GitOps 以显式接管参数操作副本，回滚只恢复该副本的输入检查点。
 - 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充；新增 fragment 同步 `prompt-fragments.ts` 与测试。
 - 合同修改核对 Builder、Planner、复核、精化及 baseline 的适用资产和动态装配，而非只改一份 Markdown。
 - 新增或调整运行事件同步 `types.ts`、`human-log.ts` 与对应测试；主线观测经 `RunStateStore.record` 发射，诊断使用统一脱敏。
@@ -42,7 +43,7 @@
 | 生产装配、CLI、项目运行配置 | `index.ts`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
 | 需求解析、依赖、增量范围 | `src/catalog.ts`、`src/evolution.ts`、`src/scheduler.ts` |
 | 功能分组 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`prompts/planning/feature-grouping.md` |
-| 管线、检查点、回滚、交付 | `src/pipeline.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |
+| 管线、工作区、检查点、回滚、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |
 | Builder 提示词与执行 | `src/builder/prompt.ts`、`prompt-builder.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`） |
 | Judge 规划、覆盖、恢复与执行 | `src/judge/llm-probe-planner.ts`、`probe-schema.ts`、`probe-coverage.ts`、`audit.ts`、`playwright-probe-runner.ts`（均在 `src/judge/`） |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
@@ -63,7 +64,7 @@ npm run test:all
 
 - 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/evolution.test.ts`。
 - Judge 合同与恢复：`test/probe-contract.test.ts`、`test/semantic-review.test.ts`、`test/locator-recovery.test.ts`、`test/browser/`。
-- 管线、候选与交付：`test/pipeline.e2e.test.ts`、`test/candidate-runtime.test.ts`、`test/final-verifier.test.ts`、`test/inherited-data.test.ts`。
+- 管线、工作区与交付：`test/pipeline.e2e.test.ts`、`test/project-workspace.test.ts`、`test/candidate-runtime.test.ts`、`test/final-verifier.test.ts`、`test/inherited-data.test.ts`。
 - 提示词与共享执行：`test/builder-prompt.test.ts`、`test/prompt-assets.test.ts`、`test/pi-worker.test.ts`、`test/project-spec.test.ts`。
 - 观测：`test/observability.test.ts`、`test/human-log.test.ts`。
 

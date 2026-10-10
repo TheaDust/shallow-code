@@ -32,7 +32,7 @@ import { resultCompatibilityPlan } from "./judge/compatibility-contracts.js";
 import { groundedLocatorNames, parseProbePlan, probePlanSha256, type ProbePlan } from "./judge/probe-schema.js";
 import { repairCaseProgress } from "./judge/repair-progress.js";
 import { PlanCache, shouldWritePlanCache, spawnPlanGeneration } from "./judge/plan-cache.js";
-import { PROGRESS_DIR_NAME, progressPlansDirectory } from "./progress-journal.js";
+import { PROGRESS_DIR_NAME } from "./progress-journal.js";
 import { memorySnapshot } from "./memory-snapshot.js";
 import { ExecutionFault } from "./execution-fault.js";
 import { GatewayRequestError } from "./gateway-failure.js";
@@ -104,6 +104,8 @@ export interface PipelineOptions {
   plannerRetryDelayMs?: number;
   /** Product-visible journal directory (`shallow-progress`); plans mirror here. */
   progressDir?: string;
+  /** Read-only history from the input project, outside the owned development copy. */
+  historicalProgressDir?: string;
   /** Whether this stage starts from a selected prior-stage application or the blank scaffold. */
   stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
   /** Evolution only: true includes inherited atomics in audits and delivery coverage. Default false. */
@@ -133,7 +135,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
   });
   // Freeze provenance before any current progress event or plan mirror write.
   const history = options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution
-    ? await readHistoricalRequirementIds(options.progressDir ?? join(options.outputDir, PROGRESS_DIR_NAME))
+    ? await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, PROGRESS_DIR_NAME))
     : undefined;
   const evolutionScope = history ? selectEvolutionScope(catalog, history.requirementIds) : undefined;
   const auditInheritedRequirements = options.auditInheritedRequirements ?? false;
@@ -151,8 +153,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
   const requirementById = new Map(catalog.requirements.map(item => [item.id, item]));
   const auditPacketByRequirementId = new Map(packets.flatMap(packet =>
     packet.requirementIds.map(id => [id, packet] as const)));
-  const planCache = new PlanCache(dirname(options.ledgerFile),
-    options.progressDir ? progressPlansDirectory(options.progressDir) : undefined);
+  const planCache = new PlanCache(dirname(options.ledgerFile));
   let results = new Map<string, AuditResult>();
   let boundaryRepairCount = 0;
   let currentBoundaryModule: string | undefined;

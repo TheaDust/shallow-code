@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,8 +42,10 @@ import {
   type GatewayConfig,
 } from "./src/runtime-config.js";
 import { loadProjectSpec, minimalWebProjectSpec, npmExecutable, resolveRuntimeContract, type ProjectSpec } from "./src/project-spec.js";
+import { copyProjectWorkspace, hasProjectFiles, writeProjectPatch } from "./src/project-workspace.js";
 
 export interface AgentExecutionContext {
+  sourceProjectDir?: string;
   gateway: GatewayConfig;
   pipelineOptions: PipelineOptions;
   modelTimeouts: {
@@ -77,6 +79,7 @@ export async function main(
   } catch {
     throw new Error(`requirements.yaml is not readable at ${requirementsFile}`);
   }
+  if (cli.projectDir) await access(cli.projectDir);
   await mkdir(cli.outputDir, { recursive: true });
   const runId = `${process.pid}-${Date.now()}`;
   // An existing Web project declares how it runs; a blank output directory gets
@@ -94,9 +97,15 @@ export async function main(
   const runDir = parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs");
   const sseCaptureDir = resolveSseCaptureDir(mergedEnv, join(runDir, runId, "sse-capture"));
   const referenceImages = referenceImagesEnabled(mergedEnv);
+  const runDirectory = join(runDir, runId);
+  await assertPrivateRunDirectory(cli.outputDir, runDirectory);
+  const inheritedProject = cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
+  const workingDirectory = inheritedProject
+    ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), spec.generatedPaths)
+    : cli.outputDir;
   const pipelineOptions: PipelineOptions = {
     requirementsFile,
-    outputDir: cli.outputDir,
+    outputDir: workingDirectory,
     ledgerFile: join(runDir, runId, "run-ledger.jsonl"),
     totalBudgetMs: cli.budgetMs,
     platformContract: resolveRuntimeContract(spec, {
@@ -104,11 +113,13 @@ export async function main(
       ...(evaluationPort === null ? {} : { evaluationPort }),
       ...(declaredExtraPorts.length > 0 ? { extraPorts: declaredExtraPorts } : {}),
     }),
-    progressDir: join(cli.outputDir, PROGRESS_DIR_NAME),
+    progressDir: join(workingDirectory, PROGRESS_DIR_NAME),
+    ...(inheritedProject ? { historicalProgressDir: join(cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
     auditInheritedRequirements: parseEvolutionAuditInherited(mergedEnv),
     generateFinalAuditPlans: parseFinalAuditGeneratePlan(mergedEnv),
   };
   const summary = await execute({
+    ...(inheritedProject ? { sourceProjectDir: cli.outputDir } : {}),
     gateway,
     pipelineOptions,
     modelTimeouts: deriveModelTimeouts(cli.budgetMs),
@@ -131,6 +142,7 @@ async function loadProjectSpecOrDefault(outputDir: string): Promise<ProjectSpec>
     return await loadProjectSpec(outputDir);
   } catch (error) {
     if (!(error instanceof Error) || !error.message.startsWith("Missing project run configuration:")) throw error;
+    if (await hasProjectFiles(outputDir)) throw error;
     return minimalWebProjectSpec(npmExecutable());
   }
 }
@@ -152,11 +164,11 @@ async function mergeGatewayEnv(
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { gateway, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages } = context;
+  const { gateway, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
-  process.stderr.write(`[ShallowCode] 平台额外端口（公共运行合同）：${pipelineOptions.platformContract.extraPorts?.join(", ") || "无"}\n`);
+  process.stderr.write(`[ShallowCode] 项目声明的额外端口：${pipelineOptions.platformContract.extraPorts?.join(", ") || "无"}\n`);
   if (sseCaptureDir) process.stderr.write(`[ShallowCode] SSE 抓包已启用（仅诊断用途）：${sseCaptureDir}\n`);
   process.stderr.write(`[ShallowCode] 参考图片：${referenceImages ? "已开启（首次附带前预探测模型视觉能力）" : "已关闭"}\n`);
   process.stderr.write(`[ShallowCode] 最终验收补生成 plan：${pipelineOptions.generateFinalAuditPlans ? "已开启" : "已关闭（仅复用已有 plan）"}\n`);
@@ -176,14 +188,23 @@ async function executeProduction(
     });
     const runner = new PlaywrightProbeRunner();
     const lifecycle = candidate;
-    const git = await GitCliOps.open(pipelineOptions.outputDir);
+    const git = await GitCliOps.open(pipelineOptions.outputDir, {
+      allowExisting: sourceProjectDir !== undefined, generatedPaths: pipelineOptions.platformContract.generatedPaths,
+    });
+    const inputBaseline = await git.captureAccepted("shallow: input baseline");
+    if (sourceProjectDir) {
+      await writeFile(join(dirname(runLogFile), "workspace.json"), JSON.stringify({
+        sourceDirectory: sourceProjectDir, directory: pipelineOptions.outputDir, baseline: inputBaseline,
+      }, null, 2) + "\n", "utf8");
+      process.stderr.write(`[ShallowCode] 开发副本：${pipelineOptions.outputDir}\n`);
+    }
     // Git owns rollback from this point onward. Install the generic shell before
     // runPipeline captures its initial baseline, and never touch an existing app.
     const starterScaffold = await installStarterScaffold(
       pipelineOptions.outputDir,
       pipelineOptions.platformContract,
     );
-    const stageStartingPoint = starterScaffold.status === "skipped_existing_application"
+    const stageStartingPoint = sourceProjectDir !== undefined ? "inherited_application" as const : starterScaffold.status === "skipped_existing_application"
       ? "inherited_application" as const
       : starterScaffold.status === "installed"
         ? "blank_template" as const
@@ -198,7 +219,7 @@ async function executeProduction(
       promptHash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
     }
     try {
-      return await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
+      const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
         grouper: new LlmFeatureGrouper({ ...gateway, timeoutMs: Infinity }),
         builder,
         planner,
@@ -217,6 +238,11 @@ async function executeProduction(
           probeSchemaSha256: createHash("sha256").update(JSON.stringify(PROBE_PLAN_JSON_SCHEMA)).digest("hex"),
         },
       });
+      if (sourceProjectDir) {
+        const patch = await writeProjectPatch(pipelineOptions.outputDir, inputBaseline, dirname(runLogFile));
+        process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
+      }
+      return summary;
     } finally {
       // Nothing else owns the run directory; the ledger and run log are the record.
     }

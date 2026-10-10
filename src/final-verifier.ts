@@ -122,14 +122,14 @@ export class FinalVerifier implements FinalVerifierPort {
   ): Promise<FinalVerificationReport | undefined> {
     try {
       for (const command of contract.installCommands) {
-        await runCommand(outputDir, command, contract.buildTimeoutMs);
+        await runCommand(outputDir, command, contract.buildTimeoutMs, undefined, contract.env);
       }
     } catch (error) {
       return { ok: false, stage: "install", message: compactError(error) };
     }
     try {
       for (const command of contract.buildCommands) {
-        await runCommand(outputDir, command, contract.buildTimeoutMs);
+        await runCommand(outputDir, command, contract.buildTimeoutMs, undefined, contract.env);
       }
     } catch (error) {
       return { ok: false, stage: "build", message: compactError(error) };
@@ -157,13 +157,14 @@ export async function verifyGraderLikeStart(
   }
   const dataDirectory = contract.dataDirectory ?? await mkdtemp(join(tmpdir(), "shallow-grader-"));
   if (!contract.dataDirectory) {
-    try { await copyInheritedData(outputDir, dataDirectory); }
+    try { await copyInheritedData(outputDir, dataDirectory, contract.dataPaths); }
     catch (error) {
       await rm(dataDirectory, { recursive: true, force: true });
       return { ok: false, stage: "readiness", message: `Inherited data preparation failed: ${compactError(error)}` };
     }
   }
-  const environment = runtimeEnvironment({ PORT: String(contract.port), SHALLOW_DATA_DIR: dataDirectory });
+  const environment = runtimeEnvironment({ ...contract.env, PORT: String(contract.port),
+    [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: dataDirectory });
   // The grader never sets ARC_EXTRA_PORTS, so the extra listeners must bind.
   delete environment.ARC_EXTRA_PORTS;
   const child = spawnCommand(outputDir, contract.startCommand, environment);
@@ -238,11 +239,12 @@ export class CommandAppLifecycle implements AppLifecycle {
   async start(outputDir: string, contract: PlatformContract) {
     await assertPortFree(contract);
     const child = spawnCommand(outputDir, contract.startCommand, runtimeEnvironment({
+      ...contract.env,
       // Probes run on the private probe port only: never bind the evaluation
       // port (or spec-hardcoded extra ports like 3301) during generation.
       PORT: String(contract.port),
       ARC_EXTRA_PORTS: "0",
-      ...(contract.dataDirectory ? { SHALLOW_DATA_DIR: contract.dataDirectory } : {}),
+      ...(contract.dataDirectory ? { [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: contract.dataDirectory } : {}),
     }));
     let spawnError: Error | undefined;
     let stderr = "";
@@ -290,9 +292,11 @@ export async function runCommand(
   command: ProcessCommand,
   timeoutMs: number,
   signal?: AbortSignal,
+  env?: NodeJS.ProcessEnv,
 ): Promise<void> {
   signal?.throwIfAborted();
-  const child = spawnCommand(outputDir, command, runtimeEnvironment());
+  timeoutMs = command.timeoutMs ?? timeoutMs;
+  const child = spawnCommand(outputDir, command, runtimeEnvironment(env));
   let abortCleanup: Promise<void> | undefined;
   const onAbort = () => {
     abortCleanup = stopProcess(child);
@@ -382,7 +386,7 @@ async function waitForReadiness(
   throw new Error(`Application did not become ready at ${url}`);
 }
 
-async function stopProcess(child: ChildProcess): Promise<void> {
+export async function stopProcess(child: ChildProcess): Promise<void> {
   if (child.pid === undefined) return;
   if (process.platform === "win32") {
     if (child.exitCode !== null || child.signalCode !== null) return;

@@ -1,35 +1,29 @@
-import { spawn } from "node:child_process";
+import { type spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, readFile, readdir } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { Type } from "typebox";
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
 import { toolEnvironment } from "../process-lifecycle.js";
+import { spawnProcess } from "../process-spawn.js";
+import { stopProcess } from "../final-verifier.js";
+import { minimalWebProjectSpec, DEFAULT_TEST_TIMEOUT_MS } from "../project-spec.js";
+import type { PlatformContract } from "../types.js";
 import { PROGRESS_DIR_NAME } from "../progress-journal.js";
 
-const FRONTEND_TIMEOUT_MS = 600_000;
-const BACKEND_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_CHARS = 30_000;
 const MAX_SUCCESS_OUTPUT_CHARS = 2_000;
-
 const parameters = Type.Object({
-  target: Type.Union([Type.Literal("frontend"), Type.Literal("backend"), Type.Literal("all")], {
-    description: "Which application test suite to run: frontend Vitest, backend node:test, or both in sequence",
-  }),
-  filter: Type.Optional(Type.String({
-    description: "Optional single test-file name or substring pattern; run only matching tests",
-  })),
-  reuse: Type.Optional(Type.Boolean({
-    description: "Explicitly reuse a successful deterministic test run independent of runtime data and generated output; defaults to false",
-  })),
+  target: Type.String({ description: "Declared project test target id, or all to run every target sequentially" }),
+  filter: Type.Optional(Type.String({ description: "Optional single test-file name or pattern, appended as one argument to the declared command" })),
+  reuse: Type.Optional(Type.Boolean({ description: "Explicitly reuse a successful deterministic test run independent of runtime data and generated output; defaults to false" })),
 });
-
 export interface TestToolOptions {
   spawnFn?: typeof spawn;
   frontendTimeoutMs?: number;
   backendTimeoutMs?: number;
+  contract?: PlatformContract;
 }
-
 interface SuiteResult {
   target: string;
   command: string;
@@ -39,139 +33,117 @@ interface SuiteResult {
   output: string;
   cached?: boolean;
 }
+const DIGEST_IGNORED_DIRECTORIES = new Set(["node_modules", ".git", ".arc", PROGRESS_DIR_NAME]);
 
-const DIGEST_IGNORED_DIRECTORIES = new Set(["node_modules", "dist", "build", "coverage", ".data", ".git", ".arc", PROGRESS_DIR_NAME]);
-
-/**
- * Bounded-memory test runner for the Builder: tests run single-worker so the
- * suite's peak RSS stays small inside the evaluation cgroup. Spawning uses the
- * current Node executable and the project's own Vitest entry, so no npm shim
- * processes or watch modes are involved.
- */
+/** Execute the frozen project declaration; template tests use single-worker commands. */
 export function createTestTool(cwd: string, options: TestToolOptions = {}): ToolDefinition<typeof parameters> {
-  const spawnFn = options.spawnFn ?? spawn;
-  const timeouts = { frontend: options.frontendTimeoutMs ?? FRONTEND_TIMEOUT_MS, backend: options.backendTimeoutMs ?? BACKEND_TIMEOUT_MS };
+  const targets = options.contract ? options.contract.testTargets ?? [] : minimalWebProjectSpec(process.execPath).tests!;
   const successful = new Map<string, SuiteResult>();
+  const environment = { ...toolEnvironment(), ...options.contract?.env, CI: "1",
+    ...(options.contract?.dataDirectory ? { [options.contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: options.contract.dataDirectory } : {}) };
   return {
     name: "run_tests",
-    label: "Run tests (bounded memory)",
-    description:
-      "Run the application's traditional tests with bounded memory (single worker, no watch mode). " +
-      "frontend runs the Vitest suite in frontend/, backend runs node:test in backend/, all runs both in sequence. " +
-      "Pass filter to run only one test file/pattern. Tests execute by default; reuse=true is only for deterministic tests independent of runtime data and generated output. " +
-      "Explicit reuse requires an identical successful target/filter and unchanged project source, test, configuration and lockfile inputs. " +
-      "Returns exit code, duration and the output tail (failures print at the end).",
-    promptSnippet: "run_tests: bounded-memory test runner (frontend/backend/all, single worker)",
+    label: "Run project tests",
+    description: `Run declared project tests sequentially with timeouts and no watch mode. Targets: ${targets.map(t => t.id).join(", ") || "(none declared)"}. ` +
+      "all runs every declared target. filter is appended as one argument. Tests execute by default; reuse=true requires deterministic tests independent of runtime/generated data, unchanged project inputs and an identical successful command.",
+    promptSnippet: "run_tests: run a declared project target or all",
     parameters,
     executionMode: "sequential",
     async execute(_toolCallId, params, signal) {
       signal?.throwIfAborted();
-      const targets = params.target === "all" ? (["frontend", "backend"] as const) : ([params.target] as const);
+      if (params.filter && (isAbsolute(params.filter) || /^[A-Za-z]:/.test(params.filter) || params.filter.split(/[\\/]/).includes(".."))) {
+        throw new Error("Test filters must stay inside the project");
+      }
+      const selected = params.target === "all" ? targets : targets.filter(target => target.id === params.target);
+      if (!selected.length) throw new Error(`No declared test target ${params.target}; configure tests in shallowcode.config.json`);
       const results: SuiteResult[] = [];
-      for (const target of targets) {
-        const digest = params.reuse ? await suiteDigest(cwd, target, params.filter) : undefined;
+      for (const target of selected) {
+        const digest = params.reuse ? await suiteDigest(cwd, { target, filter: params.filter, environment }, options.contract?.generatedPaths) : undefined;
         signal?.throwIfAborted();
         const cached = digest ? successful.get(digest) : undefined;
-        if (cached) {
-          results.push({ ...cached, durationMs: 0, cached: true });
-          continue;
-        }
-        const result = await runSuite(spawnFn, cwd, target, timeouts[target], params.filter, signal);
+        if (cached) { results.push({ ...cached, durationMs: 0, cached: true }); continue; }
+        const timeout = target.timeoutMs ?? (target.id === "frontend" ? options.frontendTimeoutMs : target.id === "backend" ? options.backendTimeoutMs : undefined) ?? DEFAULT_TEST_TIMEOUT_MS;
+        const result = await runSuite(cwd, target, timeout, params.filter, signal, environment, options.spawnFn);
         results.push(result);
         if (digest && result.exitCode === 0 && !result.timedOut) successful.set(digest, result);
       }
       return {
         content: [{ type: "text" as const, text: results.map(formatResult).join("\n\n") }],
-        details: {
-          results: results.map(result => ({ target: result.target, command: result.command,
-            exitCode: result.exitCode, durationMs: result.durationMs, timedOut: result.timedOut,
-            cached: result.cached === true })),
-        },
+        details: { results: results.map(result => ({ target: result.target, command: result.command, exitCode: result.exitCode,
+          durationMs: result.durationMs, timedOut: result.timedOut, cached: result.cached === true })) },
       };
     },
   };
 }
 
-/** Explicit reuse covers project inputs across suites; generated/runtime tests execute normally. */
-async function suiteDigest(cwd: string, target: "frontend" | "backend", filter: string | undefined): Promise<string> {
-  const root = cwd;
-  const hash = createHash("sha256").update(`${target}\0${filter ?? ""}\0`);
-  const visit = async (directory: string): Promise<void> => {
+async function suiteDigest(root: string, invocation: unknown, generatedPaths: readonly string[] = []): Promise<string> {
+  const hash = createHash("sha256").update(JSON.stringify(invocation)).update("\0");
+  async function visit(directory: string): Promise<void> {
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      if (entry.isDirectory() && DIGEST_IGNORED_DIRECTORIES.has(entry.name)) continue;
       const path = join(directory, entry.name);
+      const rel = relative(root, path).replaceAll("\\", "/");
+      if (DIGEST_IGNORED_DIRECTORIES.has(entry.name) || generatedPaths.some(p => rel === p || rel.startsWith(p + "/"))) continue;
+      if (entry.isSymbolicLink()) throw new Error(`Test input links are not supported: ${rel}`);
       if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) {
-        hash.update(relative(root, path).replaceAll("\\", "/")).update("\0");
-        hash.update(await readFile(path)).update("\0");
-      }
+      else if (entry.isFile()) { hash.update(rel).update("\0"); hash.update(await readFile(path)).update("\0"); }
     }
-  };
-  try { await visit(root); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    hash.update("<missing-suite-directory>");
   }
+  await visit(root);
   return hash.digest("hex");
 }
 
-async function runSuite(spawnFn: typeof spawn, cwd: string, target: "frontend" | "backend", timeoutMs: number,
-  filter: string | undefined, signal: AbortSignal | undefined): Promise<SuiteResult> {
-  const directory = join(cwd, target);
-  let file: string;
-  let args: string[];
-  let command: string;
-  if (target === "frontend") {
-    const vitestEntry = join(directory, "node_modules", "vitest", "vitest.mjs");
-    await access(vitestEntry).catch(() => {
-      throw new Error("frontend Vitest is not installed (frontend/node_modules/vitest missing); run the platform install command first, then retry run_tests");
-    });
-    file = process.execPath;
-    args = [vitestEntry, "run", "--maxWorkers=1", ...(filter ? [filter] : [])];
-    command = `vitest run --maxWorkers=1${filter ? ` ${filter}` : ""}`;
-  } else {
-    await access(directory).catch(() => {
-      throw new Error("backend/ directory does not exist yet; create the backend before running backend tests");
-    });
-    file = process.execPath;
-    args = ["--test", "--test-concurrency=1", ...(filter ? [filter] : [])];
-    command = `node --test --test-concurrency=1${filter ? ` ${filter}` : ""}`;
+async function runSuite(root: string, target: { id: string; executable: string; args?: string[]; cwd?: string }, timeoutMs: number,
+  filter: string | undefined, signal: AbortSignal | undefined, environment: NodeJS.ProcessEnv, spawnFn?: typeof spawn): Promise<SuiteResult> {
+  const directory = resolve(root, !target.cwd || target.cwd === "output" ? "." : target.cwd);
+  const rel = relative(resolve(root), directory);
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith("../") || rel.startsWith("..\\")) throw new Error("Test working directory must stay inside the project");
+  await access(directory).catch(() => { throw new Error(`Test working directory ${directory} does not exist; create it and run the project install command first`); });
+  const args = [...(target.args ?? [])];
+  if ((target.executable === process.execPath || /^node(?:\.exe)?$/i.test(target.executable)) && args[0] && !args[0].startsWith("-")) {
+    args[0] = resolve(directory, args[0]);
+    await access(args[0]).catch(() => { throw new Error(`Test entry ${args[0]} is not installed; run the project install command first`); });
   }
+  if (filter) args.push(filter);
+  const command = [target.executable, ...(target.args ?? []), ...(filter ? [filter] : [])].join(" ");
+  signal?.throwIfAborted();
   const started = Date.now();
-  const child = spawnFn(file, args, { cwd: directory, env: { ...toolEnvironment(), CI: "1" }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-  let output = "";
-  let truncated = false;
+  const child = (spawnFn ?? spawnProcess)(target.executable, args, { cwd: directory, env: environment, windowsHide: true,
+    detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
+  const registered = process.platform !== "win32" && process.send !== undefined && child.pid !== undefined;
+  if (registered) process.send!({ type: "builder_tool_process", pid: child.pid, active: true });
+  let output = "", truncated = false, timedOut = false;
   const onData = (chunk: Buffer | string) => {
     output += chunk.toString();
     if (output.length > MAX_OUTPUT_CHARS) { output = output.slice(-MAX_OUTPUT_CHARS); truncated = true; }
   };
-  child.stdout.on("data", onData);
-  child.stderr.on("data", onData);
-  let timedOut = false;
-  const abort = () => { child.kill(); };
+  child.stdout!.on("data", onData); child.stderr!.on("data", onData);
+  let stopping: Promise<void> | undefined;
+  const abort = () => {
+    stopping ??= spawnFn ? Promise.resolve().then(() => { child.kill(); }) : stopProcess(child);
+    void stopping.catch(() => {});
+  };
   signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
   const timer = setTimeout(() => { timedOut = true; abort(); }, timeoutMs);
   try {
-    const exitCode = await new Promise<number | null>((resolvePromise, reject) => { child.once("error", reject); child.once("exit", resolvePromise); });
+    const exitCode = await new Promise<number | null>((res, reject) => { child.once("error", reject); child.once("close", res); });
+    if (stopping) await stopping;
     signal?.throwIfAborted();
-    return { target, command, exitCode, durationMs: Date.now() - started, timedOut,
+    return { target: target.id, command, exitCode, durationMs: Date.now() - started, timedOut,
       output: (truncated ? `[output truncated to the last ${MAX_OUTPUT_CHARS} characters]\n` : "") + output.trim() };
   } finally {
-    clearTimeout(timer);
-    signal?.removeEventListener("abort", abort);
-    child.stdout.destroy();
-    child.stderr.destroy();
+    clearTimeout(timer); signal?.removeEventListener("abort", abort);
+    if (stopping) await stopping;
+    if (!spawnFn && process.platform !== "win32") await stopProcess(child);
+    child.stdout!.destroy(); child.stderr!.destroy();
+    if (registered && process.connected) process.send!({ type: "builder_tool_process", pid: child.pid, active: false });
   }
 }
-
 function formatResult(result: SuiteResult): string {
   const outcome = result.timedOut ? "timed out" : `exit code ${result.exitCode ?? "unknown"}`;
-  const successful = result.exitCode === 0 && !result.timedOut;
-  const output = successful && result.output.length > MAX_SUCCESS_OUTPUT_CHARS
-    ? `[successful output abbreviated to the last ${MAX_SUCCESS_OUTPUT_CHARS} characters]\n${result.output.slice(-MAX_SUCCESS_OUTPUT_CHARS)}`
-    : result.output;
-  const reuse = result.cached ? "\nreused successful result: source digest unchanged" : "";
-  return `[${result.target}] ${result.command}\n${outcome}, duration ${(result.durationMs / 1_000).toFixed(1)}s${reuse}\n${output || "(no output)"}`;
+  const output = result.exitCode === 0 && !result.timedOut && result.output.length > MAX_SUCCESS_OUTPUT_CHARS
+    ? `[successful output abbreviated to the last ${MAX_SUCCESS_OUTPUT_CHARS} characters]\n${result.output.slice(-MAX_SUCCESS_OUTPUT_CHARS)}` : result.output;
+  return `[${result.target}] ${result.command}\n${outcome}, duration ${(result.durationMs / 1_000).toFixed(1)}s${result.cached ? "\nreused successful result: source digest unchanged" : ""}\n${output || "(no output)"}`;
 }

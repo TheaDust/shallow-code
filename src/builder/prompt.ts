@@ -280,6 +280,9 @@ function platformContractSection(contract: PlatformContract): string {
     START_COMMAND: renderCommand(contract.startCommand),
     HEALTH_PATH: contract.healthPath,
     BASE_URL: contract.baseUrl,
+    TEST_TARGETS: (contract.testTargets ?? []).map(target => `${target.id}: ${renderCommand(target)}`).join("\n") || "未声明；先在项目运行配置中声明开发测试目标",
+    DATA_ENV_VAR: contract.dataEnvVar ?? "SHALLOW_DATA_DIR",
+    DATA_PATHS: contract.dataPaths?.join("、") || "未声明继承数据目录",
   });
 }
 
@@ -296,6 +299,5 @@ function receiptSection(): string {
 }
 
 function renderCommand(command: ProcessCommand): string {
-  const prefix = command.cwd === "output" ? [] : ["--prefix", command.cwd];
-  return [command.executable, ...prefix, ...command.args].join(" ");
+  return `cwd=${command.cwd === "output" ? "." : command.cwd}: ${[command.executable, ...command.args].join(" ")}`;
 }

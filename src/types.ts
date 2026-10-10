@@ -96,11 +96,18 @@ export interface ProcessCommand {
   args: string[];
   /** Project-relative working directory; "output" is the project root. */
   cwd: string;
+  timeoutMs?: number;
 }
 
 export interface PlatformContract {
   /** Controller-owned runtime data, outside the frozen application tree. */
   dataDirectory?: string;
+  dataPaths?: string[];
+  dataEnvVar?: string;
+  env?: Record<string, string>;
+  testTargets?: Array<ProcessCommand & { id: string }>;
+  dependencyPaths?: string[];
+  generatedPaths?: string[];
   baseUrl: string;
   port: number;
   /** Port reserved for delivery-time grading; generation must never bind it. Absent when none is reserved. */
@@ -109,7 +116,7 @@ export interface PlatformContract {
   buildCommands: ProcessCommand[];
   startCommand: ProcessCommand;
   healthPath: string;
-  /** Ports the platform's acceptance specs hard-code (e.g. 3301); graded starts bind them. */
+  /** Additional application ports declared by the project. */
   extraPorts?: number[];
   buildTimeoutMs: number;
   startTimeoutMs: number;

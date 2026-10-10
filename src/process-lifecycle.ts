@@ -81,3 +81,9 @@ export function runtimeEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.Proces
   }
   return { ...environment, ...extra };
 }
+
+/** Detached tool groups are registered with the Worker parent for interruption cleanup. */
+export function stopDetachedToolGroup(pid: number): void {
+  try { process.kill(-pid, "SIGKILL"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+}

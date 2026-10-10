@@ -44,6 +44,8 @@ export interface ProjectSpec {
   generatedPaths?: string[];
   /** Project-relative directories seeded into each isolated execution directory. */
   dataPaths?: string[];
+  /** Environment variable through which the application accepts its isolated data directory. */
+  dataEnvVar?: string;
 }
 
 /** Ports are assigned per run; they are runtime state, not project declaration. */
@@ -65,9 +67,15 @@ export function minimalWebProjectSpec(npm: string): ProjectSpec {
       { executable: npm, args: ["install", "--no-audit", "--no-fund"], cwd: "backend" },
     ],
     build: [{ executable: npm, args: ["run", "build"], cwd: "frontend" }],
+    tests: [
+      { id: "frontend", executable: process.execPath, args: ["node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1"], cwd: "frontend" },
+      { id: "backend", executable: process.execPath, args: ["--test", "--test-concurrency=1"], cwd: "backend" },
+    ],
     start: { executable: npm, args: ["run", "start"], cwd: "backend" },
     readyPath: DEFAULT_READY_PATH,
     dataPaths: ["backend/data", "backend/.data"],
+    dependencyPaths: ["frontend", "backend"],
+    generatedPaths: ["frontend/dist"],
   };
 }
 
@@ -88,7 +96,8 @@ export async function loadProjectSpec(
   let content: string;
   try {
     content = await readFile(file, "utf8");
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     throw new Error(
       `Missing project run configuration: ${file}. Declare install, build, test and start ` +
         "commands before the run; critical run information that cannot be derived is reported as a pending item.",
@@ -120,9 +129,16 @@ export function parseProjectSpec(raw: unknown, origin = PROJECT_SPEC_FILENAME): 
   }
   if (record.generatedPaths !== undefined) {
     spec.generatedPaths = parseRelativePaths(record.generatedPaths, `${origin}.generatedPaths`);
+    if (spec.generatedPaths.includes(".")) throw new Error(`${origin}.generatedPaths cannot exclude the entire project`);
   }
   if (record.dataPaths !== undefined) {
     spec.dataPaths = parseRelativePaths(record.dataPaths, `${origin}.dataPaths`);
+  }
+  if (record.dataEnvVar !== undefined) {
+    if (typeof record.dataEnvVar !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(record.dataEnvVar) || record.dataEnvVar === "PORT") {
+      throw new Error(`${origin}.dataEnvVar must name a data directory environment variable other than PORT`);
+    }
+    spec.dataEnvVar = record.dataEnvVar;
   }
   return spec;
 }
@@ -146,10 +162,16 @@ export function resolveRuntimeContract(spec: ProjectSpec, ports: RuntimePorts): 
     installCommands: (spec.install ?? []).map(toProcessCommand),
     buildCommands: (spec.build ?? []).map(toProcessCommand),
     startCommand: toProcessCommand(spec.start),
+    testTargets: (spec.tests ?? []).map(target => ({ ...toProcessCommand(target), id: target.id })),
+    env: { ...(spec.env ?? {}) },
+    dataPaths: [...(spec.dataPaths ?? [])],
+    ...(spec.dataEnvVar ? { dataEnvVar: spec.dataEnvVar } : {}),
+    ...(spec.dependencyPaths ? { dependencyPaths: [...spec.dependencyPaths] } : {}),
+    generatedPaths: [...(spec.generatedPaths ?? [])],
     healthPath: spec.readyPath ?? DEFAULT_READY_PATH,
     ...(extraPorts.length > 0 ? { extraPorts } : {}),
     buildTimeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
-    startTimeoutMs: DEFAULT_START_TIMEOUT_MS,
+    startTimeoutMs: spec.start.timeoutMs ?? DEFAULT_START_TIMEOUT_MS,
   };
 }
 
@@ -159,11 +181,13 @@ export function npmExecutable(platform: NodeJS.Platform = process.platform): str
 }
 
 function toProcessCommand(command: ProjectCommand): ProcessCommand {
-  return { executable: command.executable, args: [...(command.args ?? [])], cwd: normalizeCwd(command.cwd) };
+  return { executable: command.executable, args: [...(command.args ?? [])], cwd: normalizeCwd(command.cwd),
+    ...(command.timeoutMs === undefined ? {} : { timeoutMs: command.timeoutMs }) };
 }
 
 function normalizeCwd(cwd: string | undefined): string {
   const value = cwd?.trim();
+  if (value === "output") return "./output";
   return !value || value === "." ? "output" : value;
 }
 
@@ -201,6 +225,7 @@ function parseTestTargets(value: unknown, location: string): ProjectTestTarget[]
     if (typeof id !== "string" || id.trim() === "") {
       throw new Error(`${location}[${index}].id must be a non-empty string`);
     }
+    if (id === "all") throw new Error(`${location}[${index}].id all is reserved for running every test target`);
     if (seen.has(id)) throw new Error(`${location}[${index}].id duplicates an earlier test target: ${id}`);
     seen.add(id);
     return { ...target, id };
@@ -258,7 +283,7 @@ function parseRelativePath(value: unknown, location: string): string {
     throw new Error(`${location} must be a non-empty project-relative path`);
   }
   const text = value.replace(/\\/g, "/").trim();
-  if (text.startsWith("/") || /^[A-Za-z]:\//.test(text)) {
+  if (text.startsWith("/") || /^[A-Za-z]:/.test(text)) {
     throw new Error(`${location} must be project-relative, received an absolute path: ${value}`);
   }
   const segments = text.split("/").filter((segment) => segment !== "" && segment !== ".");

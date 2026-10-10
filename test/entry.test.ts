@@ -11,6 +11,37 @@ import {
 } from "../index.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
+test("Existing project entry develops in a separate copy and passes its declared runtime", async () => {
+  await withTempDir("shallow-entry-project-", async root => {
+    const source = join(root, "project"), requirements = join(root, "requirements");
+    await mkdir(source); await mkdir(requirements);
+    await writeFile(join(source, "server.js"), "original source");
+    await writeFile(join(source, "shallowcode.config.json"), JSON.stringify({ start: { executable: "node", args: ["server.js"] },
+      tests: [{ id: "unit", executable: "node", args: ["--test"] }], env: { FLAG: "declared" }, dataPaths: ["storage"] }));
+    await writeFile(join(requirements, "requirements.yaml"), "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
+    await main(["--requirements-dir", requirements, "--project", source], { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "runs") }, async context => {
+      assert.equal(context.sourceProjectDir, source);
+      assert.notEqual(context.pipelineOptions.outputDir, source);
+      assert.equal(context.pipelineOptions.stageStartingPoint, "inherited_application");
+      assert.deepEqual(context.pipelineOptions.platformContract.env, { FLAG: "declared" });
+      assert.equal(context.pipelineOptions.platformContract.testTargets?.[0].id, "unit");
+      await writeFile(join(context.pipelineOptions.outputDir, "server.js"), "implemented");
+      return { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [] };
+    }, null);
+    assert.equal(await (await import("node:fs/promises")).readFile(join(source, "server.js"), "utf8"), "original source");
+  });
+});
+
+test("An existing Web project without a run declaration reports the missing configuration", async () => {
+  await withTempDir("shallow-entry-project-", async root => {
+    const source = join(root, "project"), requirements = join(root, "requirements");
+    await mkdir(source); await mkdir(requirements);
+    await writeFile(join(source, "server.js"), "source");
+    await writeFile(join(requirements, "requirements.yaml"), "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
+    await assert.rejects(main(["--requirements-dir", requirements, "--project", source], gatewayEnv(), async () => { throw new Error("must not execute"); }, null), /Missing project run configuration/);
+  });
+});
+
 test("Agent entry validates paths and passes bounded production context", async () => {
   await withTempDir("shallow-entry-", async (directory) => {
     const requirementsDir = join(directory, "requirements");

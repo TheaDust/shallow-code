@@ -96,7 +96,7 @@ test("Runtime config bounds the mainline Builder context window", () => {
 });
 
 test("Runtime config reads the probe port override from the environment", () => {
-  assert.throws(() => parseProbePortOverride({ SHALLOW_PROBE_PORT: "3000" }), /reserved evaluation port/);
+  assert.equal(parseProbePortOverride({ SHALLOW_PROBE_PORT: "3000" }), 3000);
   assert.equal(parseProbePortOverride({}), null);
   assert.equal(parseProbePortOverride({ SHALLOW_PROBE_PORT: "3100" }), 3100);
   assert.equal(parseProbePortOverride({ SHALLOW_PROBE_PORT: "  3100  " }), 3100);

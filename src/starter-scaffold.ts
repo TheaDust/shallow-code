@@ -76,7 +76,15 @@ export async function installStarterScaffold(
     `${JSON.stringify(contract.extraPorts ?? [], null, 2)}\n`,
     "utf8",
   );
-  const files = await listFiles(root, ["frontend", "backend"]);
+  const command = (value: import("./types.js").ProcessCommand) => ({ ...value, cwd: value.cwd === "output" ? "." : value.cwd });
+  await writeFile(join(root, "shallowcode.config.json"), JSON.stringify({
+    install: contract.installCommands.map(command), build: contract.buildCommands.map(command),
+    tests: contract.testTargets?.map(target => ({ ...command(target), id: target.id })), start: command(contract.startCommand),
+    env: contract.env, readyPath: contract.healthPath, extraPorts: contract.extraPorts,
+    dependencyPaths: contract.dependencyPaths, generatedPaths: contract.generatedPaths,
+    dataPaths: contract.dataPaths ?? ["backend/data", "backend/.data"], dataEnvVar: contract.dataEnvVar,
+  }, null, 2) + "\n", "utf8");
+  const files = ["shallowcode.config.json", ...await listFiles(root, ["frontend", "backend"])];
   return {
     status: "installed",
     reason: "installed task-neutral web capability and platform shell",

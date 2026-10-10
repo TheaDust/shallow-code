@@ -1,8 +1,5 @@
-import { copyFile, lstat, mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
-
-/** Conventional delivery locations used when SHALLOW_DATA_DIR is absent. */
-const DEFAULT_DATA_PATHS = ["backend/data", "backend/.data"] as const;
+import { copyFile, lstat, mkdir, readdir, realpath } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 
 export interface InheritedDataCopy {
   source?: string;
@@ -14,19 +11,28 @@ export interface InheritedDataCopy {
  * persistence. The application still owns migrations and current seed data;
  * the controller only presents an untouched inherited-state copy.
  */
-export async function copyInheritedData(applicationRoot: string, target: string): Promise<InheritedDataCopy> {
+export async function copyInheritedData(applicationRoot: string, target: string,
+  dataPaths: readonly string[] = []): Promise<InheritedDataCopy> {
   const sources: string[] = [];
-  for (const relative of DEFAULT_DATA_PATHS) {
-    const absolute = join(applicationRoot, relative);
+  for (const path of dataPaths) {
+    const absolute = resolve(applicationRoot, path);
+    const contained = relative(resolve(applicationRoot), absolute);
+    if (isAbsolute(contained) || contained === ".." || contained.startsWith(`..\\`) || contained.startsWith("../")) {
+      throw new Error(`Inherited data path must stay inside the project: ${path}`);
+    }
     const stat = await lstat(absolute).catch(error => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
       throw error;
     });
     if (!stat) continue;
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw new Error(`Inherited data path must be a real directory: ${relative}`);
+      throw new Error(`Inherited data path must be a real directory: ${path}`);
     }
-    sources.push(relative);
+    const realContained = relative(await realpath(applicationRoot), await realpath(absolute));
+    if (isAbsolute(realContained) || realContained === ".." || realContained.startsWith(`..\\`) || realContained.startsWith("../")) {
+      throw new Error(`Inherited data path must stay inside the project: ${path}`);
+    }
+    sources.push(path);
   }
   if (sources.length > 1) {
     throw new Error(`Multiple default data directories are ambiguous: ${sources.join(", ")}`);
