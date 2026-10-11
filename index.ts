@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
@@ -72,11 +72,16 @@ export type AgentExecution = (
   context: AgentExecutionContext,
 ) => Promise<RunSummary>;
 
+/** 入口默认读取仓库根 .env：锚定模块位置，任意启动目录都能找到凭证。 */
+export function defaultEnvFile(): string {
+  return fileURLToPath(new URL(".env", import.meta.url));
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   env: Record<string, string | undefined> = process.env,
   execute: AgentExecution = executeProduction,
-  envFile: string | null = ".env",
+  envFile: string | null = defaultEnvFile(),
 ): Promise<number> {
   const invocation = parseInvocation(argv, { defaultOutputDir: localDefaultOutputDir("main") });
   if (invocation.command === "apply") {
@@ -370,16 +375,22 @@ function createRunLogSink(runLogFile: string, journal?: ProgressJournal): LogSin
   };
 }
 
+/** CLI 启动：把运行结果或诊断映射为进程退出码；直接执行与全局命令共用。 */
+export async function runMain(
+  argv: string[] = process.argv.slice(2),
+  env: Record<string, string | undefined> = process.env,
+): Promise<void> {
+  try {
+    process.exitCode = await main(argv, env);
+  } catch (error: unknown) {
+    console.error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)));
+    process.exitCode = 1;
+  }
+}
+
 const invokedPath = process.argv[1]
   ? pathToFileURL(resolve(process.argv[1])).href
   : undefined;
 if (invokedPath === import.meta.url) {
-  main()
-    .then((exitCode) => {
-      process.exitCode = exitCode;
-    })
-    .catch((error: unknown) => {
-      console.error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error)));
-      process.exitCode = 1;
-    });
+  void runMain();
 }

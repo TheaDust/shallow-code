@@ -9,6 +9,14 @@ npm.cmd install
 npm.cmd start
 ```
 
+在 ShallowCode 仓库根执行一次 `npm.cmd link` 注册全局命令 `shallow` 后，可在任意目录启动：
+
+```powershell
+shallow req
+```
+
+产物写在启动目录下的 `requirements/`，相对参考路径也以启动目录为基准；仓库根 `.env` 与提示词按模块位置解析，不随启动目录变化。
+
 ## 配置
 
 模型凭证按下列顺序合并：**进程环境变量 > 当前目录 `.env` > 仓库根目录 `.env`**（即与 ShallowCode 的 builder、judge 共用的那份配置）。

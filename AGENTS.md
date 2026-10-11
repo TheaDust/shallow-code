@@ -41,7 +41,7 @@
 
 | 任务 | 优先入口 |
 | --- | --- |
-| 生产装配、CLI、项目运行配置 | `index.ts`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
+| 生产装配、CLI、项目运行配置 | `index.ts`、`bin/shallow.mjs`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
 | 需求解析、依赖、增量范围 | `src/catalog.ts`、`src/evolution.ts`、`src/scheduler.ts` |
 | 功能分组 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`prompts/planning/feature-grouping.md` |
 | 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/run-record.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |

@@ -3,8 +3,10 @@ import { access, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
+  defaultEnvFile,
   main,
   type AgentExecution,
   type AgentExecutionContext,
@@ -540,6 +542,21 @@ test("Agent entry keeps default run artifacts under the temp shallowcode-runs di
     const ledgerDir = dirname(received?.pipelineOptions.ledgerFile ?? "");
     assert.equal(basename(dirname(ledgerDir)), "shallowcode-runs");
     assert.equal(dirname(dirname(ledgerDir)), tmpdir());
+  });
+});
+
+test("The default gateway env file stays anchored to the repository root", async () => {
+  const anchored = defaultEnvFile();
+  assert.equal(anchored, fileURLToPath(new URL("../.env", import.meta.url)));
+  await withTempDir("shallow-entry-env-", async (directory) => {
+    const before = process.cwd();
+    process.chdir(directory);
+    try {
+      // 启动目录变化不改变默认凭证文件：全局命令在任意目录都能读到仓库根 .env。
+      assert.equal(defaultEnvFile(), anchored);
+    } finally {
+      process.chdir(before);
+    }
   });
 });
 

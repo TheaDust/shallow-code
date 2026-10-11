@@ -37,6 +37,20 @@ npm.cmd start -- --requirements-dir E:\requirements\demo --project E:\projects\e
 
 空输出目录使用随附的 React/Vite/TypeScript + Node Web 模板，安装时写入可复用的运行配置。`--budget-ms` 是非负毫秒，缺省或 0 表示不限本轮总调度时间，单次调用仍有上限。
 
+**全局命令**
+
+在仓库根执行 `npm.cmd link` 注册一次后，可在任意目录用 `shallow` 调用：
+
+```powershell
+shallow req      # 需求整理（requirements-agent），产物写在当前目录
+shallow coding --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
+shallow coding --requirements-dir E:\requirements\demo --project E:\projects\existing-web
+shallow coding resume --run-dir E:\runs\<运行目录>
+shallow coding apply --run-dir E:\runs\<运行目录>
+```
+
+`shallow coding` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
+
 **项目运行配置**
 
 下面是 Windows 上单项目目录布局的配置示例；Linux/macOS 使用 `npm` 替换 `npm.cmd`。

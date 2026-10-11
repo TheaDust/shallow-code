@@ -2,6 +2,7 @@
   "name": "shallowcode",
   "version": "0.1.0",
   "private": true,
+  "bin": { "shallow": "bin/shallow.mjs" },
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
