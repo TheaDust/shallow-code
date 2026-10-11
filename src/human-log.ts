@@ -97,7 +97,10 @@ function describe(type: string, event: RunEvent): string | null {
       const evolutionStage = pickNumber(evolution, "stageIndex");
       const evolutionStart = pickString(evolution, "startingPoint");
       const evolutionText = evolution ? `；增量开发 Evolution${evolutionStage === null ? "" : ` Stage ${evolutionStage}`}${evolutionStart === "inherited_application" ? "（继承已有应用）" : evolutionStart === "blank_template" ? "（空白模板）" : ""}` : "";
-      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；探针端口 ${pickNumber(detail, "port") ?? "未知"}${pickString(detail, "model") ? `；模型 ${pickString(detail, "model")}` : ""}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
+      const model = pickString(detail, "model");
+      const judgeModel = pickString(detail, "judgeModel");
+      const judgeText = judgeModel && judgeModel !== model ? `；Judge 模型 ${judgeModel}` : "";
+      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；探针端口 ${pickNumber(detail, "port") ?? "未知"}${model ? `；模型 ${model}` : ""}${judgeText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
     }
     case "packet_selected":
       return `选定需求包 ${packetId}${strings(detail?.names).length ? `：${strings(detail?.names).join("、")}` : ""}`;

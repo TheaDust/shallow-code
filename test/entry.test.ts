@@ -109,7 +109,8 @@ test("Agent entry validates paths and passes bounded production context", async 
     );
 
     assert.equal(exitCode, 0);
-    assert.equal(received?.gateway.model, "provider/model");
+    assert.equal(received?.builderGateway.model, "provider/model");
+    assert.equal(received?.judgeGateway.model, "provider/model");
     assert.equal(received?.pipelineOptions.requirementsFile, join(dirname(received!.pipelineOptions.ledgerFile), "requirements", "requirements.yaml"));
     assert.equal(await readFile(received!.pipelineOptions.requirementsFile, "utf8"), await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
     assert.equal(received?.pipelineOptions.outputDir, outputDir);
@@ -325,6 +326,7 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
         "OPENAI_API_KEY=file-key",
         "OPENAI_BASE_URL=https://file.example/v1",
         'MODEL="file/model"',
+        "SHALLOW_JUDGE_MODEL=file/judge",
         'SHALLOW_PROBE_PORT=3210',
       ].join("\n"),
     );
@@ -348,14 +350,17 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
     ];
 
     await main(argv, {}, execute, join(directory, "gateway.env"));
-    assert.equal(received?.gateway.apiKey, "file-key");
-    assert.equal(received?.gateway.baseUrl, "https://file.example/v1");
-    assert.equal(received?.gateway.model, "file/model");
+    assert.equal(received?.builderGateway.apiKey, "file-key");
+    assert.equal(received?.builderGateway.baseUrl, "https://file.example/v1");
+    assert.equal(received?.builderGateway.model, "file/model");
+    assert.equal(received?.judgeGateway.model, "file/judge");
+    assert.equal(received?.judgeGateway.apiKey, "file-key");
     assert.equal(received?.pipelineOptions.platformContract.port, 3210);
 
-    await main(argv, { MODEL: "env/model" }, execute, join(directory, "gateway.env"));
-    assert.equal(received?.gateway.model, "env/model");
-    assert.equal(received?.gateway.apiKey, "file-key");
+    await main(argv, { MODEL: "env/model", SHALLOW_JUDGE_MODEL: "env/judge" }, execute, join(directory, "gateway.env"));
+    assert.equal(received?.builderGateway.model, "env/model");
+    assert.equal(received?.builderGateway.apiKey, "file-key");
+    assert.equal(received?.judgeGateway.model, "env/judge");
   });
 });
 

@@ -29,12 +29,19 @@ export function parseBuilderContextWindow(
   return value;
 }
 
+/**
+ * 读取一份网关配置。公共值来自 OPENAI_API_KEY / OPENAI_BASE_URL / MODEL；
+ * 传入 component（如 "SHALLOW_BUILDER"、"SHALLOW_JUDGE"）时，
+ * `<component>_API_KEY` / `<component>_BASE_URL` / `<component>_MODEL`
+ * 可分别覆盖对应字段，未覆盖的字段回退公共值。
+ */
 export function readGatewayConfig(
   env: Record<string, string | undefined>,
+  component?: string,
 ): GatewayConfig {
-  const apiKey = requiredEnv(env, "OPENAI_API_KEY");
-  const baseUrl = requiredEnv(env, "OPENAI_BASE_URL").replace(/\/+$/, "");
-  const model = requiredEnv(env, "MODEL");
+  const apiKey = gatewayEnv(env, component, "API_KEY", "OPENAI_API_KEY");
+  const baseUrl = gatewayEnv(env, component, "BASE_URL", "OPENAI_BASE_URL").replace(/\/+$/, "");
+  const model = gatewayEnv(env, component, "MODEL", "MODEL");
   return { apiKey, baseUrl, model };
 }
 
@@ -179,11 +186,17 @@ export function deriveModelTimeouts(totalBudgetMs: number): {
   };
 }
 
-function requiredEnv(
+/** 组件变量优先，公共变量兜底；两者都没有时给出包含两者名称的错误。 */
+function gatewayEnv(
   env: Record<string, string | undefined>,
-  name: string,
+  component: string | undefined,
+  name: "API_KEY" | "BASE_URL" | "MODEL",
+  fallbackName: string,
 ): string {
-  const value = env[name]?.trim();
-  if (!value) throw new Error(`${name} is required`);
-  return value;
+  const scopedName = component ? `${component}_${name}` : undefined;
+  const scoped = scopedName ? env[scopedName]?.trim() : undefined;
+  if (scoped) return scoped;
+  const fallback = env[fallbackName]?.trim();
+  if (fallback) return fallback;
+  throw new Error(scopedName ? `${scopedName} or ${fallbackName} is required` : `${fallbackName} is required`);
 }

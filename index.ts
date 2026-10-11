@@ -51,7 +51,10 @@ export interface AgentExecutionContext {
   runRecord: RunRecord;
   resumeCheckpointSha?: string;
   sourceProjectDir?: string;
-  gateway: GatewayConfig;
+  /** Builder 侧网关（SHALLOW_BUILDER_* 覆盖，缺省公共网关）。 */
+  builderGateway: GatewayConfig;
+  /** Judge / Planner 侧网关（SHALLOW_JUDGE_* 覆盖，缺省公共网关）。 */
+  judgeGateway: GatewayConfig;
   pipelineOptions: PipelineOptions;
   modelTimeouts: {
     builderTimeoutMs: number;
@@ -86,7 +89,8 @@ export async function main(
     requirementsDir: prior!.requirementsDir, outputDir: prior!.outputDir, budgetMs: invocation.budgetMs,
   };
   const mergedEnv = await mergeGatewayEnv(env, envFile);
-  const gateway = readGatewayConfig(mergedEnv);
+  const builderGateway = readGatewayConfig(mergedEnv, "SHALLOW_BUILDER");
+  const judgeGateway = readGatewayConfig(mergedEnv, "SHALLOW_JUDGE");
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
   try {
     await access(requirementsFile);
@@ -174,14 +178,15 @@ export async function main(
   const summary = await execute({
     runRecord, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
     ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
-    gateway,
+    builderGateway,
+    judgeGateway,
     pipelineOptions,
     modelTimeouts: deriveModelTimeouts(cli.budgetMs),
     builderContextWindow: parseBuilderContextWindow(mergedEnv),
     sseCaptureDir,
     referenceImages,
   }).catch((error: unknown) => {
-    throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), [gateway.apiKey]));
+    throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, judgeGateway)));
   });
   const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
   await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
@@ -231,10 +236,15 @@ async function mergeGatewayEnv(
   return merged;
 }
 
+/** 所有可能出现在诊断文本里的凭证，供统一脱敏。 */
+function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
+  return [...new Set(gateways.map(gateway => gateway.apiKey))];
+}
+
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { gateway, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, judgeGateway, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
@@ -246,15 +256,15 @@ async function executeProduction(
     join(dirname(runLogFile), "candidate"), pipelineOptions.platformContract);
   let releaseWorkspace: (() => Promise<void>) | undefined;
   try {
-    const builder = new PromptBuilder(new PiWorkerClient(gateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined), {
+    const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined), {
       timeoutMs: modelTimeouts.builderTimeoutMs,
       requirementsDir: dirname(pipelineOptions.requirementsFile),
       contextWindow: builderContextWindow,
       referenceImages,
-      visionProbe: new VisionCapability(gateway),
+      visionProbe: new VisionCapability(builderGateway),
     });
     const planner = new LlmProbePlanner({
-      ...gateway,
+      ...judgeGateway,
       browserPath: pipelineOptions.platformContract.browserPath,
       timeoutMs: modelTimeouts.plannerTimeoutMs,
     });
@@ -304,7 +314,7 @@ async function executeProduction(
       promptHash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
     }
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
-      grouper: new LlmFeatureGrouper({ ...gateway, timeoutMs: Infinity }),
+      grouper: new LlmFeatureGrouper({ ...judgeGateway, timeoutMs: Infinity }),
       builder,
       planner,
       runner,
@@ -314,8 +324,9 @@ async function executeProduction(
       clock: { nowMs: () => Date.now() },
       finalVerifier,
       logSink,
-      diagnosticSecrets: [gateway.apiKey],
-      runMetadata: { model: gateway.model, builderTimeoutMs: modelTimeouts.builderTimeoutMs,
+      diagnosticSecrets: gatewaySecrets(builderGateway, judgeGateway),
+      runMetadata: { model: builderGateway.model, judgeModel: judgeGateway.model,
+        builderTimeoutMs: modelTimeouts.builderTimeoutMs,
         builderContextWindow,
         starterScaffold,
         promptSha256: promptHash.digest("hex"),
@@ -328,7 +339,7 @@ async function executeProduction(
       await candidate.dispose();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[ShallowCode] 候选工作区清理失败：${sanitizeDiagnosticText(message, [gateway.apiKey])}\n`);
+      process.stderr.write(`[ShallowCode] 候选工作区清理失败：${sanitizeDiagnosticText(message, gatewaySecrets(builderGateway, judgeGateway))}\n`);
     }
     await releaseWorkspace?.();
   }

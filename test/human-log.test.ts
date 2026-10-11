@@ -162,6 +162,21 @@ test("HumanRunFormatter records whether the generic starter scaffold was install
   assert.match(line, /通用脚手架 installed/);
 });
 
+test("HumanRunFormatter shows the judge model when it differs from the builder model", () => {
+  const formatter = new HumanRunFormatter();
+  const line = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
+    detail: { model: "provider/builder", judgeModel: "provider/judge" },
+  }));
+  assert.match(line, /；模型 provider\/builder/);
+  assert.match(line, /；Judge 模型 provider\/judge/);
+
+  const same = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
+    detail: { model: "provider/model", judgeModel: "provider/model" },
+  }));
+  assert.match(same, /；模型 provider\/model/);
+  assert.doesNotMatch(same, /Judge 模型/);
+});
+
 test("HumanRunFormatter identifies progressive stage starting points", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-10-02T00:00:00Z", "pipeline_started", {

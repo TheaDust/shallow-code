@@ -61,6 +61,55 @@ test("Runtime config requires the three explicit gateway variables", () => {
   }
 });
 
+test("Runtime config supports component-scoped gateway overrides", () => {
+  const complete = {
+    OPENAI_API_KEY: "key",
+    OPENAI_BASE_URL: "https://gateway.example/v1/",
+    MODEL: "provider/model",
+  };
+  // 未配置覆盖时与公共网关完全一致。
+  assert.deepEqual(readGatewayConfig(complete, "SHALLOW_BUILDER"), {
+    apiKey: "key",
+    baseUrl: "https://gateway.example/v1",
+    model: "provider/model",
+  });
+
+  // 三个字段可分别覆盖，未覆盖的字段回退公共值；空白覆盖视为缺省。
+  const scoped = {
+    ...complete,
+    SHALLOW_BUILDER_API_KEY: " builder-key ",
+    SHALLOW_BUILDER_MODEL: "  ",
+    SHALLOW_JUDGE_BASE_URL: "https://judge.example/v1",
+    SHALLOW_JUDGE_MODEL: "judge/model",
+  };
+  assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_BUILDER"), {
+    apiKey: "builder-key",
+    baseUrl: "https://gateway.example/v1",
+    model: "provider/model",
+  });
+  assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_JUDGE"), {
+    apiKey: "key",
+    baseUrl: "https://judge.example/v1",
+    model: "judge/model",
+  });
+
+  // 组件值可独立成立；组件与公共值都缺失时错误信息包含组件变量名。
+  const onlyBuilder = {
+    SHALLOW_BUILDER_API_KEY: "key",
+    SHALLOW_BUILDER_BASE_URL: "https://builder.example/v1",
+    SHALLOW_BUILDER_MODEL: "builder/model",
+  };
+  assert.deepEqual(readGatewayConfig(onlyBuilder, "SHALLOW_BUILDER"), {
+    apiKey: "key",
+    baseUrl: "https://builder.example/v1",
+    model: "builder/model",
+  });
+  assert.throws(
+    () => readGatewayConfig(onlyBuilder, "SHALLOW_JUDGE"),
+    /SHALLOW_JUDGE_API_KEY or OPENAI_API_KEY/,
+  );
+});
+
 test("Runtime config bounds model calls by the total budget", () => {
   assert.deepEqual(deriveModelTimeouts(600_000), {
     builderTimeoutMs: 240_000,
