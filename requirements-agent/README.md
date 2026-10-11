@@ -24,6 +24,8 @@ shallow req
 - 公共值：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`
 - 本 agent 单独覆盖：`REQUIREMENTS_AGENT_API_KEY`、`REQUIREMENTS_AGENT_BASE_URL`、`REQUIREMENTS_AGENT_MODEL`（字段级回退公共值）
 
+网关为 opencode.ai（Zen/Go）时会自动附带该网关要求的 `x-opencode-session` 会话头。
+
 仓库根 `.env` 示例（参见 ShallowCode 的 `.env.example`）：
 
 ```dotenv

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { AuthStorage, ModelRegistry, SessionManager, SettingsManager, DefaultResourceLoader, createAgentSession,
@@ -10,6 +11,7 @@ import type { BuilderTool, ToolImage } from "./tool-contract.js";
 import { assertToolPath, createBuilderTools, createShellExecutor } from "./pi-tools.js";
 import { PiExecutionCollector, type ExecutionSummary } from "./pi-execution-stats.js";
 import { piProviderModel } from "./pi-model-config.js";
+import { opencodeSessionHeaders } from "../gateway-headers.js";
 
 type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "platformContract"> & {
   gateway: GatewayConfig;
@@ -75,7 +77,8 @@ export async function createPiSession(input: PiSessionOptions,
   const modelRegistry = ModelRegistry.inMemory(authStorage);
   modelRegistry.registerProvider("shallow-gateway", {
     baseUrl: input.gateway.baseUrl, api: "openai-completions", apiKey: "SHALLOW_RUNTIME_CREDENTIAL",
-    models: [piProviderModel(input.gateway.model, input.contextWindow)],
+    models: [piProviderModel(input.gateway.model, input.contextWindow,
+      opencodeSessionHeaders(input.gateway.baseUrl, randomUUID()))],
   });
   const settingsManager = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
     provider: { maxRetries: 0, timeoutMs: input.timeoutMs } }, compaction: { enabled: true }, enableInstallTelemetry: false });

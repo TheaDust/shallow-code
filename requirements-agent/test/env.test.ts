@@ -4,7 +4,21 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { loadGatewayEnv, resolveGatewayEnv } from "../src/env.js";
+import { loadGatewayEnv, opencodeSessionHeaders, resolveGatewayEnv } from "../src/env.js";
+
+test("opencode 网关附带 x-opencode-session，其他网关不附加", () => {
+  assert.deepEqual(
+    opencodeSessionHeaders("https://opencode.ai/zen/go/v1", "session-1"),
+    { "x-opencode-session": "session-1" },
+  );
+  assert.deepEqual(
+    opencodeSessionHeaders("https://www.opencode.ai/zen/v1", "session-1"),
+    { "x-opencode-session": "session-1" },
+  );
+  assert.deepEqual(opencodeSessionHeaders("https://gateway.example/v1", "session-1"), {});
+  assert.deepEqual(opencodeSessionHeaders("https://opencode.ai.evil.example/v1", "session-1"), {});
+  assert.deepEqual(opencodeSessionHeaders("not a url", "session-1"), {});
+});
 
 test("resolveGatewayEnv 使用公共配置并修剪 baseUrl 末尾斜杠", () => {
   const gateway = resolveGatewayEnv({

@@ -7,6 +7,7 @@ import {
   LlmProbePlanner,
   ProbePlannerError,
 } from "../src/judge/llm-probe-planner.js";
+import { PlannerJsonClient } from "../src/planner-json-client.js";
 import {
   assertLocatorOnlyRefinement,
   NoLocatorProgressError,
@@ -353,6 +354,31 @@ test("Probe Planner sends one source-blind OpenAI-compatible request", async () 
     body,
     /candidate-app|source code|git diff|acceptedSha|SECRET-OTHER-REQ|\/workspace\/tests/,
   );
+});
+
+test("Probe Planner sends a stable OpenCode session header only to OpenCode gateways", async () => {
+  const calls: Array<{ url: string; headers: Headers }> = [];
+  const fetchFn: typeof fetch = async (input, init) => {
+    calls.push({ url: String(input), headers: new Headers(init?.headers) });
+    return jsonResponse({ choices: [{ message: { content: "{}" } }] });
+  };
+  const opencode = new PlannerJsonClient(
+    { baseUrl: "https://opencode.ai/zen/go/v1", apiKey: "secret-key", model: "provider/model", timeoutMs: 1_000 },
+    fetchFn,
+  );
+  await opencode.complete([{ role: "user", content: "one" }], { type: "object" });
+  await opencode.complete([{ role: "user", content: "two" }], { type: "object" });
+  const session = calls[0].headers.get("x-opencode-session");
+  assert.ok(session);
+  assert.equal(calls[1].headers.get("x-opencode-session"), session, "同一会话复用同一个会话标识");
+  assert.equal(calls[1].headers.get("authorization"), "Bearer secret-key");
+
+  const plain = new PlannerJsonClient(
+    { baseUrl: "https://gateway.example/v1", apiKey: "secret-key", model: "provider/model", timeoutMs: 1_000 },
+    fetchFn,
+  );
+  await plain.complete([{ role: "user", content: "three" }], { type: "object" });
+  assert.equal(calls[2].headers.get("x-opencode-session"), null);
 });
 
 test("Probe Planner reports normalized token usage from a streaming usage trailer", async () => {

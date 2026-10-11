@@ -20,7 +20,7 @@ npx.cmd playwright install chromium
 Copy-Item .env.example .env
 ```
 
-在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。Builder 与 Judge（规划/验收）可分别用 `SHALLOW_BUILDER_*`、`SHALLOW_JUDGE_*` 覆盖 API key、地址与模型（字段级回退公共值）；[requirements-agent](requirements-agent/README.md) 读取同一份仓库根 `.env`，用 `REQUIREMENTS_AGENT_*` 单独覆盖。
+在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。Builder 与 Judge（规划/验收）可分别用 `SHALLOW_BUILDER_*`、`SHALLOW_JUDGE_*` 覆盖 API key、地址与模型（字段级回退公共值）；[requirements-agent](requirements-agent/README.md) 读取同一份仓库根 `.env`，用 `REQUIREMENTS_AGENT_*` 单独覆盖。网关为 opencode.ai（Zen/Go）时，控制器与 requirements-agent 会自动附带该网关要求的 `x-opencode-session` 会话头。
 
 Pi 通过 `CodingAgentPort` 在独立 Worker 中执行。[pi-sdk-adapter.ts](src/builder/pi-sdk-adapter.ts) 集中 SDK 导入、工具转换、会话恢复、压缩重试和完成判断；项目工具使用 [tool-contract.ts](src/builder/tool-contract.ts)，运行日志记录实际 SDK 版本。模型描述与上下文窗口配置位于 `pi-model-config.ts`。
 

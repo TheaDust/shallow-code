@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
+
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { httpGatewayFailure, type GatewayFailure } from "./gateway-failure.js";
+import { opencodeSessionHeaders } from "./gateway-headers.js";
 
 /** Normalized planner token counts, matching the Builder's usage semantics. */
 export interface PlannerUsage {
@@ -79,8 +82,13 @@ export class PlannerRequestError extends Error {
 }
 
 export class PlannerJsonClient {
+  /** opencode 网关的会话头：同一客户端实例内稳定复用。 */
+  private readonly sessionHeaders: Record<string, string>;
+
   constructor(private readonly config: PlannerJsonConfig, private readonly fetchFn: typeof fetch = globalThis.fetch,
-    private readonly label = "Probe planner") {}
+    private readonly label = "Probe planner") {
+    this.sessionHeaders = opencodeSessionHeaders(config.baseUrl, randomUUID());
+  }
 
   async complete(messages: Array<{ role: "system" | "user"; content: string }>, schema: unknown,
     options: PlannerJsonOptions = {}): Promise<string> {
@@ -102,6 +110,7 @@ export class PlannerJsonClient {
           authorization: `Bearer ${this.config.apiKey}`,
           "content-type": "application/json",
           "user-agent": PLANNER_USER_AGENT,
+          ...this.sessionHeaders,
         },
         body: JSON.stringify({
           model: this.config.model,

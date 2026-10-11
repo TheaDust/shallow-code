@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,7 +22,7 @@ import {
   runConversation,
   type ChatAgent,
 } from "./cli.js";
-import { loadGatewayEnv, type GatewayEnv } from "./env.js";
+import { loadGatewayEnv, opencodeSessionHeaders, type GatewayEnv } from "./env.js";
 import { runPiTurn } from "./pi-turn.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
@@ -75,7 +76,8 @@ interface PiAgentOptions {
   out: (text: string) => void;
 }
 
-function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW) {
+function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW,
+  headers?: Record<string, string>) {
   return {
     id: model,
     name: model,
@@ -84,6 +86,7 @@ function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_
     contextWindow,
     maxTokens: 65_536,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...(headers && Object.keys(headers).length ? { headers } : {}),
     compat: {
       supportsStore: false,
       supportsDeveloperRole: false,
@@ -102,11 +105,14 @@ async function createPiAgent(options: PiAgentOptions): Promise<ChatAgent> {
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(PROVIDER, options.gateway.apiKey);
     const modelRegistry = ModelRegistry.inMemory(authStorage);
+    // 整个对话复用一个会话标识，满足 opencode 网关的路由要求。
+    const sessionId = randomUUID();
     modelRegistry.registerProvider(PROVIDER, {
       baseUrl: options.gateway.baseUrl,
       api: "openai-completions",
       apiKey: "REQUIREMENTS_RUNTIME_CREDENTIAL",
-      models: [piProviderModel(options.gateway.model)],
+      models: [piProviderModel(options.gateway.model, DEFAULT_CONTEXT_WINDOW,
+        opencodeSessionHeaders(options.gateway.baseUrl, sessionId))],
     });
     const settingsManager = SettingsManager.inMemory({
       retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000 },

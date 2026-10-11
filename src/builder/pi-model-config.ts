@@ -6,11 +6,13 @@
  */
 export const DEFAULT_CONTEXT_WINDOW = 256_000;
 
-export function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW) {
+export function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW,
+  headers?: Record<string, string>) {
   return {
     id: model, name: model, reasoning: true, input: ["text", "image"] as ("text" | "image")[],
     contextWindow, maxTokens: 65_536,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ...(headers && Object.keys(headers).length ? { headers } : {}),
     compat: { supportsStore: false, supportsDeveloperRole: false, supportsReasoningEffort: false,
       maxTokensField: "max_tokens" as const, supportsStrictMode: false, requiresReasoningContentOnAssistantMessages: true },
   };
