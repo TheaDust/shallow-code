@@ -1,5 +1,5 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { Type } from "typebox";
 
 import {
@@ -92,6 +92,7 @@ export function createRequirementsTool(store: DraftStore) {
       "每个节点包含 id、name、type（ROOT/FOLDER/ATOMIC）、description、dependencies、children 与 scenarios；" +
       "scenario 包含 id、name、steps，step 由 keyword（GIVEN/WHEN/THEN/AND/BUT）与 content 组成；" +
       "根节点可包含 data 初始数据（每项含 category 与 items 字符串数组）。" +
+      "用户提供的参考文件路径放在对应节点的 visual_reference 字符串数组中，保留原路径，程序导出时复制并改为相对路径。" +
       "校验失败会返回具体错误，请在本回合内修正后重新提交。",
     promptSnippet: "update_requirements: 提交完整候选需求树与未决问题",
     parameters,
@@ -200,17 +201,22 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       "用普通文字描述你的需求，我会整理草案并追问缺失信息。\n" +
       "需要生成时输入“生成需求文档”；行尾加 \\ 可以续行；Ctrl+C 退出。\n\n",
   );
-  let awaitingConfirmation = false;
+  let reviewedOutput: PreparedRequirementsOutput | null = null;
   for await (const raw of input) {
     const text = raw.trim();
     if (!text) continue;
-    if (awaitingConfirmation) {
-      awaitingConfirmation = false;
-      if (isAffirmative(text) && store.tree) {
-        const file = await writeRequirementsOutput(store.tree, baseDir);
-        out(`已生成 ${file}\n`);
-        return { status: "generated", file };
+    if (reviewedOutput) {
+      if (isAffirmative(text)) {
+        try {
+          const file = await writeRequirementsOutput(reviewedOutput.tree, baseDir, reviewedOutput.references);
+          out(`已生成 ${file}\n`);
+          return { status: "generated", file };
+        } catch (error) {
+          out(`生成失败：${error instanceof Error ? error.message : String(error)}。回复“是”重试，或继续修改需求。\n\n`);
+          continue;
+        }
       }
+      reviewedOutput = null;
       // 非确认内容按普通修改继续对话。
     }
     const generateRequested = requestsGeneration(text);
@@ -242,29 +248,94 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       );
       continue;
     }
+    try {
+      reviewedOutput = await prepareRequirementsOutput(store.tree, baseDir);
+    } catch (error) {
+      out(`还不能生成这份需求文档：${error instanceof Error ? error.message : String(error)}。请修正参考文件后重新生成。\n\n`);
+      continue;
+    }
     out(
       `──────── 需求审阅（第 ${store.revision} 版）────────\n` +
-        `${serializeRequirementsYaml(store.tree)}` +
+        `${serializeRequirementsYaml(reviewedOutput.tree)}` +
+        (reviewedOutput.references.length
+          ? `【将交接的参考文件】\n${numberList(reviewedOutput.references.map((reference) => `${reference.source} → ${reference.destination}`))}\n`
+          : "") +
         "────────\n" +
         "是否生成这份需求文档？回复“是”生成；回复其他内容继续修改。\n\n",
     );
-    awaitingConfirmation = true;
   }
   out("未生成需求文档，本次会话结束。\n");
   return { status: "ended" };
 }
 
+interface ReferenceCopy {
+  source: string;
+  destination: string;
+}
+
+interface PreparedRequirementsOutput {
+  tree: RequirementNode;
+  references: ReferenceCopy[];
+}
+
+/** 在审阅前核对本地参考文件，审阅视图与最终 YAML 使用同一份树。 */
+export async function prepareRequirementsOutput(
+  tree: RequirementNode,
+  baseDir: string,
+): Promise<PreparedRequirementsOutput> {
+  const outputTree = structuredClone(tree);
+  const references = new Map<string, ReferenceCopy>();
+  const visit = async (node: RequirementNode): Promise<void> => {
+    const paths = [...new Set([
+      ...(node.visual_reference ?? []),
+      ...[...node.description.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)].map((match) => match[1]),
+    ])];
+    const rewritten = new Map<string, string>();
+    for (const path of paths) {
+      const source = resolve(baseDir, path);
+      let reference = references.get(source);
+      if (!reference) {
+        const file = await stat(source).catch(() => {
+          throw new Error(`参考文件不存在或不可读取：${path}`);
+        });
+        if (!file.isFile()) throw new Error(`参考路径必须是普通文件：${path}`);
+        reference = { source, destination: `references/${references.size + 1}-${basename(source)}` };
+        references.set(source, reference);
+      }
+      rewritten.set(path, reference.destination);
+    }
+    if (node.visual_reference) node.visual_reference = node.visual_reference.map((path) => rewritten.get(path)!);
+    node.description = node.description.replace(/(!\[[^\]]*\]\()([^)]+)(\))/g,
+      (_match, prefix: string, path: string, suffix: string) => `${prefix}${rewritten.get(path)}${suffix}`);
+    for (const child of node.children) await visit(child);
+  };
+  await visit(outputTree);
+  return { tree: outputTree, references: [...references.values()] };
+}
+
 export async function writeRequirementsOutput(
   tree: RequirementNode,
   baseDir: string,
+  references: ReferenceCopy[] = [],
 ): Promise<string> {
   for (let index = 1; ; index += 1) {
     const directory = join(baseDir, index === 1 ? "requirements" : `requirements-${index}`);
     const file = join(directory, "requirements.yaml");
-    if (await fileExists(file)) continue;
-    await mkdir(directory, { recursive: true });
-    await writeFile(file, serializeRequirementsYaml(tree), "utf8");
-    return file;
+    try {
+      await mkdir(directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw error;
+    }
+    try {
+      if (references.length) await mkdir(join(directory, "references"));
+      for (const reference of references) await copyFile(reference.source, join(directory, reference.destination));
+      await writeFile(file, serializeRequirementsYaml(tree), { encoding: "utf8", flag: "wx" });
+      return file;
+    } catch (error) {
+      await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
   }
 }
 
@@ -302,13 +373,4 @@ function formatRefs(refs: RequirementRef[]): string {
 
 function numberList(items: string[]): string {
   return items.map((item, index) => `${index + 1}. ${item}`).join("\n");
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }

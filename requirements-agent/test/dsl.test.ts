@@ -236,6 +236,66 @@ test("validateForGeneration 要求非空草案、至少一个 ATOMIC、每个 AT
   assert.deepEqual(validateForGeneration(complete), []);
 });
 
+test("正式生成拒绝缺失阶段、独立 AND 和阶段倒序，允许各阶段的 AND/BUT", () => {
+  const tree = expectOk(normalizeDraft(validTree()));
+  const scenario = tree.children[0].scenarios[0];
+  const original = structuredClone(scenario.steps);
+  for (const keyword of ["GIVEN", "WHEN", "THEN"] as const) {
+    scenario.steps = original.filter((step) => step.keyword !== keyword);
+    assert.match(validateForGeneration(tree).join("\n"), new RegExp(keyword));
+  }
+  scenario.steps = [{ keyword: "AND", content: "有一条任务。" }];
+  assert.match(validateForGeneration(tree).join("\n"), /AND\/BUT 必须跟随/);
+  scenario.steps = [original[0], original[2], original[1]];
+  assert.match(validateForGeneration(tree).join("\n"), /顺序排列/);
+  scenario.steps = [
+    original[0], { keyword: "AND", content: "用户已登录。" },
+    original[1], { keyword: "BUT", content: "用户尚未刷新页面。" },
+    original[2], original[3],
+  ];
+  assert.deepEqual(validateForGeneration(tree), []);
+});
+
+test("拒绝文件夹展开或祖先依赖继承后产生的原子依赖环", () => {
+  const input = {
+    id: "root", name: "产品", type: "ROOT", description: "产品说明。",
+    children: [
+      { id: "a", name: "A", type: "ATOMIC", description: "A。", dependencies: ["group"] },
+      { id: "group", name: "分组", type: "FOLDER", description: "分组说明。", dependencies: [] as string[],
+        children: [{ id: "b", name: "B", type: "ATOMIC", description: "B。", dependencies: ["a"] }] },
+    ],
+  };
+  let result = normalizeDraft(input);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.errors.join("\n"), /依赖环/);
+
+  input.children[0].dependencies = ["b"];
+  input.children[1].dependencies = ["a"];
+  input.children[1].children![0].dependencies = [];
+  result = normalizeDraft(input);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.errors.join("\n"), /依赖环/);
+
+  input.children[0].dependencies = [];
+  input.children[1].dependencies = ["group"];
+  input.children[1].children![0].dependencies = ["root", "group", "b"];
+  assert.equal(normalizeDraft(input).ok, true, "自身、根节点与祖先依赖应保持消费者的排除语义");
+});
+
+test("visual_reference 保留、往返序列化并进入修改摘要，非法声明被拒绝", () => {
+  const input = validTree();
+  const before = expectOk(normalizeDraft(input));
+  input.visual_reference = ["参考图.png"];
+  (input.children as Record<string, unknown>[])[0].visual_reference = ["页面.png"];
+  const tree = expectOk(normalizeDraft(input));
+  assert.deepEqual(tree.visual_reference, ["参考图.png"]);
+  const reparsed = expectOk(normalizeDraft(parse(serializeRequirementsYaml(tree))));
+  assert.deepEqual(reparsed, tree);
+  assert.deepEqual(diffRequirements(before, tree).changed.map((node) => node.id), ["task-app", "create-task"]);
+  input.visual_reference = "参考图.png";
+  assert.equal(normalizeDraft(input).ok, false);
+});
+
 test("serializeRequirementsYaml 序列化后可由 YAML 解析还原（中文、引号、换行、data）", () => {
   const input = validTree();
   input.description = "第一行。\n“引号”与换行都要保留。";

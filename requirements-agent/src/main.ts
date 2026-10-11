@@ -20,9 +20,9 @@ import {
   createRequirementsTool,
   runConversation,
   type ChatAgent,
-  type ChatTurnResult,
 } from "./cli.js";
 import { loadGatewayEnv, type GatewayEnv } from "./env.js";
+import { runPiTurn } from "./pi-turn.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
@@ -95,13 +95,6 @@ function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_
   };
 }
 
-interface PiAgentOptions {
-  gateway: GatewayEnv;
-  systemPrompt: string;
-  tool: ReturnType<typeof createRequirementsTool>;
-  out: (text: string) => void;
-}
-
 async function createPiAgent(options: PiAgentOptions): Promise<ChatAgent> {
   const agentDir = join(tmpdir(), `requirements-agent-${process.pid}`);
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
@@ -163,35 +156,7 @@ async function createPiAgent(options: PiAgentOptions): Promise<ChatAgent> {
     });
 
     return {
-      async send(text: string): Promise<ChatTurnResult> {
-        let promptError: unknown;
-        try {
-          await session.prompt(text, { expandPromptTemplates: false });
-        } catch (error) {
-          promptError = error;
-        }
-        // prompt 已等待完整回合；这里兜底等待自动重试与压缩真正结束。
-        for (let attempt = 0; attempt < 600; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-          try {
-            await session.agent.waitForIdle();
-          } catch {
-            // 忽略空闲等待错误，以消息状态为准。
-          }
-          if (!session.isCompacting && !session.isRetrying && !session.isStreaming) break;
-        }
-        if (promptError) {
-          return { ok: false, error: String(promptError) };
-        }
-        const last = session.messages.at(-1);
-        if (!last || last.role !== "assistant") {
-          return { ok: false, error: "模型没有返回结果" };
-        }
-        if (last.stopReason === "error") {
-          return { ok: false, error: last.errorMessage ?? "模型返回错误" };
-        }
-        return { ok: true };
-      },
+      send: (text) => runPiTurn(session, text),
       async abort() {
         try {
           await session.abort();

@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
+import { loadRequirementCatalog } from "../../src/catalog.js";
 
 import {
   assembleInputLines,
@@ -213,6 +214,8 @@ test("完整草案经确认后生成 requirements.yaml", async (t) => {
   if (!reparsed.ok) return;
   assert.deepEqual(reparsed.tree, store.tree);
   assert.equal(result.file, join(base, "requirements", "requirements.yaml"));
+  const catalog = await loadRequirementCatalog(result.file);
+  assert.deepEqual(catalog.requirements.map((requirement) => requirement.id), ["create-task"]);
 });
 
 test("审阅后回复非确认内容会回到对话且不生成", async (t) => {
@@ -267,6 +270,68 @@ test("已有同名文件时使用编号目录并保留已有文档", async (t) =
   if (result.status !== "generated") return;
   assert.equal(result.file, join(base, "requirements-2", "requirements.yaml"));
   assert.equal(await readFile(join(base, "requirements", "requirements.yaml"), "utf8"), "existing: true\n");
+});
+
+test("审阅并交接参考文件：同名来源分别保存、重复来源复用、描述中的图片路径同步重写", async (t) => {
+  const store = createDraftStore();
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  await mkdir(join(base, "other"));
+  await writeFile(join(base, "页面.png"), "first-image");
+  await writeFile(join(base, "other", "页面.png"), "second-image");
+  const tree = validTree();
+  tree.visual_reference = ["页面.png"];
+  const child = (tree.children as Record<string, unknown>[])[0];
+  child.visual_reference = ["页面.png", "other/页面.png"];
+  child.description = "标题必填。![参考](other/页面.png)";
+  const agent = new FakeAgent(store, [async ({ tool }) => {
+    await tool.execute("call-1", { requirements: tree, questions: [] });
+  }]);
+  const { out, all } = collect();
+  const result = await runConversation({ agent, store, input: scripted(["整理需求", "生成需求文档", "是"]), out, baseDir: base });
+  assert.equal(result.status, "generated");
+  if (result.status !== "generated") return;
+  const output = parse(await readFile(result.file, "utf8"));
+  assert.deepEqual(output.visual_reference, ["references/1-页面.png"]);
+  assert.deepEqual(output.children[0].visual_reference, ["references/1-页面.png", "references/2-页面.png"]);
+  assert.match(output.children[0].description, /!\[参考\]\(references\/2-页面.png\)/);
+  assert.equal(await readFile(join(base, "requirements", "references", "1-页面.png"), "utf8"), "first-image");
+  assert.equal(await readFile(join(base, "requirements", "references", "2-页面.png"), "utf8"), "second-image");
+  assert.match(all(), /将交接的参考文件/);
+  assert.ok(all().includes(join(base, "other", "页面.png")));
+  assert.deepEqual(store.tree?.visual_reference, ["页面.png"], "导出不能改动对话草案的来源路径");
+  assert.ok(all().includes(await readFile(result.file, "utf8")), "审阅 YAML 必须与写出内容一致");
+  const catalog = await loadRequirementCatalog(result.file);
+  assert.deepEqual(catalog.requirements[0].references, ["references/2-页面.png", "references/1-页面.png"]);
+});
+
+test("参考文件缺失时继续对话；审阅后来源消失导致写出失败时可重试", async (t) => {
+  const store = createDraftStore();
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const source = join(base, "参考.png");
+  const tree = validTree();
+  tree.visual_reference = ["参考.png"];
+  const agent = new FakeAgent(store, [async ({ tool }) => {
+    await tool.execute("call-1", { requirements: tree, questions: [] });
+  }]);
+  const { out, all } = collect();
+  async function* input() {
+    yield "生成需求文档"; // 缺失附件，不能进入确认态。
+    assert.doesNotMatch(all(), /是否生成这份需求文档/);
+    await writeFile(source, "image");
+    yield "生成需求文档";
+    await rm(source);
+    yield "是"; // 复制失败，不留下半成品目录。
+    assert.match(all(), /生成失败/);
+    assert.ok(!existsSync(join(base, "requirements")));
+    await writeFile(source, "image");
+    yield "是";
+  }
+  const result = await runConversation({ agent, store, input: input(), out, baseDir: base });
+  assert.equal(result.status, "generated");
+  assert.match(all(), /参考文件不存在/);
+  assert.equal(agent.sends.length, 2, "确认重试不应调用模型");
 });
 
 test("update_requirements 拒绝非法草案并保留旧草案", async () => {

@@ -27,6 +27,7 @@ export interface RequirementNode {
   dependencies: string[];
   children: RequirementNode[];
   scenarios: RequirementScenario[];
+  visual_reference?: string[];
   /** 仅根节点：初始数据声明。 */
   data?: SeedDataCategory[];
 }
@@ -46,7 +47,6 @@ export type QuestionsResult =
 
 const TYPES = new Set<RequirementType>(["ROOT", "FOLDER", "ATOMIC"]);
 const KEYWORDS = new Set<StepKeyword>(["GIVEN", "WHEN", "THEN", "AND", "BUT"]);
-const OUTCOME_KEYWORDS = new Set<StepKeyword>(["THEN", "AND", "BUT"]);
 
 /**
  * 把模型提交的候选草案规格化为内部需求树并做结构校验。
@@ -64,6 +64,7 @@ export function normalizeDraft(input: unknown): NormalizeResult {
   const index = new Map<string, RequirementNode>();
   collectNodes(tree, index, errors);
   validateDependencies(index, errors);
+  if (!errors.length) validateAtomicDependencies(tree, index, errors);
   return errors.length ? { ok: false, errors } : { ok: true, tree };
 }
 
@@ -102,8 +103,25 @@ export function validateForGeneration(tree: RequirementNode | null): string[] {
       continue;
     }
     for (const scenario of atomic.scenarios) {
-      if (!scenario.steps.some((step) => OUTCOME_KEYWORDS.has(step.keyword))) {
-        errors.push(`${atomic.id} 的场景「${scenario.name}」缺少可观察结果（THEN/AND/BUT 步骤）。`);
+      const label = `${atomic.id} 的场景「${scenario.name}」`;
+      const phases = ["GIVEN", "WHEN", "THEN"] as const;
+      for (const keyword of phases) {
+        if (!scenario.steps.some((step) => step.keyword === keyword)) {
+          errors.push(`${label}${keyword === "THEN" ? "缺少可观察结果" : "缺少初始状态或操作"}（${keyword} 步骤）。`);
+        }
+      }
+      let phase = -1;
+      for (const step of scenario.steps) {
+        if (step.keyword === "AND" || step.keyword === "BUT") {
+          if (phase < 0) errors.push(`${label}的 AND/BUT 必须跟随 GIVEN、WHEN 或 THEN。`);
+          continue;
+        }
+        const nextPhase = phases.indexOf(step.keyword);
+        if (nextPhase < phase) {
+          errors.push(`${label}的步骤须按 GIVEN → WHEN → THEN 顺序排列。`);
+          break;
+        }
+        phase = nextPhase;
       }
     }
   }
@@ -210,6 +228,8 @@ function normalizeNode(
   }
 
   const node: RequirementNode = { id, name, type, description, dependencies, children, scenarios };
+  const references = normalizeIdList(value.visual_reference, `${path}.visual_reference`, errors);
+  if (references.length) node.visual_reference = references;
   if (isRoot) {
     const data = normalizeSeedData(value.data, `${path}.data`, errors);
     if (data) node.data = data;
@@ -353,6 +373,41 @@ function validateDependencies(
       }
     }
   }
+  validateDependencyCycles(index, errors);
+}
+
+/** 与消费者一致：文件夹依赖展开为后代 ATOMIC，祖先依赖沿层级继承。 */
+function validateAtomicDependencies(
+  tree: RequirementNode,
+  index: Map<string, RequirementNode>,
+  errors: string[],
+): void {
+  const graph = new Map<string, { dependencies: string[] }>();
+  const atomicIds = (node: RequirementNode): string[] => node.type === "ATOMIC"
+    ? [node.id]
+    : node.children.flatMap(atomicIds);
+  const visit = (node: RequirementNode, ancestors: RequirementNode[]): void => {
+    if (node.type === "ATOMIC") {
+      const vacuous = new Set([tree.id, node.id, ...ancestors.map((ancestor) => ancestor.id)]);
+      const dependencies = [...ancestors, node]
+        .flatMap((scope) => scope.dependencies)
+        .filter((id) => !vacuous.has(id))
+        .flatMap((id) => atomicIds(index.get(id)!))
+        .filter((id) => !vacuous.has(id));
+      graph.set(node.id, { dependencies: [...new Set(dependencies)] });
+      return;
+    }
+    const nextAncestors = node === tree ? ancestors : [...ancestors, node];
+    for (const child of node.children) visit(child, nextAncestors);
+  };
+  visit(tree, []);
+  validateDependencyCycles(graph, errors);
+}
+
+function validateDependencyCycles(
+  index: Map<string, { dependencies: string[] }>,
+  errors: string[],
+): void {
   const colors = new Map<string, "visiting" | "visited">();
   const visit = (id: string, stack: string[]): void => {
     const color = colors.get(id);
@@ -390,6 +445,7 @@ function ownSignature(node: RequirementNode): string {
     description: node.description,
     dependencies: node.dependencies,
     scenarios: node.scenarios,
+    visual_reference: node.visual_reference ?? [],
     data: node.data ?? null,
   });
 }
@@ -403,6 +459,7 @@ function toPlainNode(node: RequirementNode): Record<string, unknown> {
     description: node.description,
   };
   if (node.children.length) plain.children = node.children.map(toPlainNode);
+  if (node.visual_reference?.length) plain.visual_reference = node.visual_reference;
   if (node.scenarios.length) {
     plain.scenarios = node.scenarios.map((scenario) => ({
       id: scenario.id,
