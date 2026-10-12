@@ -31,9 +31,10 @@ Pi 保持精确版本与锁文件，按所需功能或修复主动升级。升�
 ```powershell
 npm.cmd start -- --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
 npm.cmd start -- --requirements-dir E:\requirements\demo --project E:\projects\existing-web
+npm.cmd start                                    # 两项参数都省略：按当前目录约定运行
 ```
 
-`--project` 与 `--output-dir` 互斥。已有项目须提供运行配置；控制器把其当前源码复制到独立开发目录，包含 staged 和未跟踪文件，原目录及其 Git index、分支和历史保持不动。已有应用作为增量起点，沿用原技术栈和布局。
+`--requirements-dir` 与 `--output-dir` 都可省略：缺省在当前目录及其子目录中查找唯一的 `requirements.yaml`（没有或找到多个都报错），输出目录缺省为当前目录；`--project` 与 `--output-dir` 互斥。已有项目须提供运行配置；控制器把其当前源码复制到独立开发目录，包含 staged 和未跟踪文件，原目录及其 Git index、分支和历史保持不动。已有应用作为增量起点，沿用原技术栈和布局。
 
 空输出目录使用随附的 React/Vite/TypeScript + Node Web 模板，安装时写入可复用的运行配置。`--budget-ms` 是非负毫秒，缺省或 0 表示不限本轮总调度时间，单次调用仍有上限。
 
@@ -43,13 +44,14 @@ npm.cmd start -- --requirements-dir E:\requirements\demo --project E:\projects\e
 
 ```powershell
 shallow req      # 需求整理（requirements-agent），产物写在当前目录
-shallow coding --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
-shallow coding --requirements-dir E:\requirements\demo --project E:\projects\existing-web
-shallow coding resume --run-dir E:\runs\<运行目录>
-shallow coding apply --run-dir E:\runs\<运行目录>
+shallow build    # 在当前目录子树查找 requirements.yaml，并输出到当前目录
+shallow build --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
+shallow build --requirements-dir E:\requirements\demo --project E:\projects\existing-web
+shallow build resume --run-dir E:\runs\<运行目录>
+shallow build apply --run-dir E:\runs\<运行目录>
 ```
 
-`shallow coding` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
+`shallow build` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。省略 `--requirements-dir` 时在当前目录及其子目录中查找唯一的 `requirements.yaml`，找不到或找到多个都报错并要求显式指定；省略 `--output-dir`/`--project` 时输出目录缺省为当前目录，当前目录已有项目文件时按增量起点处理，改动经 `apply` 写回。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
 
 **项目运行配置**
 
@@ -91,7 +93,7 @@ Judge 保留 GIVEN/WHEN/THEN 的准备和结果语义。所有明示结果分别
 
 **运行产物与增量**
 
-`SHALLOW_RUN_DIR` 缺省指向系统临时目录下的 `shallowcode-runs`，每轮建立日志目录。`run-log.txt`、`run-ledger.jsonl`、Judge 计划、证据、Pi 会话和候选构建位于私有运行目录。
+`SHALLOW_RUN_DIR` 缺省指向系统临时目录下的 `shallowcode-runs`，每轮建立日志目录。`run-log.txt`、`run-ledger.jsonl`、Judge 计划、证据、Pi 会话和候选构建位于私有运行目录。终端进度与 `run-log.txt` 使用相同的人类可读日志行；`run-ledger.jsonl` 等原始事件只保留在私有运行目录。
 
 已有项目的开发副本保留在该轮 `workspace` 中。`run.json` 记录需求、配置与控制器合同摘要、来源和输入基线；需求及参考文件保存在私有 `requirements/` 快照中。`changes.patch` 导出本轮改动，包含新增文件和二进制变更。`result.json` 保存交付状态、逐需求状态列表及逐场景结果，`report.md` 提供可读报告。结束时终端打印运行目录与补丁位置。`shallow-progress/progress.log` 保存可读进度，保持 untracked；当前 Judge 计划只存于私有运行目录。
 

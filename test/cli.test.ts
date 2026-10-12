@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
-import { resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import { parseCliArgs, parseInvocation } from "../src/cli.js";
+import { discoverRequirementsDir, parseCliArgs, parseInvocation } from "../src/cli.js";
+import { withTempDir } from "./helpers/temp-dir.js";
 
 test("Resume and apply have separate inputs and reject unrelated run flags", () => {
   assert.deepEqual(parseInvocation(["resume", "--run-dir", "run", "--budget-ms", "1000"]), {
@@ -155,4 +157,61 @@ test("CLI rejects unknown arguments", () => {
       ]),
     /--mystery/,
   );
+});
+
+test("CLI resolves the requirements directory from the discovery default only when the flag is absent", () => {
+  let discoveries = 0;
+  const options = {
+    defaultOutputDir: "C:/fixture/output",
+    defaultRequirementsDir: () => {
+      discoveries += 1;
+      return "C:/fixture/requirements";
+    },
+  };
+
+  assert.deepEqual(parseCliArgs(["--budget-ms", "0"], options), {
+    requirementsDir: resolve("C:/fixture/requirements"),
+    outputDir: resolve("C:/fixture/output"),
+    budgetMs: 0,
+  });
+  assert.equal(discoveries, 1);
+
+  const explicit = parseCliArgs(
+    ["--requirements-dir", "C:/fixture/other", "--output-dir", "C:/fixture/output"],
+    options,
+  );
+  assert.equal(explicit.requirementsDir, resolve("C:/fixture/other"));
+  assert.equal(discoveries, 1, "显式 --requirements-dir 不应触发默认发现");
+});
+
+test("CLI still requires --requirements-dir without a discovery default", () => {
+  assert.throws(
+    () => parseCliArgs(["--output-dir", "C:/fixture/output"]),
+    /--requirements-dir/,
+  );
+});
+
+test("Default requirements discovery finds a single requirements.yaml below the root", async () => {
+  await withTempDir("shallow-cli-discovery-", async (directory) => {
+    const ignored = join(directory, "node_modules", "fixture");
+    await mkdir(ignored, { recursive: true });
+    await writeFile(join(ignored, "requirements.yaml"), "id: ROOT\n");
+    assert.throws(() => discoverRequirementsDir(directory), /No requirements\.yaml/);
+
+    const requirementsDir = join(directory, "nested", "requirements");
+    await mkdir(requirementsDir, { recursive: true });
+    await writeFile(join(requirementsDir, "requirements.yaml"), "id: ROOT\n");
+    assert.equal(discoverRequirementsDir(directory), requirementsDir);
+  });
+});
+
+test("Default requirements discovery rejects several candidates", async () => {
+  await withTempDir("shallow-cli-discovery-", async (directory) => {
+    for (const name of ["a", "b"]) {
+      const requirementsDir = join(directory, name, "requirements");
+      await mkdir(requirementsDir, { recursive: true });
+      await writeFile(join(requirementsDir, "requirements.yaml"), "id: ROOT\n");
+    }
+    assert.throws(() => discoverRequirementsDir(directory), /Multiple requirements\.yaml/);
+  });
 });

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
-import { localDefaultOutputDir, parseInvocation, type CliOptions } from "./src/cli.js";
+import { discoverRequirementsDir, parseInvocation, type CliOptions } from "./src/cli.js";
 import { FinalVerifier } from "./src/final-verifier.js";
 import { CandidateRuntime } from "./src/candidate-runtime.js";
 import { GitCliOps } from "./src/git-ops.js";
@@ -82,8 +82,14 @@ export async function main(
   env: Record<string, string | undefined> = process.env,
   execute: AgentExecution = executeProduction,
   envFile: string | null = defaultEnvFile(),
+  cwd: string = process.cwd(),
 ): Promise<number> {
-  const invocation = parseInvocation(argv, { defaultOutputDir: localDefaultOutputDir("main") });
+  // 需求输入缺省在当前目录子树中查找唯一的 requirements.yaml；找不到或有多个
+  // 候选时要求显式 --requirements-dir。输出目录缺省为当前目录。
+  const invocation = parseInvocation(argv, {
+    defaultOutputDir: cwd,
+    defaultRequirementsDir: () => discoverRequirementsDir(cwd),
+  });
   if (invocation.command === "apply") {
     const directory = await applyRun(invocation.runDirectory, invocation.allowPartial);
     process.stderr.write(`[ShallowCode] 已应用项目改动：${directory}\n`);
@@ -360,14 +366,19 @@ export async function assertPrivateRunDirectory(outputDir: string, runDir: strin
   if (contained(await realpath(outputDir), await realpath(runDir))) throw new Error("Run diagnostics directory resolves inside the candidate output directory");
 }
 
-function createRunLogSink(runLogFile: string, journal?: ProgressJournal): LogSink {
+/** 终端进度与 run-log.txt 使用同样的人类可读行；原始事件只进入私有 ledger。 */
+export function createRunLogSink(
+  runLogFile: string,
+  journal?: ProgressJournal,
+  stream: { write(chunk: string): void } = process.stderr,
+): LogSink {
   const runLogDir = dirname(runLogFile);
   const formatter = new HumanRunFormatter();
   return {
     write: (chunk) => {
-      process.stderr.write(chunk);
       const line = formatter.format(chunk);
       if (line === null) return;
+      stream.write(`${line}\n`);
       mkdirSync(runLogDir, { recursive: true });
       appendFileSync(runLogFile, `${line}\n`, "utf8");
       journal?.appendLine(line);

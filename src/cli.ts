@@ -1,5 +1,5 @@
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { readdirSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 export interface CliOptions {
   requirementsDir: string;
@@ -15,6 +15,8 @@ export interface CliOptions {
 
 export interface CliParseOptions {
   defaultOutputDir?: string;
+  /** 默认需求目录：仅在未显式给出 `--requirements-dir` 时求值。 */
+  defaultRequirementsDir?: () => string;
 }
 
 export type CliInvocation = { command: "run"; options: CliOptions }
@@ -44,10 +46,6 @@ export function parseInvocation(argv: string[], options: CliParseOptions = {}): 
   return { command, runDirectory, budgetMs };
 }
 
-export function localDefaultOutputDir(entry: "main" | "baseline"): string {
-  return join(tmpdir(), "shallowcode-local", entry);
-}
-
 const KNOWN_OPTIONS = new Set([
   "--requirements-dir",
   "--output-dir",
@@ -74,7 +72,10 @@ export function parseCliArgs(
     values.set(option, value);
   }
 
-  const requirementsDir = required(values, "--requirements-dir");
+  const requirementsDir = values.get("--requirements-dir") ?? options.defaultRequirementsDir?.();
+  if (requirementsDir === undefined) {
+    throw new Error("Missing required argument: --requirements-dir");
+  }
   const projectDir = values.get("--project");
   const outputDir = projectDir ?? values.get("--output-dir") ?? options.defaultOutputDir;
   if (outputDir === undefined) {
@@ -95,6 +96,32 @@ export function parseCliArgs(
     budgetMs,
     ...(projectDir === undefined ? {} : { projectDir: resolve(projectDir) }),
   };
+}
+
+/**
+ * 默认需求输入：在给定目录子树中查找 `requirements.yaml`。
+ * 需求文件缺失或有多个候选时都要求显式 `--requirements-dir`。
+ */
+export function discoverRequirementsDir(root: string): string {
+  const found: string[] = [];
+  const visit = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.name === "node_modules" || entry.name === ".git") continue;
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile() && entry.name === "requirements.yaml") found.push(path);
+    }
+  };
+  visit(root);
+  if (found.length === 0) {
+    throw new Error(`No requirements.yaml found under ${root}; pass --requirements-dir to name the requirements directory`);
+  }
+  if (found.length > 1) {
+    const shown = found.sort().slice(0, 5).join(", ");
+    const more = found.length > 5 ? ` (+${found.length - 5} more)` : "";
+    throw new Error(`Multiple requirements.yaml files found under ${root}: ${shown}${more}; pass --requirements-dir to select one`);
+  }
+  return dirname(found[0]);
 }
 
 function required(values: Map<string, string>, option: string): string {

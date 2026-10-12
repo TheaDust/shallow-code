@@ -6,6 +6,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  createRunLogSink,
   defaultEnvFile,
   main,
   type AgentExecution,
@@ -557,6 +558,65 @@ test("The default gateway env file stays anchored to the repository root", async
     } finally {
       process.chdir(before);
     }
+  });
+});
+
+test("Agent entry defaults to current-directory requirement discovery and output", async () => {
+  await withTempDir("shallow-entry-defaults-", async directory => {
+    const requirementsDir = join(directory, "requirements");
+    await mkdir(requirementsDir);
+    const requirementText = "id: ROOT\nname: Root\ntype: ROOT\nchildren: []\n";
+    await writeFile(join(requirementsDir, "requirements.yaml"), requirementText);
+    let received: AgentExecutionContext | undefined;
+    const execute: AgentExecution = async context => {
+      received = context;
+      return { status: "delivered", verifiedRequirementIds: [], blockedRequirementIds: [], acceptedSha: "sha" };
+    };
+
+    assert.equal(await main([], gatewayEnv(), execute, null, directory), 0);
+    assert.equal(received?.runRecord.requirementsDir, requirementsDir);
+    assert.equal(received?.pipelineOptions.outputDir, directory);
+    assert.equal(await readFile(received!.pipelineOptions.requirementsFile, "utf8"), requirementText);
+  });
+});
+
+test("Agent entry rejects ambiguous or missing default requirement discovery before execution", async () => {
+  await withTempDir("shallow-entry-ambiguous-", async directory => {
+    let calls = 0;
+    const execute: AgentExecution = async () => {
+      calls += 1;
+      throw new Error("must not execute");
+    };
+
+    await assert.rejects(main([], gatewayEnv(), execute, null, directory), /No requirements\.yaml/);
+    for (const name of ["a", "b"]) {
+      await mkdir(join(directory, name));
+      await writeFile(join(directory, name, "requirements.yaml"), "id: ROOT\nname: Root\ntype: ROOT\nchildren: []\n");
+    }
+    await assert.rejects(main([], gatewayEnv(), execute, null, directory), /Multiple requirements\.yaml/);
+    assert.equal(calls, 0);
+  });
+});
+
+test("Run console output uses the human-readable log line", async () => {
+  await withTempDir("shallow-entry-console-", async directory => {
+    const written: string[] = [];
+    const sink = createRunLogSink(join(directory, "run-log.txt"), undefined, {
+      write: chunk => { written.push(chunk); },
+    });
+    const event = {
+      at: "2026-01-01T00:00:00.000Z", type: "phase_started", detail: { phase: "implementation" },
+      runId: "run", eventId: "run:1", sequence: 1, phase: "pipeline",
+    };
+
+    sink.write(`${JSON.stringify(event)}\n`);
+    assert.equal(written.length, 1);
+    assert.match(written[0], /进入模块实现阶段/);
+    assert.doesNotMatch(written[0], /"phase_started"/);
+    assert.match(await readFile(join(directory, "run-log.txt"), "utf8"), /进入模块实现阶段/);
+
+    sink.write(`${JSON.stringify({ ...event, type: "not_a_known_event", sequence: 2 })}\n`);
+    assert.equal(written.length, 1, "没有人类可读行的机器事件不进入终端");
   });
 });
 

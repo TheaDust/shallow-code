@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -58,7 +58,7 @@ test("shallow 无参数、帮助与未知子命令显示用法", { timeout: 60_0
     const help = await runShallow(["--help"], directory);
     assert.equal(help.code, 0);
     assert.match(help.stdout, /shallow <子命令>/);
-    assert.match(help.stdout, /shallow coding/);
+    assert.match(help.stdout, /shallow build/);
 
     const unknown = await runShallow(["nope"], directory);
     assert.equal(unknown.code, 1);
@@ -66,7 +66,7 @@ test("shallow 无参数、帮助与未知子命令显示用法", { timeout: 60_0
   });
 });
 
-test("shallow req 与 shallow coding 可在任意目录启动", { timeout: 120_000 }, async () => {
+test("shallow req 与 shallow build 可在任意目录启动", { timeout: 120_000 }, async () => {
   await withTempDir("shallow-cli-boot-", async (directory) => {
     const req = await runShallow(["req"], directory);
     assert.equal(req.code, 0);
@@ -74,15 +74,34 @@ test("shallow req 与 shallow coding 可在任意目录启动", { timeout: 120_0
     assert.match(req.stdout, /未生成需求文档，本次会话结束。/);
     await assert.rejects(access(join(directory, "requirements")), "空输入不应留下需求目录");
 
-    const coding = await runShallow(
-      ["coding", "--requirements-dir", "missing", "--output-dir", "out"],
+    const build = await runShallow(
+      ["build", "--requirements-dir", "missing", "--output-dir", "out"],
       directory,
     );
-    assert.equal(coding.code, 1);
-    assert.match(coding.stderr, /requirements\.yaml is not readable at /);
+    assert.equal(build.code, 1);
+    assert.match(build.stderr, /requirements\.yaml is not readable at /);
     assert.ok(
-      coding.stderr.includes(join(directory, "missing", "requirements.yaml")),
+      build.stderr.includes(join(directory, "missing", "requirements.yaml")),
       "相对参数应相对启动目录解析",
     );
+  });
+});
+
+test("shallow build 缺省在当前目录子树查找 requirements.yaml", { timeout: 120_000 }, async () => {
+  await withTempDir("shallow-cli-discovery-", async (directory) => {
+    const none = await runShallow(["build"], directory);
+    assert.equal(none.code, 1);
+    assert.match(none.stderr, /No requirements\.yaml found under /);
+
+    const requirementsDir = join(directory, "requirements");
+    await mkdir(requirementsDir);
+    await writeFile(join(requirementsDir, "requirements.yaml"), "id: ROOT\nname: Root\ntype: ROOT\nchildren: []\n");
+    await mkdir(join(directory, "other"));
+    await writeFile(join(directory, "other", "requirements.yaml"), "id: ROOT\nname: Other\ntype: ROOT\nchildren: []\n");
+
+    const many = await runShallow(["build"], directory);
+    assert.equal(many.code, 1);
+    assert.match(many.stderr, /Multiple requirements\.yaml files found under /);
+    assert.ok(many.stderr.includes(join(requirementsDir, "requirements.yaml")), "错误应列出候选文件");
   });
 });
