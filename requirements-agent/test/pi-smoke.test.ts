@@ -134,7 +134,7 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
 }
 
 for (const interactive of [false, true]) {
-test(`${interactive ? "Pi 原生 TUI" : "纯文本 CLI"} 模拟网关端到端：读取 → 更新草案 → 审阅 → 确认生成`, { timeout: 120_000 }, async (t) => {
+test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：读取 → 更新草案 → 审阅 → 确认生成`, { timeout: 120_000 }, async (t) => {
   const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
   const tsxLoader = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
   const mainTs = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -142,8 +142,8 @@ test(`${interactive ? "Pi 原生 TUI" : "纯文本 CLI"} 模拟网关端到端�
   await writeFile(join(base, "需求.md"), "需求文档：必须支持导出 CSV。\n", "utf8");
   const ttyImport = join(base, "tty.mjs");
   if (interactive) {
-    // Exercise real InteractiveMode and keyboard processing without requiring
-    // the test runner itself to have a console. Enter is CR in Pi's raw mode.
+    // Exercise the custom TUI and keyboard processing without requiring the
+    // test runner itself to have a console. Enter submits as CR in raw mode.
     await writeFile(ttyImport,
       "Object.defineProperty(process.stdin, 'isTTY', { value: true });\n" +
       "Object.defineProperty(process.stdout, 'isTTY', { value: true });\n", "utf8");
@@ -189,13 +189,8 @@ test(`${interactive ? "Pi 原生 TUI" : "纯文本 CLI"} 模拟网关端到端�
   };
   const enter = interactive ? "\r" : "\n";
   await waitFor(/需要生成时输入/);
-  if (interactive) {
-    write(`/new${enter}`);
-    await waitFor(/需求草案保留在当前对话/);
-    assert.equal(gateway.requests.length, 0, "会话操作不应触发需求回合或绕过草案状态");
-  }
   write(interactive
-    ? `需求要点都写在 需求.md 里。\u001b[13;2u请读取并整理。${enter}`
+    ? `需求要点都写在 需求.md 里。\n请读取并整理。${enter}`
     : `需求要点都写在 需求.md 里，请读取并整理。${enter}`);
   await waitFor(/【本轮修改】/);
   write(`生成需求文档${enter}`);
@@ -221,9 +216,9 @@ test(`${interactive ? "Pi 原生 TUI" : "纯文本 CLI"} 模拟网关端到端�
   assert.ok(!stderr.includes("启动失败"), `启动失败：${stderr}`);
   assert.match(stdout, /Requirements Agent/);
   assert.match(stdout, /我先读取你的需求文件/, "流式回复未显示");
-  assert.match(stdout, interactive ? /read/ : /正在读取文件/, "读取工具执行标记缺失");
+  assert.match(stdout, /正在读取文件/, "读取工具执行标记缺失");
   assert.match(stdout, /整理一版草案/, "流式回复未显示");
-  assert.match(stdout, interactive ? /update_requirements/ : /正在更新需求草案/, "工具执行标记缺失");
+  assert.match(stdout, /正在更新需求草案/, "工具执行标记缺失");
   assert.match(stdout, /create-task/, "草案变更摘要缺失");
   assert.match(stdout, /是否生成这份需求文档/, "审阅询问缺失");
   assert.match(stdout, /已生成/, "生成结果缺失");
@@ -245,16 +240,14 @@ test(`${interactive ? "Pi 原生 TUI" : "纯文本 CLI"} 模拟网关端到端�
     gateway.requests.some((request) => request.toolResultText.includes("导出 CSV")),
     "读取到的需求文件内容未回传给模型",
   );
+  assert.match(gateway.requests[0].lastUserText, /【用户输入】/, "回合消息缺少用户输入段");
+  assert.match(gateway.requests.at(-1)!.lastUserText, /【当前需求草案（第 1 版）】/,
+    "回合消息缺少最新草案上下文");
   if (interactive) {
-    assert.match(stdout, /Ctrl\+O/, "Pi 原生快捷键提示缺失");
-    assert.match(stdout, /\u001b\[\?2004h/, "Pi 终端未启用粘贴协议");
-    assert.ok(gateway.requests[0].lastUserText.includes("\n"), "多行编辑未传入同一回合");
-    assert.ok(gateway.requests.every((request) => !request.lastUserText.includes("【当前需求草案")),
-      "TUI 的用户消息应保留原始输入");
-    assert.match(gateway.requests.at(-1)!.systemText, /第 1 版/,
-      "TUI 回合的系统上下文缺少最新草案");
-    assert.ok(gateway.requests.every((request) => !request.lastUserText.includes("【本轮修改")),
-      "界面状态不应变成用户输入");
+    assert.match(stdout, /›/, "TUI 未回显用户输入");
+    assert.ok(!stdout.includes("Ctrl+O"), "TUI 不应出现 Pi 命令面板提示");
+    assert.ok(gateway.requests[0].lastUserText.includes("需求要点都写在 需求.md 里。\n请读取并整理。"),
+      "多行编辑未传入同一回合");
   }
 });
 }

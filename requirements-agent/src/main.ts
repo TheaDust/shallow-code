@@ -7,15 +7,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   AuthStorage,
-  InteractiveMode,
+  DefaultResourceLoader,
   ModelRegistry,
   SessionManager,
   SettingsManager,
-  createAgentSessionFromServices,
-  createAgentSessionRuntime,
-  createAgentSessionServices,
-  type AgentSessionRuntime,
-  type ExtensionFactory,
+  createAgentSession,
+  type AgentSession,
   type ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 
@@ -28,11 +25,11 @@ import {
 } from "./cli.js";
 import { loadGatewayEnv, opencodeSessionHeaders, type GatewayEnv } from "./env.js";
 import { runPiTurn } from "./pi-turn.js";
-import { createRequirementsUi } from "./tui.js";
+import { RequirementsTui } from "./tui.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
-/** Pi 内置 read 工具的名称；通过 session 的 tools 白名单启用。 */
+/** Pi 内置 read 工具的名称；通过 createAgentSession 的 tools 白名单启用。 */
 const READ_TOOL_NAME = "read";
 
 export async function main(): Promise<number> {
@@ -47,55 +44,51 @@ export async function main(): Promise<number> {
     "utf8",
   );
   const store = createDraftStore();
-  const ui = process.stdin.isTTY && process.stdout.isTTY ? createRequirementsUi(store) : undefined;
-  const out = ui ? ui.out : (text: string) => { process.stdout.write(text); };
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const agent = await createPiAgent({
     gateway, systemPrompt, requirementsTool: createRequirementsTool(store),
-    ...(ui ? { extension: ui.extension } : { out }),
+    ...(interactive ? {} : { out: (text: string) => { process.stdout.write(text); } }),
   });
-  const mode = ui ? new InteractiveMode(agent.runtime) : undefined;
-  const rl = ui ? undefined : createInterface({ input: process.stdin, output: process.stdout, terminal: false });
-  const onSigint = () => {
-    mode?.stop();
-    ui?.close();
-    void agent.abort().then(() => agent.dispose()).finally(() => {
+  let tui: RequirementsTui | undefined;
+  let rl: ReturnType<typeof createInterface> | undefined;
+  let leaving = false;
+  const leave = () => {
+    if (leaving) return;
+    leaving = true;
+    tui?.close();
+    tui?.stop();
+    void agent.abort().catch(() => {}).finally(() => {
       process.stdout.write("\n已退出（未生成需求文档）。\n");
       process.exit(0);
     });
   };
-  process.once("SIGINT", onSigint);
-  let reading = true;
   try {
-    if (mode) {
-      await mode.init();
-      // Pi owns editing, commands and streaming input. Its input hook routes
-      // requirement submissions into runConversation rather than its own loop.
-      const readInput = async () => {
-        while (reading) {
-          const text = await mode.getUserInput();
-          if (reading) await agent.runtime.session.prompt(text);
-        }
-      };
-      void readInput().catch((error) => {
-        mode.showError(String(error));
-        ui!.close();
+    if (interactive) {
+      tui = new RequirementsTui({
+        onAbort: () => { void agent.abort().catch(() => {}); },
+        onExit: leave,
       });
+      tui.watchSession(agent.session);
+    } else {
+      rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
     }
+    process.once("SIGINT", leave);
+    tui?.start();
     const result = await runConversation({
-      agent, store, input: ui ? ui.input : assembleInputLines(rl!), out, baseDir,
-      ...(ui ? { inputHelp: "Enter 提交；Shift+Enter 换行；Esc 中止；Ctrl+C 两次或空输入时 Ctrl+D 退出。" } : {}),
+      agent, store, baseDir,
+      input: tui ? tui.input : assembleInputLines(rl!),
+      out: tui ? tui.out.bind(tui) : (text) => { process.stdout.write(text); },
+      ...(tui ? { inputHelp: "Enter 提交；Shift+Enter 换行；Esc 中止当前回合；连续两次 Ctrl+C 退出。" } : {}),
     });
-    mode?.stop();
-    // Pi's deferred rendering may still have a final frame queued when the
-    // workflow finishes; print the receipt after terminal restoration.
-    if (ui && result.status === "generated") process.stdout.write(`已生成 ${result.file}\n`);
+    tui?.stop();
+    // 终端恢复后再打印最终产物路径，避免被最后一帧覆盖。
+    if (tui && result.status === "generated") process.stdout.write(`已生成 ${result.file}\n`);
     return 0;
   } finally {
-    reading = false;
-    process.off("SIGINT", onSigint);
+    process.off("SIGINT", leave);
     rl?.close();
-    ui?.close();
-    mode?.stop();
+    tui?.close();
+    tui?.stop();
     await agent.dispose();
   }
 }
@@ -104,12 +97,12 @@ interface PiAgentOptions {
   gateway: GatewayEnv;
   systemPrompt: string;
   requirementsTool: ReturnType<typeof createRequirementsTool>;
-  extension?: ExtensionFactory;
+  /** 纯文本模式的流式输出；TUI 模式由界面自行订阅会话事件。 */
   out?: (text: string) => void;
 }
 
 interface PiAgent extends ChatAgent {
-  readonly runtime: AgentSessionRuntime;
+  readonly session: AgentSession;
   abort(): Promise<void>;
   dispose(): Promise<void>;
 }
@@ -156,37 +149,43 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
       retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000 },
       compaction: { enabled: true },
       enableInstallTelemetry: false,
-      quietStartup: true, doubleEscapeAction: "none",
     });
+    const resourceLoader = new DefaultResourceLoader({
+      cwd: process.cwd(),
+      agentDir,
+      settingsManager,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      noContextFiles: true,
+      systemPrompt: options.systemPrompt,
+    });
+    await resourceLoader.reload();
     const model = modelRegistry.find(PROVIDER, options.gateway.model);
     if (!model) throw new Error(`网关模型未注册：${options.gateway.model}`);
-    const cleanup: ExtensionFactory = (pi) => {
-      pi.on("session_shutdown", async (event) => {
-        if (event.reason === "quit") await rm(agentDir, { recursive: true, force: true });
-      });
-    };
-    const runtime = await createAgentSessionRuntime(async ({ cwd, sessionManager, sessionStartEvent }) => {
-      const services = await createAgentSessionServices({
-        cwd, agentDir, authStorage, modelRegistry, settingsManager,
-        resourceLoaderOptions: {
-          noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-          systemPrompt: options.systemPrompt,
-          extensionFactories: [...(options.extension ? [options.extension] : []), cleanup],
-        },
-      });
-      const created = await createAgentSessionFromServices({
-        services, sessionManager, sessionStartEvent, model,
-        noTools: "builtin", tools: [READ_TOOL_NAME, options.requirementsTool.name],
-        customTools: [options.requirementsTool as ToolDefinition],
-      });
-      if (created.modelFallbackMessage) {
-        created.session.dispose();
-        throw new Error(created.modelFallbackMessage);
-      }
-      return { ...created, services, diagnostics: services.diagnostics };
-    }, { cwd: process.cwd(), agentDir, sessionManager: SessionManager.inMemory() });
+    const customTools = [options.requirementsTool] as ToolDefinition[];
+    const { session, modelFallbackMessage } = await createAgentSession({
+      cwd: process.cwd(),
+      agentDir,
+      authStorage,
+      modelRegistry,
+      model,
+      settingsManager,
+      resourceLoader,
+      sessionManager: SessionManager.inMemory(),
+      // tools 白名单只放行内置 read 与需求工具；noTools 是白名单缺省时的兜底。
+      noTools: "builtin",
+      tools: [READ_TOOL_NAME, ...customTools.map((tool) => tool.name)],
+      customTools,
+    });
+    if (modelFallbackMessage) {
+      session.dispose();
+      throw new Error(modelFallbackMessage);
+    }
+
     const output = options.out;
-    const unsubscribe = output ? runtime.session.subscribe((event) => {
+    const unsubscribe = output ? session.subscribe((event) => {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         output(event.assistantMessageEvent.delta);
       }
@@ -200,15 +199,21 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
         }
       }
     }) : undefined;
+
     return {
-      runtime,
-      send: (text, userInput) => options.extension
-        ? runPiTurn(runtime.session, userInput ?? text, { source: "extension" })
-        : runPiTurn(runtime.session, text),
-      async abort() { await runtime.session.abort(); },
+      session,
+      send: (text) => runPiTurn(session, text),
+      async abort() {
+        try {
+          session.abortCompaction();
+          await session.abort();
+        } catch {
+          // 退出路径上的取消失败不阻止关闭。
+        }
+      },
       async dispose() {
         unsubscribe?.();
-        await runtime.dispose();
+        session.dispose();
         await rm(agentDir, { recursive: true, force: true });
       },
     };

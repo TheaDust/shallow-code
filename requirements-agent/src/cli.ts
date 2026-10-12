@@ -20,7 +20,7 @@ export interface ChatTurnResult {
 
 /** 对话代理：一次 send 对应一个完整的用户回合（含工具循环与自动重试）。 */
 export interface ChatAgent {
-  send(text: string, userInput?: string): Promise<ChatTurnResult>;
+  send(text: string): Promise<ChatTurnResult>;
   abort(): Promise<void> | void;
   dispose(): void;
 }
@@ -143,8 +143,8 @@ export function isAffirmative(text: string): boolean {
   return AFFIRMATIVE_WORDS.has(normalized);
 }
 
-/** 当前草案与未决问题，供纯文本消息和 Pi 原生 TUI 的回合上下文共同使用。 */
-export function buildDraftContext(store: DraftStore): string {
+/** 每轮向代理提供当前草案与未决问题，再附上用户输入。 */
+export function buildTurnMessage(text: string, store: DraftStore): string {
   const sections: string[] = [];
   if (store.tree) {
     sections.push(
@@ -158,12 +158,8 @@ export function buildDraftContext(store: DraftStore): string {
       ? `【未决问题】\n${numberList(store.questions)}`
       : "【未决问题】无。",
   );
+  sections.push(`【用户输入】\n${text}`);
   return sections.join("\n\n");
-}
-
-/** 每轮向代理提供当前草案与未决问题，再附上用户输入。 */
-export function buildTurnMessage(text: string, store: DraftStore): string {
-  return `${buildDraftContext(store)}\n\n【用户输入】\n${text}`;
 }
 
 export async function* assembleInputLines(lines: AsyncIterable<string>): AsyncGenerator<string> {
@@ -229,7 +225,7 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     }
     const generateRequested = requestsGeneration(text);
     const before = store.tree;
-    const result = await agent.send(buildTurnMessage(text, store), text);
+    const result = await agent.send(buildTurnMessage(text, store));
     if (!result.ok) {
       out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
       continue;
