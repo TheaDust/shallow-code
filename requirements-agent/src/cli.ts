@@ -20,7 +20,7 @@ export interface ChatTurnResult {
 
 /** 对话代理：一次 send 对应一个完整的用户回合（含工具循环与自动重试）。 */
 export interface ChatAgent {
-  send(text: string): Promise<ChatTurnResult>;
+  send(text: string, userInput?: string): Promise<ChatTurnResult>;
   abort(): Promise<void> | void;
   dispose(): void;
 }
@@ -143,8 +143,8 @@ export function isAffirmative(text: string): boolean {
   return AFFIRMATIVE_WORDS.has(normalized);
 }
 
-/** 每轮向代理提供当前草案与未决问题，再附上用户输入。 */
-export function buildTurnMessage(text: string, store: DraftStore): string {
+/** 当前草案与未决问题，供纯文本消息和 Pi 原生 TUI 的回合上下文共同使用。 */
+export function buildDraftContext(store: DraftStore): string {
   const sections: string[] = [];
   if (store.tree) {
     sections.push(
@@ -158,8 +158,12 @@ export function buildTurnMessage(text: string, store: DraftStore): string {
       ? `【未决问题】\n${numberList(store.questions)}`
       : "【未决问题】无。",
   );
-  sections.push(`【用户输入】\n${text}`);
   return sections.join("\n\n");
+}
+
+/** 每轮向代理提供当前草案与未决问题，再附上用户输入。 */
+export function buildTurnMessage(text: string, store: DraftStore): string {
+  return `${buildDraftContext(store)}\n\n【用户输入】\n${text}`;
 }
 
 export async function* assembleInputLines(lines: AsyncIterable<string>): AsyncGenerator<string> {
@@ -188,6 +192,8 @@ export interface ConversationOptions {
   out: (text: string) => void;
   /** 生成目录的上级目录（启动目录）。 */
   baseDir: string;
+  /** 当前输入界面的快捷键提示；纯文本模式使用行尾续行。 */
+  inputHelp?: string;
 }
 
 export type ConversationOutcome =
@@ -200,7 +206,8 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     "Requirements Agent — 需求整理\n" +
       "用普通文字描述你的需求，我会整理草案并追问缺失信息；\n" +
       "已有写好的需求文档时，直接给出文件路径即可读取。\n" +
-      "需要生成时输入“生成需求文档”；行尾加 \\ 可以续行；Ctrl+C 退出。\n\n",
+      "需要生成时输入“生成需求文档”；" +
+      (options.inputHelp ?? "行尾加 \\ 可以续行；Ctrl+C 退出。") + "\n\n",
   );
   let reviewedOutput: PreparedRequirementsOutput | null = null;
   for await (const raw of input) {
@@ -222,7 +229,7 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     }
     const generateRequested = requestsGeneration(text);
     const before = store.tree;
-    const result = await agent.send(buildTurnMessage(text, store));
+    const result = await agent.send(buildTurnMessage(text, store), text);
     if (!result.ok) {
       out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
       continue;

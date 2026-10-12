@@ -1,4 +1,4 @@
-import type { AgentSession } from "@mariozechner/pi-coding-agent";
+import type { AgentSession, PromptOptions } from "@mariozechner/pi-coding-agent";
 import type { ChatTurnResult } from "./cli.js";
 
 export type PiTurnSession = Pick<AgentSession,
@@ -6,7 +6,8 @@ export type PiTurnSession = Pick<AgentSession,
 > & { agent: Pick<AgentSession["agent"], "waitForIdle"> };
 
 /** 等待当前回合及 SDK 延迟恢复完成，保留压缩前的正常终止回复。 */
-export async function runPiTurn(session: PiTurnSession, text: string): Promise<ChatTurnResult> {
+export async function runPiTurn(session: PiTurnSession, text: string,
+  options: Pick<PromptOptions, "source"> = {}): Promise<ChatTurnResult> {
   let pendingRestart = false;
   let terminalResponse: Extract<(typeof session.messages)[number], { role: "assistant" }> | undefined;
   const unsubscribe = session.subscribe((event) => {
@@ -26,7 +27,7 @@ export async function runPiTurn(session: PiTurnSession, text: string): Promise<C
     }
   });
   try {
-    await session.prompt(text, { expandPromptTemplates: false });
+    await session.prompt(text, { ...options, expandPromptTemplates: false });
     for (;;) {
       // SDK 在 compaction_end 后延迟启动 continue；不能在两者之间接收新回合。
       await new Promise((resolve) => setTimeout(resolve, 50));

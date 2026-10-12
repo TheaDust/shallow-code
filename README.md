@@ -43,7 +43,7 @@ npm.cmd start                                    # 两项参数都省略：按�
 在仓库根执行 `npm.cmd link` 注册一次后，可在任意目录用 `shallow` 调用：
 
 ```powershell
-shallow req      # 需求整理（requirements-agent），产物写在当前目录
+shallow req      # Pi 原生 TUI 需求整理（requirements-agent），产物写在当前目录
 shallow build    # 在当前目录子树查找 requirements.yaml，并输出到当前目录
 shallow build --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
 shallow build --requirements-dir E:\requirements\demo --project E:\projects\existing-web

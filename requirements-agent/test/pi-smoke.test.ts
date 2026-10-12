@@ -6,7 +6,7 @@ import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const TREE = {
   id: "task-app",
@@ -43,6 +43,7 @@ interface GatewayRequest {
   toolResultText: string;
   hasToolResult: boolean;
   hasSystemPrompt: boolean;
+  systemText: string;
 }
 
 function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[]; close: () => void }> {
@@ -58,7 +59,9 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
     const lastUser = [...messages].reverse().find((message) => message.role === "user");
     const lastUserText = typeof lastUser?.content === "string"
       ? lastUser.content
-      : JSON.stringify(lastUser?.content ?? "");
+      : Array.isArray(lastUser?.content)
+        ? lastUser.content.map((part: { text?: string }) => part.text ?? "").join("\n")
+        : "";
     const toolMessages = messages.filter((message) => message.role === "tool");
     requests.push({
       toolNames: (body.tools ?? []).map((tool) => tool.function?.name ?? tool.name ?? ""),
@@ -68,6 +71,8 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
       hasSystemPrompt: messages.some(
         (message) => message.role === "system" && String(message.content).includes("需求整理助手"),
       ),
+      systemText: messages.filter((message) => message.role === "system")
+        .map((message) => String(message.content)).join("\n"),
     });
 
     const chunk = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
@@ -128,11 +133,21 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
   });
 }
 
-test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草案 → 审阅 → 确认生成", { timeout: 120_000 }, async (t) => {
+for (const interactive of [false, true]) {
+test(`${interactive ? "Pi 原生 TUI" : "纯文本 CLI"} 模拟网关端到端：读取 → 更新草案 → 审阅 → 确认生成`, { timeout: 120_000 }, async (t) => {
   const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
+  const tsxLoader = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
   const mainTs = fileURLToPath(new URL("../src/main.ts", import.meta.url));
   const base = await mkdtemp(join(tmpdir(), "requirements-agent-smoke-"));
   await writeFile(join(base, "需求.md"), "需求文档：必须支持导出 CSV。\n", "utf8");
+  const ttyImport = join(base, "tty.mjs");
+  if (interactive) {
+    // Exercise real InteractiveMode and keyboard processing without requiring
+    // the test runner itself to have a console. Enter is CR in Pi's raw mode.
+    await writeFile(ttyImport,
+      "Object.defineProperty(process.stdin, 'isTTY', { value: true });\n" +
+      "Object.defineProperty(process.stdout, 'isTTY', { value: true });\n", "utf8");
+  }
   const gateway = await startFakeGateway();
   let child: ChildProcess | undefined;
   t.after(async () => {
@@ -141,7 +156,8 @@ test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草�
     await rm(base, { recursive: true, force: true }).catch(() => {});
   });
 
-  child = spawn(process.execPath, [tsxCli, mainTs], {
+  child = spawn(process.execPath, interactive
+    ? ["--import", pathToFileURL(ttyImport).href, "--import", tsxLoader, mainTs] : [tsxCli, mainTs], {
     cwd: base,
     env: {
       ...process.env,
@@ -152,6 +168,7 @@ test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草�
       REQUIREMENTS_AGENT_API_KEY: "fake-key",
       REQUIREMENTS_AGENT_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
       REQUIREMENTS_AGENT_MODEL: "fake-model",
+      PI_OFFLINE: "1",
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -161,12 +178,29 @@ test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草�
   child.stderr!.on("data", (data: Buffer) => { stderr += data.toString("utf8"); });
 
   const write = (text: string) => child!.stdin!.write(text);
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  write("需求要点都写在 需求.md 里，请读取并整理。\n");
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  write("生成需求文档\n");
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  write("是\n");
+  const waitFor = async (pattern: RegExp) => {
+    const deadline = Date.now() + 30_000;
+    while (!pattern.test(stdout)) {
+      if (child!.exitCode !== null || Date.now() >= deadline) {
+        assert.fail(`CLI 未显示 ${pattern}；stdout:\n${stdout}\nstderr:\n${stderr}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+  const enter = interactive ? "\r" : "\n";
+  await waitFor(/需要生成时输入/);
+  if (interactive) {
+    write(`/new${enter}`);
+    await waitFor(/需求草案保留在当前对话/);
+    assert.equal(gateway.requests.length, 0, "会话操作不应触发需求回合或绕过草案状态");
+  }
+  write(interactive
+    ? `需求要点都写在 需求.md 里。\u001b[13;2u请读取并整理。${enter}`
+    : `需求要点都写在 需求.md 里，请读取并整理。${enter}`);
+  await waitFor(/【本轮修改】/);
+  write(`生成需求文档${enter}`);
+  await waitFor(/是否生成这份需求文档/);
+  write(`是${enter}`);
   setTimeout(() => child?.stdin?.end(), 500);
 
   let guard: NodeJS.Timeout | undefined;
@@ -187,9 +221,9 @@ test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草�
   assert.ok(!stderr.includes("启动失败"), `启动失败：${stderr}`);
   assert.match(stdout, /Requirements Agent/);
   assert.match(stdout, /我先读取你的需求文件/, "流式回复未显示");
-  assert.match(stdout, /正在读取文件/, "读取工具执行标记缺失");
+  assert.match(stdout, interactive ? /read/ : /正在读取文件/, "读取工具执行标记缺失");
   assert.match(stdout, /整理一版草案/, "流式回复未显示");
-  assert.match(stdout, /正在更新需求草案/, "工具执行标记缺失");
+  assert.match(stdout, interactive ? /update_requirements/ : /正在更新需求草案/, "工具执行标记缺失");
   assert.match(stdout, /create-task/, "草案变更摘要缺失");
   assert.match(stdout, /是否生成这份需求文档/, "审阅询问缺失");
   assert.match(stdout, /已生成/, "生成结果缺失");
@@ -211,4 +245,16 @@ test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草�
     gateway.requests.some((request) => request.toolResultText.includes("导出 CSV")),
     "读取到的需求文件内容未回传给模型",
   );
+  if (interactive) {
+    assert.match(stdout, /Ctrl\+O/, "Pi 原生快捷键提示缺失");
+    assert.match(stdout, /\u001b\[\?2004h/, "Pi 终端未启用粘贴协议");
+    assert.ok(gateway.requests[0].lastUserText.includes("\n"), "多行编辑未传入同一回合");
+    assert.ok(gateway.requests.every((request) => !request.lastUserText.includes("【当前需求草案")),
+      "TUI 的用户消息应保留原始输入");
+    assert.match(gateway.requests.at(-1)!.systemText, /第 1 版/,
+      "TUI 回合的系统上下文缺少最新草案");
+    assert.ok(gateway.requests.every((request) => !request.lastUserText.includes("【本轮修改")),
+      "界面状态不应变成用户输入");
+  }
 });
+}
