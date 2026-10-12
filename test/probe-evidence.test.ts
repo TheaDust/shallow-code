@@ -76,7 +76,7 @@ test("A cached pending plan retries only completeness review before verification
       planCalls += 1;
       return plan();
     };
-    f.deps.planner.reviewPlan = async (_packet, original, failures, _feedback, options) => {
+    f.deps.planner.reviewPlan = async (_packet, _original, failures, _feedback, options) => {
       reviewCalls += 1;
       assert.deepEqual(failures, []);
       assert.equal(options?.coverageReview, true);

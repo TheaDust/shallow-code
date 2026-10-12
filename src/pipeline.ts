@@ -21,7 +21,8 @@ import type {
 } from "./final-verifier.js";
 import { ProbePlannerError, type ProbePlanner, type ProbePlannerUsage } from "./judge/llm-probe-planner.js";
 import type { PlaywrightProbeRunner } from "./judge/playwright-probe-runner.js";
-import { RunStateStore, sanitizeDiagnosticText, type LogSink } from "./run-state.js";
+import { sanitizeDiagnosticText } from "./diagnostics.js";
+import { RunStateStore, type LogSink } from "./run-state.js";
 import { featureGroupPackets, auditPackets, makePacket as makeCatalogPacket, DEFAULT_FEATURE_GROUP_THRESHOLDS } from "./scheduler.js";
 import { parseFeatureGrouping, type FeatureGrouper } from "./feature-grouper.js";
 import { RunBudget, type PipelinePhase } from "./run-budget.js";
@@ -29,7 +30,7 @@ import { auditPacket, type AuditResult, type AuditPolicy } from "./judge/audit.j
 import { publicEntryPlan } from "./judge/public-entry.js";
 import { globalControlCrossRoutePlan, overlayLifecyclePlan } from "./judge/compatibility-probes.js";
 import { resultCompatibilityPlan } from "./judge/compatibility-contracts.js";
-import { groundedLocatorNames, parseProbePlan, probePlanSha256, type ProbePlan } from "./judge/probe-schema.js";
+import { groundedLocatorNames, parseProbePlan, type ProbePlan } from "./judge/probe-schema.js";
 import { repairCaseProgress } from "./judge/repair-progress.js";
 import { scenarioOutcomes, outcomeKey } from "./judge/probe-coverage.js";
 import { PlanCache, shouldWritePlanCache, spawnPlanGeneration } from "./judge/plan-cache.js";

@@ -745,7 +745,7 @@ test("A completeness-review failure keeps the valid plan pending without regener
     { scenarioId: "save-profile", stepIndex: 2, clauseIndex: 1, assertionIndexes: [4] },
   ];
   let calls = 0;
-  const planner = new LlmProbePlanner(config(), async (_input, init) => {
+  const planner = new LlmProbePlanner(config(), async (_input) => {
     calls += 1;
     return calls === 1
       ? jsonResponse({ choices: [{ message: { content: JSON.stringify(wire) } }] })

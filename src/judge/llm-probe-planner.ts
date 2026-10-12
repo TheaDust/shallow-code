@@ -1,8 +1,8 @@
 import type { ProbeFailure, WorkPacket } from "../types.js";
-import { sanitizeDiagnosticText } from "../run-state.js";
+import { sanitizeDiagnosticText } from "../diagnostics.js";
 import { loadPrompt } from "../prompt-assets.js";
 import { PlannerJsonClient, PlannerRequestError as ProbePlannerError, extractJsonPayload,
-  type PlannerJsonConfig as ProbePlannerConfig, type PlannerUsage as ProbePlannerUsage,
+  type PlannerJsonConfig as ProbePlannerConfig,
   type PlannerUsageListener as ProbePlannerUsageListener } from "../planner-json-client.js";
 export { PlannerRequestError as ProbePlannerError } from "../planner-json-client.js";
 export type { PlannerJsonConfig as ProbePlannerConfig, PlannerRequestErrorCategory as ProbePlannerErrorCategory,

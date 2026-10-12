@@ -179,7 +179,7 @@ test("Detection-only audits skip locator refinement but still run the probes", a
     let refinements = 0;
     const planner = new FakeProbePlanner([homePlan()]);
     f.deps.planner = planner;
-    planner.refineLocators = async original => { refinements++; return homePlan("button"); };
+    planner.refineLocators = async _original => { refinements++; return homePlan("button"); };
     f.deps.runner.run = async plan => { runs++; return fail(plan, "locator"); };
     assert.equal((await audit(f, () => 60_000, { refineLocators: false })).status, "inconclusive");
     assert.equal(runs, 1);

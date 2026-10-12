@@ -3,10 +3,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import {
-  RunStateStore,
-  sanitizeDiagnosticText,
-} from "../src/run-state.js";
+import { RunStateStore } from "../src/run-state.js";
+import { sanitizeDiagnosticText } from "../src/diagnostics.js";
 import type { RunEvent } from "../src/types.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 

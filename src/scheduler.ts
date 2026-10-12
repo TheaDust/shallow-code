@@ -224,15 +224,4 @@ export function makePacket(id: string, requirements: AtomicRequirement[], attemp
   return { id, requirements, requirementIds: requirements.map(item => item.id), attempt };
 }
 
-/** Folder (and ROOT) id -> ids of its ATOMIC descendants, in declaration order. */
-export function folderDescendants(catalog: RequirementCatalog): Map<string, string[]> {
-  const folders = new Map<string, string[]>();
-  for (const requirement of catalog.requirements) {
-    for (const folderId of requirement.folderPath) {
-      folders.set(folderId, [...(folders.get(folderId) ?? []), requirement.id]);
-    }
-  }
-  return folders;
-}
-
 function slugify(id: string): string { return id.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""); }
