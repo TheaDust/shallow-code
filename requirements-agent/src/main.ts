@@ -27,10 +27,13 @@ import { runPiTurn } from "./pi-turn.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
+/** Pi 内置 read 工具的名称；通过 createAgentSession 的 tools 白名单启用。 */
+const READ_TOOL_NAME = "read";
 
 export async function main(): Promise<number> {
+  const baseDir = process.cwd();
   const gateway = await loadGatewayEnv({
-    cwd: process.cwd(),
+    cwd: baseDir,
     // 仓库根目录 .env（与 ShallowCode 的 builder / judge 共用同一份配置）。
     rootEnvFile: fileURLToPath(new URL("../../.env", import.meta.url)),
   });
@@ -39,9 +42,9 @@ export async function main(): Promise<number> {
     "utf8",
   );
   const store = createDraftStore();
-  const tool = createRequirementsTool(store);
+  const requirementsTool = createRequirementsTool(store);
   const out = (text: string) => process.stdout.write(text);
-  const agent = await createPiAgent({ gateway, systemPrompt, tool, out });
+  const agent = await createPiAgent({ gateway, systemPrompt, requirementsTool, out });
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
   const shutdown = () => {
@@ -60,7 +63,7 @@ export async function main(): Promise<number> {
       store,
       input: assembleInputLines(rl),
       out,
-      baseDir: process.cwd(),
+      baseDir,
     });
     return 0;
   } finally {
@@ -72,7 +75,7 @@ export async function main(): Promise<number> {
 interface PiAgentOptions {
   gateway: GatewayEnv;
   systemPrompt: string;
-  tool: ReturnType<typeof createRequirementsTool>;
+  requirementsTool: ReturnType<typeof createRequirementsTool>;
   out: (text: string) => void;
 }
 
@@ -133,7 +136,7 @@ async function createPiAgent(options: PiAgentOptions): Promise<ChatAgent> {
     await resourceLoader.reload();
     const model = modelRegistry.find(PROVIDER, options.gateway.model);
     if (!model) throw new Error(`网关模型未注册：${options.gateway.model}`);
-    const tool = options.tool as ToolDefinition;
+    const customTools = [options.requirementsTool] as ToolDefinition[];
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       agentDir,
@@ -143,9 +146,10 @@ async function createPiAgent(options: PiAgentOptions): Promise<ChatAgent> {
       settingsManager,
       resourceLoader,
       sessionManager: SessionManager.inMemory(),
+      // tools 白名单只放行内置 read 与需求工具；noTools 是白名单缺省时的兜底。
       noTools: "builtin",
-      tools: [tool.name],
-      customTools: [tool],
+      tools: [READ_TOOL_NAME, ...customTools.map((tool) => tool.name)],
+      customTools,
     });
     if (modelFallbackMessage) {
       session.dispose();
@@ -156,8 +160,14 @@ async function createPiAgent(options: PiAgentOptions): Promise<ChatAgent> {
       if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
         options.out(event.assistantMessageEvent.delta);
       }
-      if (event.type === "tool_execution_start" && event.toolName === tool.name) {
-        options.out("\n[正在更新需求草案…]\n");
+      if (event.type === "tool_execution_start") {
+        if (event.toolName === options.requirementsTool.name) {
+          options.out("\n[正在更新需求草案…]\n");
+        }
+        if (event.toolName === READ_TOOL_NAME) {
+          const requested = typeof event.args?.path === "string" ? event.args.path : "";
+          options.out(requested ? `\n[正在读取文件：${requested}]\n` : "\n[正在读取文件…]\n");
+        }
       }
     });
 

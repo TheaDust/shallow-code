@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,6 +40,7 @@ const TREE = {
 interface GatewayRequest {
   toolNames: string[];
   lastUserText: string;
+  toolResultText: string;
   hasToolResult: boolean;
   hasSystemPrompt: boolean;
 }
@@ -58,11 +59,12 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
     const lastUserText = typeof lastUser?.content === "string"
       ? lastUser.content
       : JSON.stringify(lastUser?.content ?? "");
-    const hasToolResult = messages.some((message) => message.role === "tool");
+    const toolMessages = messages.filter((message) => message.role === "tool");
     requests.push({
       toolNames: (body.tools ?? []).map((tool) => tool.function?.name ?? tool.name ?? ""),
       lastUserText,
-      hasToolResult,
+      toolResultText: toolMessages.map((message) => JSON.stringify(message.content ?? "")).join("\n"),
+      hasToolResult: toolMessages.length > 0,
       hasSystemPrompt: messages.some(
         (message) => message.role === "system" && String(message.content).includes("需求整理助手"),
       ),
@@ -82,8 +84,22 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
       res.write(wrap({ role: "assistant", content: "需求已就绪，" }, null));
       res.write(wrap({ content: "可以生成文档。" }, null));
       res.write(wrap({}, "stop"));
-    } else if (!hasToolResult) {
-      res.write(wrap({ role: "assistant", content: "我先整理一版草案。" }, null));
+    } else if (toolMessages.length === 0) {
+      res.write(wrap({ role: "assistant", content: "我先读取你的需求文件。" }, null));
+      res.write(wrap({
+        tool_calls: [{
+          index: 0,
+          id: "call_read",
+          type: "function",
+          function: {
+            name: "read",
+            arguments: JSON.stringify({ path: "需求.md" }),
+          },
+        }],
+      }, null));
+      res.write(wrap({}, "tool_calls"));
+    } else if (toolMessages.length === 1) {
+      res.write(wrap({ role: "assistant", content: "我来整理一版草案。" }, null));
       res.write(wrap({
         tool_calls: [{
           index: 0,
@@ -112,10 +128,11 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
   });
 }
 
-test("本地模拟网关端到端：对话 → 更新草案 → 审阅 → 确认生成", { timeout: 120_000 }, async (t) => {
+test("本地模拟网关端到端：读取需求文件 → 对话 → 更新草案 → 审阅 → 确认生成", { timeout: 120_000 }, async (t) => {
   const tsxCli = fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url));
   const mainTs = fileURLToPath(new URL("../src/main.ts", import.meta.url));
   const base = await mkdtemp(join(tmpdir(), "requirements-agent-smoke-"));
+  await writeFile(join(base, "需求.md"), "需求文档：必须支持导出 CSV。\n", "utf8");
   const gateway = await startFakeGateway();
   let child: ChildProcess | undefined;
   t.after(async () => {
@@ -145,7 +162,7 @@ test("本地模拟网关端到端：对话 → 更新草案 → 审阅 → 确�
 
   const write = (text: string) => child!.stdin!.write(text);
   await new Promise((resolve) => setTimeout(resolve, 600));
-  write("我要一个任务管理页面，可以创建任务。\n");
+  write("需求要点都写在 需求.md 里，请读取并整理。\n");
   await new Promise((resolve) => setTimeout(resolve, 1500));
   write("生成需求文档\n");
   await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -169,6 +186,8 @@ test("本地模拟网关端到端：对话 → 更新草案 → 审阅 → 确�
   assert.equal(exitCode, 0, `CLI 退出码异常；stdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.ok(!stderr.includes("启动失败"), `启动失败：${stderr}`);
   assert.match(stdout, /Requirements Agent/);
+  assert.match(stdout, /我先读取你的需求文件/, "流式回复未显示");
+  assert.match(stdout, /正在读取文件/, "读取工具执行标记缺失");
   assert.match(stdout, /整理一版草案/, "流式回复未显示");
   assert.match(stdout, /正在更新需求草案/, "工具执行标记缺失");
   assert.match(stdout, /create-task/, "草案变更摘要缺失");
@@ -182,10 +201,14 @@ test("本地模拟网关端到端：对话 → 更新草案 → 审阅 → 确�
   assert.match(yaml, /keyword: AND/);
   assert.match(yaml, /“准备会议”/);
 
-  assert.equal(gateway.requests.length, 3, "模型请求次数异常");
+  assert.equal(gateway.requests.length, 4, "模型请求次数异常");
   for (const request of gateway.requests) {
-    assert.deepEqual(request.toolNames, ["update_requirements"], "工具白名单异常");
+    assert.deepEqual([...request.toolNames].sort(), ["read", "update_requirements"], "工具白名单异常");
     assert.ok(request.hasSystemPrompt, "系统提示词缺失");
   }
   assert.ok(gateway.requests.some((request) => request.hasToolResult), "工具结果未回传给模型");
+  assert.ok(
+    gateway.requests.some((request) => request.toolResultText.includes("导出 CSV")),
+    "读取到的需求文件内容未回传给模型",
+  );
 });

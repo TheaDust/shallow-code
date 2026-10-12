@@ -82,7 +82,7 @@ const parameters = Type.Object({
   }),
 });
 
-/** 需求专用工具：模型的唯一需求修改通道，不提供通用文件或命令能力。 */
+/** 需求专用工具：模型的唯一需求修改通道。 */
 export function createRequirementsTool(store: DraftStore) {
   return {
     name: "update_requirements",
@@ -198,7 +198,8 @@ export async function runConversation(options: ConversationOptions): Promise<Con
   const { agent, store, input, out, baseDir } = options;
   out(
     "Requirements Agent — 需求整理\n" +
-      "用普通文字描述你的需求，我会整理草案并追问缺失信息。\n" +
+      "用普通文字描述你的需求，我会整理草案并追问缺失信息；\n" +
+      "已有写好的需求文档时，直接给出文件路径即可读取。\n" +
       "需要生成时输入“生成需求文档”；行尾加 \\ 可以续行；Ctrl+C 退出。\n\n",
   );
   let reviewedOutput: PreparedRequirementsOutput | null = null;
