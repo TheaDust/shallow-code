@@ -76,6 +76,28 @@ test("Document viewer scrolls wrapped CJK content, preserves reading position an
   assert.ok(viewer.render(24).every(line => visibleWidth(line) <= 24));
 });
 
+class OverlayTui extends TuiMainScreen {
+  compose(lines: string[], width: number, height: number): string[] {
+    return this.compositeOverlays(lines, width, height);
+  }
+}
+
+test("Document viewer fills the terminal so its overlay hides the base UI hints", (t) => {
+  const terminal = new MemoryTerminal();
+  const tui = new OverlayTui(terminal);
+  t.after(() => tui.stop());
+  tui.start();
+  const viewer = new TextViewer(tui, terminalTheme(false), "草案预览", "正文", () => {});
+  viewer.onToggle = () => {};
+  assert.equal(viewer.render(80).length, terminal.rows);
+  tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
+  const base = Array.from({ length: terminal.rows }, (_, row) =>
+    row === terminal.rows - 1 ? "Enter 发送   F2 草案预览" : `base ${row}`);
+  const visible = tui.compose(base, terminal.columns, terminal.rows).slice(-terminal.rows).join("\n");
+  assert.match(visible, /Enter 返回 · v YAML/);
+  assert.doesNotMatch(visible, /Enter 发送/);
+});
+
 test("Interactive details and interrupt keys leave the terminal restored", async (t) => {
   const terminal = new MemoryTerminal();
   let interrupted = 0;

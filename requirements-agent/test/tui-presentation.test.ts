@@ -54,6 +54,21 @@ test("Req status and preview keys reflect the draft and leave editing available"
   assert.doesNotMatch(ui.tui.render(80).join("\n").slice(-200), /等待确认/);
 });
 
+test("Draft card reports revision changes without repeating pending questions", (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  const value = tree();
+  const questions = ["刷新后是否保留任务？", "是否需要筛选？", "导出范围？", "是否需要删除？"];
+  ui.present({ type: "draft", revision: 3, tree: value, questions, changes: diffRequirements(null, value) });
+  const text = ui.tui.render(80).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(text, /草案更新 · r3/);
+  assert.doesNotMatch(text, /待确认问题/);
+  for (const question of questions) assert.ok(!text.includes(question), `卡片不应重复问题：${question}`);
+  assert.match(text, /待确认 4 个问题/);
+});
+
 test("Tool activity occupies the status area without adding a chat entry", (t) => {
   const terminal = new MemoryTerminal();
   const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);

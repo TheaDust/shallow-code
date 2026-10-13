@@ -35,7 +35,8 @@ export class TextViewer implements Component {
   render(width: number): string[] {
     const lines = this.body.render(width);
     this.lineCount = lines.length;
-    this.pageSize = Math.max(1, this.tui.terminal.rows - 6);
+    // Fill the terminal height so an overlay hides the base UI instead of leaving a second hint row behind it.
+    this.pageSize = Math.max(1, this.tui.terminal.rows - 4);
     this.offset = Math.min(this.offset, Math.max(0, lines.length - this.pageSize));
     const position = `${this.offset + 1}–${Math.min(lines.length, this.offset + this.pageSize)} / ${lines.length}`;
     const hint = this.onToggle ? "Enter 返回 · v YAML · ↑↓ 滚动" : "Esc 返回 · ↑↓ 滚动 · PgUp/Dn 翻页";

@@ -124,8 +124,6 @@ export class RequirementsTui {
           refs.slice(0, 6).map(ref => `${ref.name}${t.muted("（" + ref.id + "）")}`).join("、") + (refs.length > 6 ? "…" : ""));
       }
       if (!changes.added.length && !changes.changed.length && !changes.removed.length) lines.push(t.muted("本轮草案无变化"));
-      if (view.questions.length) lines.push("", t.warning(`待确认问题 · ${view.questions.length}`),
-        ...view.questions.slice(0, 3).map((question, i) => `${i + 1}. ${question}`));
       this.append(new Text(lines.join("\n"), 1, 0));
     } else if (view.type === "review") {
       this.review = view;
