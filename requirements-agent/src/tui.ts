@@ -116,14 +116,14 @@ export class RequirementsTui {
       this.draft = view;
       this.review = undefined;
       const changes = view.changes;
-      const lines = [t.strong(`草案更新 ${t.muted("· r" + view.revision)}`)];
+      const lines = [t.strong(`${view.restored ? "草案恢复" : "草案更新"} ${t.muted("· r" + view.revision)}`)];
       for (const [key, label, colour] of [["added", "+ 新增", t.success], ["changed", "~ 修改", t.accent],
         ["removed", "− 删除", t.warning]] as const) {
         const refs = changes[key];
         if (refs.length) lines.push(`${colour(`${label} ${refs.length} 项`)}  ` +
           refs.slice(0, 6).map(ref => `${ref.name}${t.muted("（" + ref.id + "）")}`).join("、") + (refs.length > 6 ? "…" : ""));
       }
-      if (!changes.added.length && !changes.changed.length && !changes.removed.length) lines.push(t.muted("本轮草案无变化"));
+      if (!view.restored && !changes.added.length && !changes.changed.length && !changes.removed.length) lines.push(t.muted("本轮草案无变化"));
       this.append(new Text(lines.join("\n"), 1, 0));
     } else if (view.type === "review") {
       this.review = view;

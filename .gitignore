@@ -17,6 +17,7 @@ __pycache__/
 Thumbs.db
 .worktrees/
 .superpowers/
+.requirements-agent/
 
 # Generated applications, run records and packages
 /official-run/

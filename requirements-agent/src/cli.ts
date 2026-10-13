@@ -4,14 +4,15 @@ import { Type } from "typebox";
 
 import {
   diffRequirements,
-  normalizeDraft,
-  normalizeQuestions,
   serializeRequirementsYaml,
   summarizeTree,
   validateForGeneration,
   type RequirementNode,
   type RequirementRef,
 } from "./dsl.js";
+import type { DraftStore } from "./draft-store.js";
+
+export { createDraftStore, type DraftStore } from "./draft-store.js";
 
 export interface ChatTurnResult {
   ok: boolean;
@@ -23,53 +24,6 @@ export interface ChatAgent {
   send(text: string): Promise<ChatTurnResult>;
   abort(): Promise<void> | void;
   dispose(): void;
-}
-
-export interface DraftStore {
-  readonly revision: number;
-  readonly tree: RequirementNode | null;
-  readonly questions: string[];
-  /** 串行提交：校验完整候选草案与未决问题；非法提交不改变已有草案。 */
-  submit(
-    treeInput: unknown,
-    questionsInput: unknown,
-  ): { ok: true; revision: number } | { ok: false; errors: string[] };
-}
-
-export function createDraftStore(): DraftStore {
-  let revision = 0;
-  let tree: RequirementNode | null = null;
-  let questions: string[] = [];
-  return {
-    get revision() {
-      return revision;
-    },
-    get tree() {
-      return tree;
-    },
-    get questions() {
-      return questions;
-    },
-    submit(treeInput, questionsInput) {
-      const normalizedTree = normalizeDraft(treeInput);
-      if (!normalizedTree.ok) {
-        const normalizedQuestions = normalizeQuestions(questionsInput);
-        return {
-          ok: false,
-          errors: [
-            ...normalizedTree.errors,
-            ...(normalizedQuestions.ok ? [] : normalizedQuestions.errors),
-          ],
-        };
-      }
-      const normalizedQuestions = normalizeQuestions(questionsInput);
-      if (!normalizedQuestions.ok) return { ok: false, errors: normalizedQuestions.errors };
-      tree = normalizedTree.tree;
-      questions = normalizedQuestions.questions;
-      revision += 1;
-      return { ok: true, revision };
-    },
-  };
 }
 
 const parameters = Type.Object({
@@ -158,6 +112,9 @@ export function buildTurnMessage(text: string, store: DraftStore): string {
       ? `【未决问题】\n${numberList(store.questions)}`
       : "【未决问题】无。",
   );
+  // 最后一项是本轮输入；前面的项来自中断或失败的回合。
+  const unfinished = store.pendingInputs.slice(0, -1);
+  if (unfinished.length) sections.push(`【此前未完成的输入】\n${numberList(unfinished)}`);
   sections.push(`【用户输入】\n${text}`);
   return sections.join("\n\n");
 }
@@ -197,7 +154,7 @@ export interface ConversationOptions {
 export type ConversationView =
   | { type: "intro" }
   | { type: "draft"; revision: number; tree: RequirementNode | null; questions: string[];
-      changes: ReturnType<typeof diffRequirements> }
+      changes: ReturnType<typeof diffRequirements>; restored?: boolean }
   | { type: "review"; revision: number; tree: RequirementNode; references: ReferenceCopy[] }
   | { type: "edit" };
 
@@ -215,6 +172,15 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       "需要生成时输入“生成需求文档”；" +
       (options.inputHelp ?? "行尾加 \\ 可以续行；Ctrl+C 退出。") + "\n\n",
   );
+  if (store.tree || store.pendingInputs.length) {
+    out(`已恢复需求草稿${store.file ? `：${store.file}` : ""}。可继续补充或生成需求文档。\n`);
+    if (options.onView) options.onView({ type: "draft", revision: store.revision, tree: store.tree,
+      questions: store.questions, changes: diffRequirements(store.tree, store.tree), restored: true });
+    else out(`${formatTurnSummary(store, diffRequirements(store.tree, store.tree))}\n`);
+    if (store.questions.length && options.onView) out(`【未决问题】\n${numberList(store.questions)}\n`);
+    if (store.pendingInputs.length) out(`【此前未完成的输入】\n${numberList(store.pendingInputs)}\n`);
+    out("\n");
+  }
   let reviewedOutput: PreparedRequirementsOutput | null = null;
   for await (const raw of input) {
     const text = raw.trim();
@@ -223,6 +189,11 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       if (isAffirmative(text)) {
         try {
           const file = await writeRequirementsOutput(reviewedOutput.tree, baseDir, reviewedOutput.references);
+          try {
+            store.clearSavedDraft();
+          } catch (error) {
+            out(`需求文档已写出，但草稿清理失败：${error instanceof Error ? error.message : String(error)}。下次启动仍会恢复此草稿。\n`);
+          }
           out(`已生成 ${file}\n`);
           return { status: "generated", file };
         } catch (error) {
@@ -236,6 +207,7 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     }
     const generateRequested = requestsGeneration(text);
     const before = store.tree;
+    store.recordInput(text);
     const result = await agent.send(buildTurnMessage(text, store));
     if (!result.ok) {
       if (options.onView && store.tree !== before) options.onView({ type: "draft", revision: store.revision,
@@ -243,6 +215,7 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
       continue;
     }
+    store.finishTurn();
     const changes = diffRequirements(before, store.tree);
     if (options.onView) options.onView({ type: "draft", revision: store.revision,
       tree: store.tree, questions: store.questions, changes });
@@ -286,7 +259,8 @@ export async function runConversation(options: ConversationOptions): Promise<Con
         "是否生成这份需求文档？回复“是”生成；回复其他内容继续修改。\n\n",
     );
   }
-  out("未生成需求文档，本次会话结束。\n");
+  out("未生成需求文档，本次会话结束。" +
+    (store.file && (store.tree || store.pendingInputs.length) ? `草稿已保留：${store.file}。\n` : "\n"));
   return { status: "ended" };
 }
 

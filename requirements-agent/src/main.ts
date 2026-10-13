@@ -44,7 +44,7 @@ export async function main(): Promise<number> {
     fileURLToPath(new URL("../prompts/requirements-agent.md", import.meta.url)),
     "utf8",
   );
-  const store = createDraftStore();
+  const store = createDraftStore(baseDir);
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const agent = await createPiAgent({
     gateway, systemPrompt, requirementsTool: createRequirementsTool(store),
@@ -59,7 +59,8 @@ export async function main(): Promise<number> {
     tui?.close();
     tui?.stop();
     void agent.abort().catch(() => {}).finally(() => {
-      process.stdout.write("\n已退出（未生成需求文档）。\n");
+      process.stdout.write("\n已退出（未生成需求文档）。" +
+        (store.tree || store.pendingInputs.length ? `草稿已保留：${store.file}。\n` : "\n"));
       process.exit(0);
     });
   };
@@ -74,6 +75,7 @@ export async function main(): Promise<number> {
       rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
     }
     process.once("SIGINT", leave);
+    process.once("SIGTERM", leave);
     tui?.start();
     const result = await runConversation({
       agent, store, baseDir,
@@ -91,6 +93,7 @@ export async function main(): Promise<number> {
     return 0;
   } finally {
     process.off("SIGINT", leave);
+    process.off("SIGTERM", leave);
     rl?.close();
     tui?.close();
     tui?.stop();

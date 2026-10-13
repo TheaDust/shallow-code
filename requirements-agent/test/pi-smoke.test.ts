@@ -46,7 +46,7 @@ interface GatewayRequest {
   systemText: string;
 }
 
-function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[]; close: () => void }> {
+function startFakeGateway(pauseAfterUpdate = false): Promise<{ port: number; requests: GatewayRequest[]; close: () => void }> {
   const requests: GatewayRequest[] = [];
   const server: Server = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -74,6 +74,8 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
       systemText: messages.filter((message) => message.role === "system")
         .map((message) => String(message.content)).join("\n"),
     });
+    // 草稿工具已提交，最终回复仍在等待：用于验证回合中途退出。
+    if (pauseAfterUpdate && toolMessages.length >= 2 && !lastUserText.includes("生成")) return;
 
     const chunk = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
     const wrap = (delta: unknown, finish: string | null) => chunk({
@@ -128,7 +130,7 @@ function startFakeGateway(): Promise<{ port: number; requests: GatewayRequest[];
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
       const port = typeof address === "object" && address ? address.port : 0;
-      resolve({ port, requests, close: () => server.close() });
+      resolve({ port, requests, close: () => { server.closeAllConnections(); server.close(); } });
     });
   });
 }
@@ -251,5 +253,82 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
     assert.ok(gateway.requests[0].lastUserText.includes("需求要点都写在 需求.md 里。\n请读取并整理。"),
       "多行编辑未传入同一回合");
   }
+});
+}
+
+for (const interactive of [false, true]) {
+test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 在模型回合中被终止后恢复草稿并生成`, { timeout: 60_000 }, async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "requirements-restart-"));
+  await writeFile(join(base, "需求.md"), "任务列表刷新后仍保留。\n");
+  const ttyImport = join(base, "tty.mjs");
+  if (interactive) await writeFile(ttyImport,
+    "Object.defineProperty(process.stdin, 'isTTY', { value: true });\n" +
+    "Object.defineProperty(process.stdout, 'isTTY', { value: true });\n");
+  const gateway = await startFakeGateway(true);
+  const children: Array<{ child: ChildProcess; exit: Promise<number | null> }> = [];
+  t.after(async () => {
+    for (const { child, exit } of children) { child.kill(); await exit; }
+    gateway.close();
+    await rm(base, { recursive: true, force: true });
+  });
+  const launch = () => {
+    const mainTs = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+    const child = spawn(process.execPath, interactive ? [
+      "--import", pathToFileURL(ttyImport).href,
+      "--import", new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href, mainTs,
+    ] : [fileURLToPath(new URL("../node_modules/tsx/dist/cli.mjs", import.meta.url)), mainTs], {
+      cwd: base,
+      env: { ...process.env, REQUIREMENTS_AGENT_API_KEY: "fake-key",
+        REQUIREMENTS_AGENT_BASE_URL: `http://127.0.0.1:${gateway.port}/v1`,
+        REQUIREMENTS_AGENT_MODEL: "fake-model", PI_OFFLINE: "1" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.on("data", (data: Buffer) => { stdout += data.toString("utf8"); });
+    child.stderr!.on("data", (data: Buffer) => { stderr += data.toString("utf8"); });
+    const exit = new Promise<number | null>(resolve => child.once("close", resolve));
+    children.push({ child, exit });
+    return { child, exit, stdout: () => stdout,
+      async waitFor(check: () => boolean) {
+        const deadline = Date.now() + 20_000;
+        while (!check()) {
+          assert.ok(child.exitCode === null && Date.now() < deadline,
+            `未达到预期状态；stdout:\n${stdout}\nstderr:\n${stderr}`);
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+      } };
+  };
+  const enter = interactive ? "\r" : "\n";
+  const first = launch();
+  await first.waitFor(() => /需要生成时输入/.test(first.stdout()));
+  first.child.stdin!.write(`需求要点都写在 需求.md 里，请读取并整理。${enter}`);
+  const draftFile = join(base, ".requirements-agent", "draft.json");
+  await first.waitFor(() => gateway.requests.length === 3 && existsSync(draftFile));
+  first.child.kill();
+  await first.exit;
+  const saved = JSON.parse(await readFile(draftFile, "utf8"));
+  assert.equal(saved.revision, 1);
+  assert.equal(saved.tree.id, "task-app");
+  assert.deepEqual(saved.pendingInputs, ["需求要点都写在 需求.md 里，请读取并整理。"]);
+
+  const second = launch();
+  await second.waitFor(() => /已恢复需求草稿/.test(second.stdout()));
+  if (interactive) {
+    await second.waitFor(() => /草案恢复.*r1/.test(second.stdout()));
+    second.child.stdin!.write("\x1bOQ");
+    await second.waitFor(() => /需求草案 · r1/.test(second.stdout()));
+    second.child.stdin!.write("\r");
+  }
+  second.child.stdin!.write(`生成需求文档${enter}`);
+  await second.waitFor(() => /是否生成这份需求文档/.test(second.stdout()));
+  second.child.stdin!.write(`是${enter}`);
+  assert.equal(await second.exit, 0);
+  assert.ok(existsSync(join(base, "requirements", "requirements.yaml")));
+  assert.equal(existsSync(draftFile), false);
+  assert.equal(gateway.requests.length, 4);
+  assert.match(gateway.requests[3].lastUserText, /【当前需求草案（第 1 版）】/);
+  assert.match(gateway.requests[3].lastUserText, /【此前未完成的输入】/);
+  assert.match(gateway.requests[3].lastUserText, /create-task/);
 });
 }
