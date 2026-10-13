@@ -1,5 +1,4 @@
 import {
-  getMarkdownTheme,
   getSelectListTheme,
   initTheme,
   type AgentSessionEvent,
@@ -17,10 +16,13 @@ import {
   TUI,
   type Component,
   type MarkdownTheme,
+  type OverlayHandle,
+  type Terminal,
 } from "@mariozechner/pi-tui";
-
-const dim = (text: string) => `\x1b[2m${text}\x1b[22m`;
-const accent = (text: string) => `\x1b[36m${text}\x1b[39m`;
+import { terminalHeader, terminalTheme } from "../../src/terminal/theme.js";
+import { TextViewer } from "../../src/terminal/text-viewer.js";
+import type { ConversationView } from "./cli.js";
+import { serializeRequirementsYaml, summarizeTree, type RequirementNode } from "./dsl.js";
 const WORKING_MESSAGE = "正在思考…";
 
 export interface RequirementsTuiOptions {
@@ -35,9 +37,12 @@ export interface RequirementsTuiOptions {
  * 只呈现需求整理工作流，不提供命令面板或会话管理入口。
  */
 export class RequirementsTui {
-  private readonly tui = new TUI(new ProcessTerminal());
+  readonly tui: TUI;
+  private readonly theme = terminalTheme();
   private readonly chat = new Container();
   private readonly status = new Container();
+  private readonly context = new Text("", 1, 0);
+  private readonly footer = new Text("", 1, 0);
   private readonly editor: Editor;
   private loader: Loader | undefined;
   private readonly markdownTheme: MarkdownTheme;
@@ -48,17 +53,33 @@ export class RequirementsTui {
   private started = false;
   private stopped = false;
   private lastCtrlC = 0;
+  private draft?: Extract<ConversationView, { type: "draft" }>;
+  private review?: Extract<ConversationView, { type: "review" }>;
+  private overlay?: OverlayHandle;
 
-  constructor(private readonly options: RequirementsTuiOptions) {
+  constructor(private readonly options: RequirementsTuiOptions, terminal: Terminal = new ProcessTerminal()) {
+    this.tui = new TUI(terminal);
     initTheme();
-    this.markdownTheme = getMarkdownTheme();
+    const t = this.theme;
+    this.markdownTheme = {
+      heading: text => t.accent(t.strong(text)), link: t.accent, linkUrl: t.muted,
+      code: t.accent, codeBlock: text => text, codeBlockBorder: t.muted,
+      quote: t.muted, quoteBorder: t.muted, hr: t.muted, listBullet: t.accent,
+      bold: t.strong, italic: text => text, strikethrough: text => text, underline: t.accent,
+    };
     this.queue = new InputQueue(() => { this.setBusy(false); });
-    this.editor = new Editor(this.tui, { borderColor: dim, selectList: getSelectListTheme() });
+    this.editor = new Editor(this.tui, { borderColor: this.theme.accent, selectList: getSelectListTheme() }, { paddingX: 1 });
     this.editor.onSubmit = (text) => { this.submit(text); };
+    this.tui.addChild({ render: width => terminalHeader("Requirements Agent", width, this.theme), invalidate() {} });
+    this.tui.addChild(new Spacer(1));
     this.tui.addChild(this.chat);
+    this.tui.addChild(new Spacer(1));
+    this.tui.addChild(this.context);
     this.tui.addChild(this.status);
     this.tui.addChild(this.editor);
+    this.tui.addChild(this.footer);
     this.tui.addInputListener((data) => this.handleKey(data));
+    this.updateContext();
   }
 
   /** 用户回合队列；runConversation 按提交顺序串行消费。 */
@@ -84,12 +105,48 @@ export class RequirementsTui {
     this.append(new Text(content, 1, 0));
   }
 
+  present(view: ConversationView): void {
+    const t = this.theme;
+    if (view.type === "intro") {
+      this.append(new Text(t.strong("从一句想法开始。") + "\n" +
+        "描述你想做的应用，也可以给出现有需求文档的路径。\n" +
+        t.muted("需要生成时输入“生成需求文档”；我会先展示草案供你确认。"), 1, 0));
+    } else if (view.type === "draft") {
+      this.draft = view;
+      this.review = undefined;
+      const changes = view.changes;
+      const lines = [t.strong(`草案更新 ${t.muted("· r" + view.revision)}`)];
+      for (const [key, label, colour] of [["added", "+ 新增", t.success], ["changed", "~ 修改", t.accent],
+        ["removed", "− 删除", t.warning]] as const) {
+        const refs = changes[key];
+        if (refs.length) lines.push(`${colour(`${label} ${refs.length} 项`)}  ` +
+          refs.slice(0, 6).map(ref => `${ref.name}${t.muted("（" + ref.id + "）")}`).join("、") + (refs.length > 6 ? "…" : ""));
+      }
+      if (!changes.added.length && !changes.changed.length && !changes.removed.length) lines.push(t.muted("本轮草案无变化"));
+      if (view.questions.length) lines.push("", t.warning(`待确认问题 · ${view.questions.length}`),
+        ...view.questions.slice(0, 3).map((question, i) => `${i + 1}. ${question}`));
+      this.append(new Text(lines.join("\n"), 1, 0));
+    } else if (view.type === "review") {
+      this.review = view;
+      this.append(new Text(t.accent(t.strong(`需求审阅 · r${view.revision}`)), 1, 0));
+      this.append(new Text(formatRequirementPreview(view.tree), 1, 0));
+      if (view.references.length) this.append(new Text(t.muted("将交接的参考文件") + "\n" +
+        view.references.map(ref => `${ref.source} → ${ref.destination}`).join("\n"), 1, 0));
+      this.append(new Text(t.strong("是否生成这份需求文档？") + "\n" +
+        "回复“是”生成；回复其他内容继续修改。" + t.muted("  F2 可滚动审阅或查看完整 YAML。"), 1, 0));
+    } else if (view.type === "edit") {
+      this.review = undefined;
+    }
+    this.updateContext();
+  }
+
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.loader?.stop();
+    this.overlay?.hide();
     if (this.started) this.tui.stop();
   }
 
@@ -112,7 +169,6 @@ export class RequirementsTui {
     }
     if (event.type === "tool_execution_start") {
       const message = toolMessage(event.toolName, event.args);
-      this.notice(message);
       this.loader?.setMessage(message);
       return;
     }
@@ -128,6 +184,7 @@ export class RequirementsTui {
     if (!this.assistant) {
       const component = new Markdown(text, 1, 0, this.markdownTheme);
       this.assistant = { component, text };
+      this.append(new Text(this.theme.muted("需求助手"), 1, 0));
       this.append(component);
       return;
     }
@@ -147,12 +204,18 @@ export class RequirementsTui {
       return;
     }
     this.editor.addToHistory(text);
-    this.append(new Text(`${accent("›")} ${text}`, 1, 0));
+    this.append(new Text(`${this.theme.accent("›")} ${text}`, 1, 0));
     this.setBusy(true);
     this.queue.push(text);
   }
 
   private handleKey(data: string): { consume: boolean } | undefined {
+    if (matchesKey(data, "f2")) {
+      if (this.overlay) this.closePreview();
+      else this.openPreview();
+      return { consume: true };
+    }
+    if (this.overlay && matchesKey(data, "escape")) return undefined;
     if (matchesKey(data, "ctrl+c")) {
       if (this.busy) {
         this.options.onAbort();
@@ -187,7 +250,7 @@ export class RequirementsTui {
   private setBusy(busy: boolean): void {
     this.busy = busy;
     if (busy) {
-      const loader = this.loader ??= new Loader(this.tui, accent, dim, WORKING_MESSAGE);
+      const loader = this.loader ??= new Loader(this.tui, this.theme.accent, this.theme.muted, WORKING_MESSAGE);
       loader.setMessage(WORKING_MESSAGE);
       if (!this.status.children.includes(loader)) this.status.addChild(loader);
       loader.start();
@@ -195,7 +258,39 @@ export class RequirementsTui {
       this.loader?.stop();
       this.status.clear();
     }
+    this.editor.borderColor = busy ? this.theme.muted : this.theme.accent;
+    this.updateContext();
     this.tui.requestRender();
+  }
+
+  private updateContext(): void {
+    const tree = this.draft?.tree;
+    const summary = tree ? summarizeTree(tree) : null;
+    const count = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
+    const next = this.review ? "等待确认 · 回复“是”生成" : this.draft?.questions.length
+      ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成需求文档”" : "描述你的想法";
+    this.context.setText(this.theme.muted(count) + "\n" + (this.review ? this.theme.warning(next) : this.theme.muted(next)));
+    this.footer.setText(this.theme.muted(this.busy ? "Esc 中止本轮   F2 草案预览" :
+      "Enter 发送   Shift+Enter 换行   F2 草案预览   Ctrl+C 清空/退出"));
+    if (this.started && !this.stopped) this.tui.requestRender();
+  }
+
+  private openPreview(): void {
+    const tree = this.review?.tree ?? this.draft?.tree;
+    if (!tree) { this.notice("还没有草案；先描述你想做的应用。"); return; }
+    let yaml = false;
+    const title = `需求草案 · r${this.review?.revision ?? this.draft?.revision}`;
+    const viewer = new TextViewer(this.tui, this.theme, title, formatRequirementPreview(tree), () => this.closePreview());
+    viewer.onToggle = () => {
+      yaml = !yaml;
+      viewer.setText(title + (yaml ? " · YAML" : ""), yaml ? serializeRequirementsYaml(tree) : formatRequirementPreview(tree));
+    };
+    this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
+  }
+
+  private closePreview(): void {
+    this.overlay?.hide(); this.overlay = undefined;
+    this.tui.setFocus(this.editor);
   }
 
   private append(component: Component): void {
@@ -205,8 +300,30 @@ export class RequirementsTui {
   }
 
   private notice(text: string): void {
-    this.append(new Text(dim(text), 1, 0));
+    this.append(new Text(this.theme.muted(text), 1, 0));
   }
+}
+
+/** Render the same tree used for export, including every scenario clause. */
+export function formatRequirementPreview(tree: RequirementNode): string {
+  const lines: string[] = [];
+  const visit = (node: RequirementNode, depth: number): void => {
+    const indent = "  ".repeat(depth);
+    lines.push(`${indent}${node.type === "ATOMIC" ? "◆" : "▸"} ${node.name} · ${node.id}`);
+    if (node.description) lines.push(...node.description.split("\n").map(line => `${indent}  ${line}`));
+    if (node.dependencies.length) lines.push(`${indent}  依赖：${node.dependencies.join("、")}`);
+    if (node.visual_reference?.length) lines.push(`${indent}  参考：${node.visual_reference.join("、")}`);
+    for (const data of node.data ?? []) lines.push(`${indent}  初始数据 · ${data.category}`,
+      ...data.items.map(item => `${indent}    ${item}`));
+    for (const scenario of node.scenarios) {
+      lines.push(`${indent}  场景：${scenario.name} · ${scenario.id}`);
+      for (const step of scenario.steps) lines.push(`${indent}    ${step.keyword.padEnd(5)} ${step.content}`);
+    }
+    lines.push("");
+    for (const child of node.children) visit(child, depth + 1);
+  };
+  visit(tree, 0);
+  return lines.join("\n").trimEnd();
 }
 
 function toolMessage(name: string, args: unknown): string {

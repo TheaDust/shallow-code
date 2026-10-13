@@ -190,7 +190,16 @@ export interface ConversationOptions {
   baseDir: string;
   /** 当前输入界面的快捷键提示；纯文本模式使用行尾续行。 */
   inputHelp?: string;
+  /** Interactive presentation; plain-text callers keep the existing transcript. */
+  onView?: (view: ConversationView) => void;
 }
+
+export type ConversationView =
+  | { type: "intro" }
+  | { type: "draft"; revision: number; tree: RequirementNode | null; questions: string[];
+      changes: ReturnType<typeof diffRequirements> }
+  | { type: "review"; revision: number; tree: RequirementNode; references: ReferenceCopy[] }
+  | { type: "edit" };
 
 export type ConversationOutcome =
   | { status: "generated"; file: string }
@@ -198,7 +207,8 @@ export type ConversationOutcome =
 
 export async function runConversation(options: ConversationOptions): Promise<ConversationOutcome> {
   const { agent, store, input, out, baseDir } = options;
-  out(
+  if (options.onView) options.onView({ type: "intro" });
+  else out(
     "Requirements Agent — 需求整理\n" +
       "用普通文字描述你的需求，我会整理草案并追问缺失信息；\n" +
       "已有写好的需求文档时，直接给出文件路径即可读取。\n" +
@@ -221,16 +231,22 @@ export async function runConversation(options: ConversationOptions): Promise<Con
         }
       }
       reviewedOutput = null;
+      options.onView?.({ type: "edit" });
       // 非确认内容按普通修改继续对话。
     }
     const generateRequested = requestsGeneration(text);
     const before = store.tree;
     const result = await agent.send(buildTurnMessage(text, store));
     if (!result.ok) {
+      if (options.onView && store.tree !== before) options.onView({ type: "draft", revision: store.revision,
+        tree: store.tree, questions: store.questions, changes: diffRequirements(before, store.tree) });
       out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
       continue;
     }
-    out(`${formatTurnSummary(store, diffRequirements(before, store.tree))}\n\n`);
+    const changes = diffRequirements(before, store.tree);
+    if (options.onView) options.onView({ type: "draft", revision: store.revision,
+      tree: store.tree, questions: store.questions, changes });
+    else out(`${formatTurnSummary(store, changes)}\n\n`);
     if (!generateRequested) continue;
     if (!store.tree) {
       out("还不能生成这份需求文档：需求草案为空，请先描述需求。\n\n");
@@ -258,7 +274,9 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       out(`还不能生成这份需求文档：${error instanceof Error ? error.message : String(error)}。请修正参考文件后重新生成。\n\n`);
       continue;
     }
-    out(
+    if (options.onView) options.onView({ type: "review", revision: store.revision,
+      tree: reviewedOutput.tree, references: reviewedOutput.references });
+    else out(
       `──────── 需求审阅（第 ${store.revision} 版）────────\n` +
         `${serializeRequirementsYaml(reviewedOutput.tree)}` +
         (reviewedOutput.references.length

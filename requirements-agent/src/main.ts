@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
@@ -26,6 +26,7 @@ import {
 import { loadGatewayEnv, opencodeSessionHeaders, type GatewayEnv } from "./env.js";
 import { runPiTurn } from "./pi-turn.js";
 import { RequirementsTui } from "./tui.js";
+import { shellArgument, terminalTheme } from "../../src/terminal/theme.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
@@ -78,11 +79,15 @@ export async function main(): Promise<number> {
       agent, store, baseDir,
       input: tui ? tui.input : assembleInputLines(rl!),
       out: tui ? tui.out.bind(tui) : (text) => { process.stdout.write(text); },
-      ...(tui ? { inputHelp: "Enter 提交；Shift+Enter 换行；Esc 中止当前回合；连续两次 Ctrl+C 退出。" } : {}),
+      ...(tui ? { onView: tui.present.bind(tui) } : {}),
     });
     tui?.stop();
     // 终端恢复后再打印最终产物路径，避免被最后一帧覆盖。
-    if (tui && result.status === "generated") process.stdout.write(`已生成 ${result.file}\n`);
+    if (tui && result.status === "generated") {
+      const theme = terminalTheme();
+      process.stdout.write(`\n${theme.success("✓ 已生成需求文档")}\n  ${result.file}\n\n` +
+        `${theme.muted("下一步")}\n  shallow build --requirements-dir ${shellArgument(dirname(result.file))}\n\n`);
+    }
     return 0;
   } finally {
     process.off("SIGINT", leave);

@@ -13,6 +13,7 @@ import { FinalVerifier } from "./src/final-verifier.js";
 import { CandidateRuntime } from "./src/candidate-runtime.js";
 import { GitCliOps } from "./src/git-ops.js";
 import { HumanRunFormatter } from "./src/human-log.js";
+import { BuildTui, buildResult } from "./src/terminal/build-tui.js";
 import { ProgressJournal, PROGRESS_DIR_NAME } from "./src/progress-journal.js";
 import { installStarterScaffold } from "./src/starter-scaffold.js";
 import { LlmProbePlanner } from "./src/judge/llm-probe-planner.js";
@@ -204,6 +205,8 @@ export async function main(
     [...summary.verifiedRequirementIds, ...(summary.skippedRequirementIds ?? [])]);
   if (patch) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
   await writeRunReport(runDirectory, summary, patch);
+  process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
+    Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
   return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
 }
 
@@ -266,6 +269,7 @@ async function executeProduction(
   const candidate = new CandidateRuntime(pipelineOptions.outputDir,
     join(dirname(runLogFile), "candidate"), pipelineOptions.platformContract);
   let releaseWorkspace: (() => Promise<void>) | undefined;
+  let tui: BuildTui | undefined;
   try {
     const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined), {
       timeoutMs: modelTimeouts.builderTimeoutMs,
@@ -317,13 +321,21 @@ async function executeProduction(
     await saveRunRecord(dirname(runLogFile), context.runRecord);
     process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
     const finalVerifier = new FinalVerifier(runner, lifecycle, candidate, context.runRecord.projectSpec);
-    const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir));
     const promptDir = new URL("./prompts/", import.meta.url);
     const promptHash = createHash("sha256");
     for (const name of (await readdir(promptDir, { recursive: true })).filter((name) => name.endsWith(".md")).sort()) {
       const path = name.replaceAll("\\", "/");
       promptHash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
     }
+    if (process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb") {
+      tui = new BuildTui({
+        requirementIds: Object.keys(context.runRecord.requirementDigests!),
+        onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
+      });
+      tui.start();
+    }
+    const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir), process.stderr,
+      tui ? (rawLine, line) => tui!.record(rawLine, line) : undefined);
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
       grouper: new LlmFeatureGrouper({ ...judgeGateway, timeoutMs: Infinity }),
       builder,
@@ -346,6 +358,7 @@ async function executeProduction(
     });
     return summary;
   } finally {
+    tui?.stop();
     try {
       await candidate.dispose();
     } catch (error) {
@@ -366,11 +379,12 @@ export async function assertPrivateRunDirectory(outputDir: string, runDir: strin
   if (contained(await realpath(outputDir), await realpath(runDir))) throw new Error("Run diagnostics directory resolves inside the candidate output directory");
 }
 
-/** 终端进度与 run-log.txt 使用同样的人类可读行；原始事件只进入私有 ledger。 */
+/** 完整文本日志持续写入文件；交互终端可将同一事件投影为摘要。 */
 export function createRunLogSink(
   runLogFile: string,
   journal?: ProgressJournal,
   stream: { write(chunk: string): void } = process.stderr,
+  present?: (rawLine: string, line: string) => void,
 ): LogSink {
   const runLogDir = dirname(runLogFile);
   const formatter = new HumanRunFormatter();
@@ -378,10 +392,11 @@ export function createRunLogSink(
     write: (chunk) => {
       const line = formatter.format(chunk);
       if (line === null) return;
-      stream.write(`${line}\n`);
       mkdirSync(runLogDir, { recursive: true });
       appendFileSync(runLogFile, `${line}\n`, "utf8");
       journal?.appendLine(line);
+      if (present) present(chunk, line);
+      else stream.write(`${line}\n`);
     },
   };
 }

@@ -53,6 +53,8 @@ shallow build apply --run-dir E:\runs\<运行目录>
 
 `shallow build` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。省略 `--requirements-dir` 时在当前目录及其子目录中查找唯一的 `requirements.yaml`，找不到或找到多个都报错并要求显式指定；省略 `--output-dir`/`--project` 时输出目录缺省为当前目录，当前目录已有项目文件时按增量起点处理，改动经 `apply` 写回。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
 
+真实终端中，`req` 与 `build` 使用一致的单列 TUI。`req` 在输入区上方显示草案版本、场景数与待确认问题，`F2` 打开可滚动草案，`v` 切换完整 YAML。`build` 显示当前模块、活动耗时与本轮验收状态；`d` 查看详细日志，`?` 查看帮助，`Esc` 返回状态页，`Ctrl+C` 中断。结束后保留报告、产物位置与适用的恢复或应用命令。`NO_COLOR` 关闭界面配色；管道、重定向与 `TERM=dumb` 使用纯文本构建日志。
+
 **项目运行配置**
 
 下面是 Windows 上单项目目录布局的配置示例；Linux/macOS 使用 `npm` 替换 `npm.cmd`。
@@ -93,7 +95,7 @@ Judge 保留 GIVEN/WHEN/THEN 的准备和结果语义。所有明示结果分别
 
 **运行产物与增量**
 
-`SHALLOW_RUN_DIR` 缺省指向系统临时目录下的 `shallowcode-runs`，每轮建立日志目录。`run-log.txt`、`run-ledger.jsonl`、Judge 计划、证据、Pi 会话和候选构建位于私有运行目录。终端进度与 `run-log.txt` 使用相同的人类可读日志行；`run-ledger.jsonl` 等原始事件只保留在私有运行目录。
+`SHALLOW_RUN_DIR` 缺省指向系统临时目录下的 `shallowcode-runs`，每轮建立日志目录。`run-log.txt`、`run-ledger.jsonl`、Judge 计划、证据、Pi 会话和候选构建位于私有运行目录。交互终端展示运行摘要与最近进展，详细视图保留最近 500 条人类可读日志；`run-log.txt` 与 `shallow-progress/progress.log` 持续保存全部人类可读行。纯文本模式直接输出这些日志行；`run-ledger.jsonl` 等原始事件只保留在私有运行目录。
 
 已有项目的开发副本保留在该轮 `workspace` 中。`run.json` 记录需求、配置与控制器合同摘要、来源和输入基线；需求及参考文件保存在私有 `requirements/` 快照中。`changes.patch` 导出本轮改动，包含新增文件和二进制变更。`result.json` 保存交付状态、逐需求状态列表及逐场景结果，`report.md` 提供可读报告。结束时终端打印运行目录与补丁位置。`shallow-progress/progress.log` 保存可读进度，保持 untracked；当前 Judge 计划只存于私有运行目录。
 

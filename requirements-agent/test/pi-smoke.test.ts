@@ -192,7 +192,7 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   write(interactive
     ? `需求要点都写在 需求.md 里。\n请读取并整理。${enter}`
     : `需求要点都写在 需求.md 里，请读取并整理。${enter}`);
-  await waitFor(/【本轮修改】/);
+  await waitFor(interactive ? /草案更新/ : /【本轮修改】/);
   write(`生成需求文档${enter}`);
   await waitFor(/是否生成这份需求文档/);
   write(`是${enter}`);
@@ -214,11 +214,11 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
 
   assert.equal(exitCode, 0, `CLI 退出码异常；stdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.ok(!stderr.includes("启动失败"), `启动失败：${stderr}`);
-  assert.match(stdout, /Requirements Agent/);
+  assert.match(stdout, interactive ? /Shallow Code/ : /Requirements Agent/);
   assert.match(stdout, /我先读取你的需求文件/, "流式回复未显示");
-  assert.match(stdout, /正在读取文件/, "读取工具执行标记缺失");
+  if (!interactive) assert.match(stdout, /正在读取文件/, "读取工具执行标记缺失");
   assert.match(stdout, /整理一版草案/, "流式回复未显示");
-  assert.match(stdout, /正在更新需求草案/, "工具执行标记缺失");
+  if (!interactive) assert.match(stdout, /正在更新需求草案/, "工具执行标记缺失");
   assert.match(stdout, /create-task/, "草案变更摘要缺失");
   assert.match(stdout, /是否生成这份需求文档/, "审阅询问缺失");
   assert.match(stdout, /已生成/, "生成结果缺失");
@@ -244,6 +244,8 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   assert.match(gateway.requests.at(-1)!.lastUserText, /【当前需求草案（第 1 版）】/,
     "回合消息缺少最新草案上下文");
   if (interactive) {
+    assert.match(stdout, /F2 草案预览/, "草案预览入口缺失");
+    assert.match(stdout, /shallow build --requirements-dir/, "生成后交接命令缺失");
     assert.match(stdout, /›/, "TUI 未回显用户输入");
     assert.ok(!stdout.includes("Ctrl+O"), "TUI 不应出现 Pi 命令面板提示");
     assert.ok(gateway.requests[0].lastUserText.includes("需求要点都写在 需求.md 里。\n请读取并整理。"),

@@ -115,7 +115,7 @@ AgentSession.prototype.prompt = async function () {
     cli.child.stdin.write(key);
     await cli.waitFor(/本轮处理失败/);
     cli.child.stdin.write("继续补充需求\r");
-    await cli.waitFor(/【本轮修改】/);
+    await cli.waitFor(/草案更新/);
     cli.child.stdin.write("\x04");
     assert.equal(await cli.exit, 0);
     assert.match(cli.stdout(), /正在中止当前回合/);
