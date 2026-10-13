@@ -1,4 +1,4 @@
-import type { Terminal } from "@mariozechner/pi-tui";
+import type { Terminal } from "@earendil-works/pi-tui";
 
 export class MemoryTerminal implements Terminal {
   columns = 80;
@@ -22,4 +22,5 @@ export class MemoryTerminal implements Terminal {
   clearScreen(): void {}
   setTitle(): void {}
   setProgress(): void {}
+  setProgramStatus(): void {}
 }

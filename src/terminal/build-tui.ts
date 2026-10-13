@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { matchesKey, ProcessTerminal, TUI, type Component, type OverlayHandle, type Terminal } from "@mariozechner/pi-tui";
+import { matchesKey, ProcessTerminal, TuiMainScreen, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
 import type { RunSummary } from "../pipeline.js";
 import type { RequirementStatus, RunEvent } from "../types.js";
 import { elapsedTime, fitTerminalText, shellArgument, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
@@ -143,7 +143,7 @@ export class BuildTui {
   private started = false;
 
   constructor(private readonly options: BuildTuiOptions, terminal: Terminal = new ProcessTerminal()) {
-    this.tui = new TUI(terminal);
+    this.tui = new TuiMainScreen(terminal);
     this.view = new BuildView(options, () => terminal.rows, this.theme);
     this.tui.addChild(this.view);
     this.tui.addInputListener(data => {

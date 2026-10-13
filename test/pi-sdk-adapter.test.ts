@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createPiSession, type PiSessionSnapshot } from "../src/builder/pi-sdk-adapter.js";
@@ -61,7 +61,7 @@ test("Pi adapter preserves native file tools and guards their actual execution",
         assert.equal(await readFile(visibleFile, "utf8"), "finished");
         const snapshot = session.snapshot();
         const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
-        assert.equal(snapshot.engineVersion, lock.packages["node_modules/@mariozechner/pi-coding-agent"].version);
+        assert.equal(snapshot.engineVersion, lock.packages["node_modules/@earendil-works/pi-coding-agent"].version);
         assert.equal(snapshot.toolCalls, cases.length);
         assert.equal(snapshot.usage.status, "available");
         assert.equal(snapshot.termination.compactionPending, false);
@@ -98,6 +98,52 @@ test("Pi adapter executes a project tool with its declared parameters and enviro
       try {
         assert.equal((await session.prompt("Run unit.")).outcome, "completed");
         assert.deepEqual(session.snapshot().timing.toolCounts, [{ name: "run_tests", count: 1 }]);
+      } finally { session.dispose(); }
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+});
+
+test("Pi adapter resumes a 0.73.1 session with its checkpoint and keeps credentials in memory", { timeout: 30_000 }, async () => {
+  await withTempDir("shallow-pi-legacy-", async root => {
+    const app = join(root, "app"); await mkdir(app);
+    const sessionDir = join(root, "sessions"); await mkdir(sessionDir);
+    const sessionFile = join(sessionDir, "legacy.jsonl");
+    const sessionId = "745d0360-0cfa-4fbf-bae3-6e5a1f6d92ef";
+    const timestamp = "2026-05-07T00:00:00.000Z";
+    // Version 0.73.1 writes version-3 linked entries without transcript system messages.
+    const entries = [
+      { type: "session", version: 3, id: sessionId, timestamp, cwd: app },
+      { type: "model_change", id: "00000001", parentId: null, timestamp, provider: "shallow-gateway", modelId: "fixture" },
+      { type: "message", id: "00000002", parentId: "00000001", timestamp,
+        message: { role: "user", content: [{ type: "text", text: "Remember legacy alpha." }], timestamp: Date.parse(timestamp) } },
+      { type: "message", id: "00000003", parentId: "00000002", timestamp,
+        message: { role: "assistant", api: "openai-completions", provider: "shallow-gateway", model: "fixture",
+          content: [{ type: "text", text: "Legacy work completed." }], stopReason: "stop", timestamp: Date.parse(timestamp),
+          usage: { input: 20, output: 5, cacheRead: 0, cacheWrite: 0, totalTokens: 25,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } } },
+      { type: "compaction", id: "00000004", parentId: "00000003", timestamp,
+        summary: "Legacy checkpoint for alpha.", firstKeptEntryId: "00000002", tokensBefore: 250_000 },
+    ];
+    await writeFile(sessionFile, entries.map(entry => JSON.stringify(entry)).join("\n") + "\n");
+    let request: { messages: unknown[] } | undefined;
+    const server = createServer(async (req, res) => {
+      let body = ""; for await (const part of req) body += part;
+      request = JSON.parse(body);
+      assert.equal(req.headers.authorization, "Bearer legacy-session-secret");
+      reply(res);
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const session = await createPiSession({ outputDir: app, sessionDir, sessionFile,
+        gateway: { apiKey: "legacy-session-secret", model: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` },
+        systemPrompt: "Use the current controller instructions.", timeoutMs: 20_000 }, () => {});
+      try {
+        assert.equal((await session.prompt("Continue legacy beta.")).outcome, "completed");
+        assert.equal(session.snapshot().sessionId, sessionId);
+        for (const text of ["Remember legacy alpha.", "Legacy checkpoint for alpha.", "Continue legacy beta.",
+          "Use the current controller instructions."]) assert.ok(JSON.stringify(request?.messages).includes(text), text);
+        assert.doesNotMatch(await readFile(sessionFile, "utf8"), /legacy-session-secret/);
+        assert.deepEqual(await readdir(join(sessionDir, "config")), []);
       } finally { session.dispose(); }
     } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });

@@ -4,6 +4,8 @@
 
 ## 使用
 
+需要 Node.js >=22.19.0；Pi SDK 与 TUI 精确固定为 `@earendil-works/*@1.2.0`。
+
 ```powershell
 npm.cmd install
 npm.cmd start

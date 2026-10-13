@@ -12,7 +12,7 @@ Builder 是目标业务代码的唯一实现者。Judge 依据需求及浏览器
 
 **安装与网关配置**
 
-需要 Node.js >=20.18.1、npm、Git 和 Playwright Chromium。控制器依赖版本由锁文件固定。
+需要 Node.js >=22.19.0、npm、Git 和 Playwright Chromium。控制器依赖版本由锁文件固定。
 
 ```powershell
 npm.cmd ci
@@ -24,7 +24,7 @@ Copy-Item .env.example .env
 
 Pi 通过 `CodingAgentPort` 在独立 Worker 中执行。[pi-sdk-adapter.ts](src/builder/pi-sdk-adapter.ts) 集中 SDK 导入、工具转换、会话恢复、压缩重试和完成判断；项目工具使用 [tool-contract.ts](src/builder/tool-contract.ts)，运行日志记录实际 SDK 版本。模型描述与上下文窗口配置位于 `pi-model-config.ts`。
 
-Pi 保持精确版本与锁文件，按所需功能或修复主动升级。升级时先运行 `npx tsx --test test/pi-*.test.ts`，再运行 `npm run test:all`；真实网关冒烟按下方凭证验证说明启用。
+Pi SDK 与 TUI 使用 `@earendil-works/*` 包，精确固定为 `1.2.0` 并保留锁文件，按所需功能或修复主动升级。升级时先运行 `npx tsx --test test/pi-*.test.ts test/terminal-presentation.test.ts`，再运行 `npm run test:all`；同步检查 requirements-agent 的类型与测试。真实网关冒烟按下方凭证验证说明启用。
 
 **创建和修改 Web 应用**
 

@@ -9,7 +9,9 @@ import { withTempDir } from "./helpers/temp-dir.js";
 function reply(res: ServerResponse, content: string, finish = "stop", tool = false,
   promptTokens = tool ? 230_000 : 100, completionTokens = 100) {
   res.writeHead(200, { "content-type": "text/event-stream" });
-  const delta = tool ? { role: "assistant", tool_calls: [{ index: 0, id: "write-1", type: "function",
+  // Real history must exceed keepRecentTokens so the SDK has a prefix to compact.
+  const delta = tool ? { role: "assistant", content: "Prior implementation details.\n".repeat(3_000),
+    tool_calls: [{ index: 0, id: "write-1", type: "function",
     function: { name: "write", arguments: JSON.stringify({ path: "progress.txt", content: "unfinished work" }) } }] }
     : { role: "assistant", content, reasoning_content: "reasoning alone is not a receipt" };
   res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
@@ -91,21 +93,27 @@ for (const reason of ["overflow", "threshold"] as const) {
   }
 }
 
-test("A zero-output length overflow reports a recoverable terminal failure after compaction", { timeout: 35_000 }, async () => {
+for (const completes of [true, false]) {
+test(`Zero-output length recovery waits for compaction and its retry: completes=${completes}`, { timeout: 35_000 }, async () => {
   let requests = 0;
   await fixture((_body, res, n) => {
     requests = n;
-    reply(res, n === 2 ? "" : "Compaction summary", n === 2 ? "length" : "stop", n === 1,
-      n === 2 ? 257_000 : n === 1 ? 230_000 : 100, n === 2 ? 0 : 100);
+    const truncated = n === 2 || n === 4 && !completes;
+    reply(res, truncated ? "" : n === 4 ? "Completed after length recovery." : "Compaction summary",
+      truncated ? "length" : "stop", n === 1,
+      truncated ? 257_000 : n === 1 ? 230_000 : 100, truncated ? 0 : 100);
   }, async (client, app) => {
     const result = await client.run({ ...prompt, outputDir: app });
-    assert.equal(result.outcome, "failed");
-    assert.equal(result.terminationReason, "model_length_limit");
+    assert.equal(result.outcome, completes ? "completed" : "failed", result.summary);
+    assert.equal(result.terminationReason, completes ? undefined : "model_length_limit");
+    if (completes) assert.equal(result.summary, "Completed after length recovery.");
+    assert.equal(result.compactions, 1);
     assert.equal(result.execution?.termination?.compactionPending, false);
     assert.equal(result.execution?.termination?.retryPending, false);
-    assert.equal(requests, 3);
+    assert.equal(requests, 4);
   });
 });
+}
 
 for (const completes of [true, false]) {
   test(`Empty terminal response requests a receipt once: completes=${completes}`, { timeout: 30_000 }, async () => {

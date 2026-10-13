@@ -5,7 +5,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { ProcessTerminal } from "@mariozechner/pi-tui";
+import { ProcessTerminal } from "@earendil-works/pi-tui";
 import { RequirementsTui } from "../src/tui.js";
 
 test("未启动的 TUI 不渲染终端，关闭时不操作终端", async (t) => {
@@ -88,7 +88,7 @@ for (const [name, key] of [["Esc", "\x1b"], ["Ctrl+C", "\x03"]]) {
   test(`${name} 取消自动压缩后可以继续提交下一回合`, { timeout: 10_000 }, async (t) => {
     // 使用真实 SDK 的 abort/abortCompaction，令 prompt 等待压缩取消信号。
     const cli = await launchCli(t, `
-import { AgentSession } from ${JSON.stringify(import.meta.resolve("@mariozechner/pi-coding-agent"))};
+import { AgentSession } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
 let turns = 0;
 AgentSession.prototype.prompt = async function () {
   if (++turns === 1) {

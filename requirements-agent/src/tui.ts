@@ -3,7 +3,7 @@ import {
   initTheme,
   type AgentSessionEvent,
   type AgentSessionEventListener,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Editor,
@@ -13,12 +13,13 @@ import {
   ProcessTerminal,
   Spacer,
   Text,
-  TUI,
+  TuiMainScreen,
+  type TUI,
   type Component,
   type MarkdownTheme,
   type OverlayHandle,
   type Terminal,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { terminalHeader, terminalTheme } from "../../src/terminal/theme.js";
 import { TextViewer } from "../../src/terminal/text-viewer.js";
 import type { ConversationView } from "./cli.js";
@@ -58,7 +59,7 @@ export class RequirementsTui {
   private overlay?: OverlayHandle;
 
   constructor(private readonly options: RequirementsTuiOptions, terminal: Terminal = new ProcessTerminal()) {
-    this.tui = new TUI(terminal);
+    this.tui = new TuiMainScreen(terminal);
     initTheme();
     const t = this.theme;
     this.markdownTheme = {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { AgentSessionEvent, AgentSessionEventListener } from "@mariozechner/pi-coding-agent";
+import type { AgentSessionEvent, AgentSessionEventListener } from "@earendil-works/pi-coding-agent";
 import { runPiTurn, type PiTurnSession } from "../src/pi-turn.js";
 
 type Assistant = Extract<PiTurnSession["messages"][number], { role: "assistant" }>;
@@ -21,7 +21,8 @@ class FakeSession implements PiTurnSession {
   isCompacting = false;
   isRetrying = false;
   isStreaming = false;
-  readonly agent = { waitForIdle: async () => {} };
+  idle: Promise<void> = Promise.resolve();
+  async waitForIdle() { await this.idle; }
   readonly listeners = new Set<AgentSessionEventListener>();
   constructor(private readonly onPrompt: (session: FakeSession) => void | Promise<void>) {}
   subscribe(listener: AgentSessionEventListener) {
@@ -53,15 +54,28 @@ test("阈值压缩改写消息历史后仍保留当前正常终止回复", async
   assert.deepEqual(await runPiTurn(session, "整理需求"), { ok: true });
 });
 
+test("SDK 移除失败回复后仍报告实际终止原因", async () => {
+  for (const reason of ["length", "error", "aborted"] as const) {
+    const session = new FakeSession(current => {
+      current.finish(reply(reason));
+      current.messages = [];
+    });
+    const result = await runPiTurn(session, "整理需求");
+    assert.equal(result.ok, false);
+    assert.ok(!result.ok && result.error?.includes(reason));
+  }
+});
+
 test("等待压缩后的延迟恢复，恢复尚未开始时不能提前结束回合", { timeout: 2_000 }, async () => {
   let resumed = false;
   const session = new FakeSession((current) => {
     current.emit({ type: "compaction_end", reason: "overflow", result: undefined, aborted: false, willRetry: true });
-    setTimeout(() => {
+    current.idle = new Promise<void>(resolve => setTimeout(() => {
       resumed = true;
       current.emit({ type: "agent_start" });
       current.finish(reply("stop"));
-    }, 120);
+      resolve();
+    }, 120));
   });
   assert.deepEqual(await runPiTurn(session, "继续补充需求"), { ok: true });
   assert.equal(resumed, true);

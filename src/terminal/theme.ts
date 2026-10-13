@@ -1,4 +1,4 @@
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 /** Shared terminal palette; the terminal owns the background and body colour. */
 export function terminalTheme(colour = process.env.NO_COLOR === undefined && process.env.TERM !== "dumb") {

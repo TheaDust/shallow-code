@@ -6,15 +6,15 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
 import {
-  AuthStorage,
+  ModelRuntime,
   DefaultResourceLoader,
-  ModelRegistry,
   SessionManager,
   SettingsManager,
   createAgentSession,
   type AgentSession,
   type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 
 import {
   assembleInputLines,
@@ -138,18 +138,19 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
   const agentDir = join(tmpdir(), `requirements-agent-${process.pid}`);
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
   try {
-    const authStorage = AuthStorage.inMemory();
-    authStorage.setRuntimeApiKey(PROVIDER, options.gateway.apiKey);
-    const modelRegistry = ModelRegistry.inMemory(authStorage);
+    const modelRuntime = await ModelRuntime.create({
+      credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false,
+    });
     // 整个对话复用一个会话标识，满足 opencode 网关的路由要求。
     const sessionId = randomUUID();
-    modelRegistry.registerProvider(PROVIDER, {
+    modelRuntime.registerProvider(PROVIDER, {
       baseUrl: options.gateway.baseUrl,
       api: "openai-completions",
       apiKey: "REQUIREMENTS_RUNTIME_CREDENTIAL",
       models: [piProviderModel(options.gateway.model, DEFAULT_CONTEXT_WINDOW,
         opencodeSessionHeaders(options.gateway.baseUrl, sessionId))],
     });
+    await modelRuntime.setRuntimeApiKey(PROVIDER, options.gateway.apiKey);
     const settingsManager = SettingsManager.inMemory({
       retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000 },
       compaction: { enabled: true },
@@ -167,14 +168,13 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
       systemPrompt: options.systemPrompt,
     });
     await resourceLoader.reload();
-    const model = modelRegistry.find(PROVIDER, options.gateway.model);
+    const model = modelRuntime.getModel(PROVIDER, options.gateway.model);
     if (!model) throw new Error(`网关模型未注册：${options.gateway.model}`);
     const customTools = [options.requirementsTool] as ToolDefinition[];
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       agentDir,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       model,
       settingsManager,
       resourceLoader,

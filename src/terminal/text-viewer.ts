@@ -1,4 +1,4 @@
-import { matchesKey, Text, type Component, type TUI } from "@mariozechner/pi-tui";
+import { matchesKey, Text, type Component, type TUI } from "@earendil-works/pi-tui";
 import { terminalRow, type TerminalTheme } from "./theme.js";
 
 /** Read-only, scrollable document used for requirements and run details. */

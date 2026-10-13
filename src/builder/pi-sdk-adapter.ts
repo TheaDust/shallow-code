@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { AuthStorage, ModelRegistry, SessionManager, SettingsManager, DefaultResourceLoader, createAgentSession,
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createAgentSession,
   createReadToolDefinition, createEditToolDefinition, createWriteToolDefinition, createBashToolDefinition,
-  VERSION, type ToolDefinition } from "@mariozechner/pi-coding-agent";
+  VERSION, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { GatewayConfig } from "../runtime-config.js";
 import type { CodingAgentRequest } from "./execution-port.js";
 import type { BuilderResult, BuilderTermination } from "./port.js";
@@ -43,6 +44,18 @@ export interface PiSession {
   dispose(): void;
 }
 
+/** Pi's HTTP error envelope retains the provider message used by gateway classification. */
+function providerErrorMessage(error: string | undefined): string | undefined {
+  const envelope = error?.match(/^\d{3}: (\{[\s\S]*\})$/);
+  if (envelope) {
+    try {
+      const body = JSON.parse(envelope[1]);
+      if (typeof body.message === "string") return body.message;
+    } catch { /* Preserve the SDK error when the body is not valid JSON. */ }
+  }
+  return error;
+}
+
 function toPiTool(tool: BuilderTool): ToolDefinition {
   return { ...tool, execute: (id, params, signal) => tool.execute(id, params, signal) };
 }
@@ -72,14 +85,14 @@ export async function createPiSession(input: PiSessionOptions,
   onProgress: (snapshot: PiSessionSnapshot) => void): Promise<PiSession> {
   const agentDir = join(input.sessionDir, "config");
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
-  const authStorage = AuthStorage.inMemory();
-  authStorage.setRuntimeApiKey("shallow-gateway", input.gateway.apiKey);
-  const modelRegistry = ModelRegistry.inMemory(authStorage);
-  modelRegistry.registerProvider("shallow-gateway", {
+  const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(),
+    modelsPath: null, refreshOnCreate: false });
+  modelRuntime.registerProvider("shallow-gateway", {
     baseUrl: input.gateway.baseUrl, api: "openai-completions", apiKey: "SHALLOW_RUNTIME_CREDENTIAL",
     models: [piProviderModel(input.gateway.model, input.contextWindow,
       opencodeSessionHeaders(input.gateway.baseUrl, randomUUID()))],
   });
+  await modelRuntime.setRuntimeApiKey("shallow-gateway", input.gateway.apiKey);
   const settingsManager = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
     provider: { maxRetries: 0, timeoutMs: input.timeoutMs } }, compaction: { enabled: true }, enableInstallTelemetry: false });
   const resourceLoader = new DefaultResourceLoader({ cwd: input.outputDir, agentDir, settingsManager,
@@ -90,29 +103,30 @@ export async function createPiSession(input: PiSessionOptions,
   if (resolve(manager.getCwd()) !== resolve(input.outputDir)) throw new Error("Persisted Pi session workspace mismatch");
   const tools = createTools(input);
   const { session, modelFallbackMessage } = await createAgentSession({ cwd: input.outputDir, agentDir,
-    authStorage, modelRegistry, model: modelRegistry.find("shallow-gateway", input.gateway.model),
+    modelRuntime, model: modelRuntime.getModel("shallow-gateway", input.gateway.model),
     settingsManager, resourceLoader, sessionManager: manager,
     tools: tools.map(tool => tool.name), customTools: tools });
   if (modelFallbackMessage) { session.dispose(); throw new Error(modelFallbackMessage); }
   let toolCalls = 0;
   let compactions = 0;
   let pendingRestart = false;
-  let terminalResponse: Extract<(typeof session.messages)[number], { role: "assistant" }> | undefined;
+  let lastAssistantResponse: Extract<(typeof session.messages)[number], { role: "assistant" }> | undefined;
   let compactionReason: string | undefined;
   // Only progress after the latest overflow compaction distinguishes a context-bound stop.
   let toolCallsAtOverflowCompaction: number | undefined;
   let recoveryError: string | undefined;
-  let wake: (() => void) | undefined;
   const collector = new PiExecutionCollector();
   const snapshot = (): PiSessionSnapshot => {
     const tokens = session.getSessionStats().tokens;
+    const lastMessage = lastAssistantResponse?.stopReason === "toolUse" ? session.messages.at(-1)
+      : lastAssistantResponse ?? session.messages.at(-1);
     return { sessionId: manager.getSessionId(), sessionFile: manager.getSessionFile(), engineVersion: VERSION,
       toolCalls, compactions,
       ...collector.summarize({ input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead,
         cacheWrite: tokens.cacheWrite, total: tokens.total }),
       termination: {
-        lastMessageRole: (terminalResponse ?? session.messages.at(-1))?.role,
-        lastAssistantStopReason: terminalResponse?.stopReason ?? [...session.messages].reverse().find(message => message.role === "assistant")?.stopReason,
+        lastMessageRole: lastMessage?.role,
+        lastAssistantStopReason: lastAssistantResponse?.stopReason ?? [...session.messages].reverse().find(message => message.role === "assistant")?.stopReason,
         compactionPending: session.isCompacting, retryPending: session.isRetrying || pendingRestart,
         ...(compactionReason ? { compactionReason } : {}),
         ...(toolCallsAtOverflowCompaction === undefined ? {} :
@@ -129,27 +143,23 @@ export async function createPiSession(input: PiSessionOptions,
     else if (event.type === "message_start" && event.message.role === "assistant") collector.modelStarted(atMs);
     else if (event.type === "message_end" && event.message.role === "assistant") {
       collector.modelEnded(atMs);
-      terminalResponse = event.message.stopReason === "stop" &&
-        !event.message.content.some(part => part.type === "toolCall") ? event.message : undefined;
+      // Failed attempts may be omitted from projected history before settlement.
+      lastAssistantResponse = event.message;
       collector.outputProduced(event.message.content.filter(part => part.type === "text")
         .reduce((total, part) => total + Buffer.byteLength(part.text, "utf8"), 0));
     }
-    if (event.type === "agent_start") { pendingRestart = false; terminalResponse = undefined; }
+    if (event.type === "agent_start") { pendingRestart = false; lastAssistantResponse = undefined; }
+    if (event.type === "agent_settled") pendingRestart = false;
     if (event.type === "compaction_start") {
       compactionReason = event.reason;
       if (event.reason === "overflow") toolCallsAtOverflowCompaction = toolCalls;
     }
     if (event.type === "compaction_end") {
       if (event.result) compactions++;
-      // Silent-overflow recovery may retain an assistant that continue() rejects.
-      // Error assistants are removed by the SDK after this event, before retry.
-      const retained = session.messages.at(-1);
-      pendingRestart = event.willRetry && !terminalResponse &&
-        (retained?.role !== "assistant" || retained.stopReason === "error");
+      pendingRestart = event.willRetry;
       recoveryError = event.errorMessage;
     }
     if (event.type === "turn_end" || event.type === "compaction_end") onProgress(snapshot());
-    wake?.(); wake = undefined;
   });
   return {
     snapshot,
@@ -157,21 +167,17 @@ export async function createPiSession(input: PiSessionOptions,
       let promptError: unknown;
       try {
         await session.prompt(promptText, { images, expandPromptTemplates: false });
-        for (;;) {
-          // Drain the SDK event queue before checking scheduled recovery.
-          await new Promise<void>(resolve => setImmediate(resolve));
-          await session.agent.waitForIdle();
-          if (!session.isCompacting && !session.isRetrying && !session.isStreaming && !pendingRestart) break;
-          await new Promise<void>(resolve => { wake = resolve; });
-        }
+        // Session-level idle includes automatic compaction, retry and continuation.
+        await session.waitForIdle();
       } catch (error) { promptError = error; }
-      const last = terminalResponse ?? session.messages.at(-1);
+      const last = lastAssistantResponse ?? session.messages.at(-1);
       const text = last?.role === "assistant" ? last.content.filter(part => part.type === "text").map(part => part.text).join("\n").trim() : "";
-      const success = !promptError && last?.role === "assistant" && last.stopReason === "stop" && Boolean(text);
+      const success = !promptError && last?.role === "assistant" && last.stopReason === "stop" && Boolean(text)
+        && !last.content.some(part => part.type === "toolCall");
       return {
         outcome: success ? "completed" : "failed",
         summary: promptError ? String(promptError) : last?.role === "assistant" ? last.errorMessage || text || "Pi returned an empty terminal response" : "Pi did not reach a terminal assistant response",
-        providerError: promptError ? String(promptError) : last?.role === "assistant" ? last.errorMessage : undefined,
+        providerError: providerErrorMessage(promptError ? String(promptError) : last?.role === "assistant" ? last.errorMessage : undefined),
         ...(!promptError && last?.role !== "assistant" ? { terminationReason: "missing_terminal_response" as const } :
           !promptError && last?.role === "assistant" && last.stopReason === "length" ? { terminationReason: "model_length_limit" as const } :
           !promptError && last?.role === "assistant" && last.stopReason === "stop" && !text ? { terminationReason: "empty_terminal_response" as const } : {}),

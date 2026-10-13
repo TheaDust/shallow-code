@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
-import { visibleWidth } from "@mariozechner/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { MemoryTerminal } from "../../test/helpers/terminal.js";
 import { RequirementsTui, formatRequirementPreview } from "../src/tui.js";
 import { createDraftStore, runConversation, type ConversationView } from "../src/cli.js";

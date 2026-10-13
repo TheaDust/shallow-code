@@ -35,7 +35,7 @@ test("Pi SDK executes tools and resumes persisted history in a new worker", { ti
       const first = await client.run(input);
       assert.equal(first.outcome, "completed", first.summary);
       const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
-      assert.equal(first.execution?.version, lock.packages["node_modules/@mariozechner/pi-coding-agent"].version);
+      assert.equal(first.execution?.version, lock.packages["node_modules/@earendil-works/pi-coding-agent"].version);
       assert.equal(first.toolCalls, 1);
       assert.equal(await readFile(join(app, "hello.txt"), "utf8"), "persisted");
       const second = await client.run({ ...input, taskPrompt: "continue beta" });

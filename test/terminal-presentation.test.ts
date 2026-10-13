@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { TUI, visibleWidth } from "@mariozechner/pi-tui";
+import { TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { BuildTui, BuildView, buildResult } from "../src/terminal/build-tui.js";
 import { TextViewer } from "../src/terminal/text-viewer.js";
 import { terminalTheme } from "../src/terminal/theme.js";
@@ -61,7 +61,7 @@ test("Run view preserves foreground activity during background planning and fits
 test("Document viewer scrolls wrapped CJK content, preserves reading position and can follow the tail", () => {
   const terminal = new MemoryTerminal();
   terminal.rows = 12;
-  const tui = new TUI(terminal);
+  const tui = new TuiMainScreen(terminal);
   const viewer = new TextViewer(tui, terminalTheme(false), "草案", Array.from({ length: 30 }, (_, i) => `第 ${i} 行`).join("\n"), () => {});
   viewer.render(40);
   viewer.handleInput("\x1b[B");
