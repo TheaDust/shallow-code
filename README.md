@@ -12,13 +12,15 @@ Builder 是目标业务代码的唯一实现者。Judge 依据需求及浏览器
 
 **安装与网关配置**
 
-需要 Node.js >=22.19.0、npm、Git 和 Playwright Chromium。控制器依赖版本由锁文件固定。
+需要 Node.js >=22.19.0、npm、Git 和 Playwright Chromium。控制器依赖版本由锁文件固定。clone 后在仓库根运行一键安装脚本（跨平台，Node 实现）：
 
 ```powershell
-npm.cmd ci
-npx.cmd playwright install chromium
-Copy-Item .env.example .env
+git clone <仓库地址> ShallowCode
+cd ShallowCode
+npm.cmd run setup
 ```
+
+脚本依次安装仓库根与 requirements-agent 的依赖、下载 Playwright Chromium、从 `.env.example` 初始化 `.env`（已存在则保留）并注册全局 `shallow` 命令；`--check` 只检查环境并打印计划，`--skip-browser` 跳过 Chromium 下载。手动执行时依次运行 `npm ci`、`requirements-agent` 目录内的 `npm ci`、`npx playwright install chromium`、复制 `.env.example` 为 `.env` 与 `npm link`。
 
 在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。Builder 与 Judge（规划/验收）可分别用 `SHALLOW_BUILDER_*`、`SHALLOW_JUDGE_*` 覆盖 API key、地址与模型（字段级回退公共值）；[requirements-agent](requirements-agent/README.md) 读取同一份仓库根 `.env`，用 `REQUIREMENTS_AGENT_*` 单独覆盖。网关为 opencode.ai（Zen/Go）时，控制器与 requirements-agent 会自动附带该网关要求的 `x-opencode-session` 会话头。
 

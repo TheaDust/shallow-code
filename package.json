@@ -10,6 +10,7 @@
     "test": "tsx --test test/*.test.ts",
     "test:browser": "tsx --test --test-concurrency=1 test/browser/*.test.ts",
     "test:all": "npm run typecheck && npm test && npm run test:browser",
+    "setup": "node scripts/setup.mjs",
     "smoke:credentials": "tsx --test --test-name-pattern=\"credential smoke\" test/credential-smoke.test.ts",
     "start": "tsx index.ts"
   },
