@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 
 import { parse } from "yaml";
-import { maskRequirementLiterals, requirementSentences } from "./requirement-text.js";
+import { maskRequirementLiterals, requirementLiterals, requirementSentences } from "./requirement-text.js";
+import { scenarioStepPhases } from "./requirement-analysis.js";
 
 import type {
   AtomicRequirement,
@@ -272,19 +273,13 @@ function extractReferences(text: string): string[] {
 }
 
 function extractUiStrings(text: string): string[] {
-  const values: Array<{ index: number; value: string }> = [];
-  for (const pattern of [/“([^”]+)”/g, /"([^"\n]+)"/g, /`([^`]+)`/g]) {
-    for (const match of text.matchAll(pattern)) {
-      values.push({ index: match.index, value: match[1] });
-    }
-  }
-  return values.sort((left, right) => left.index - right.index).map(({ value }) => value);
+  return requirementLiterals(text).map(literal => literal.value).filter(Boolean);
 }
 
 function extractSeedDeclarations(text: string, scenarios: ParsedScenario[]): string[] {
   // Modern declarations and GIVEN facts are source excerpts, not inferred records or creation targets.
   const declarations: string[] = [];
-  for (const match of text.matchAll(/(Seed (?:data|values):|(?:The )?evaluation seed contains)\s*(.+?)(?=\s+Seed (?:data|values):|\s+(?:The )?evaluation seed contains|[\n]|$)/gim)) {
+  for (const match of text.matchAll(/(Seed (?:data|values):|(?:The )?evaluation seed contains|(?:种子|初始|预置)数据[：:])\s*(.+?)(?=\s+Seed (?:data|values):|\s+(?:The )?evaluation seed contains|\s+(?:种子|初始|预置)数据[：:]|[\n]|$)/gim)) {
     const clause = (match[1].toLowerCase().includes("evaluation seed contains")
       ? match[2].split(/\.(?=\s|$)/, 1)[0]
       : match[2])
@@ -301,11 +296,9 @@ function extractSeedDeclarations(text: string, scenarios: ParsedScenario[]): str
     }
   }
   for (const scenario of scenarios) {
-    let inGiven = false;
-    for (const step of scenario.steps) {
-      const keyword = step.keyword.toUpperCase();
-      if (keyword !== "AND" && keyword !== "BUT") inGiven = keyword === "GIVEN";
-      if (!inGiven) continue;
+    const phases = scenarioStepPhases(scenario);
+    for (const [index, step] of scenario.steps.entries()) {
+      if (phases[index] !== "given") continue;
       for (const sentence of requirementSentences(step.content)) {
         const prose = maskRequirementLiterals(sentence);
         if (prose === sentence) continue;

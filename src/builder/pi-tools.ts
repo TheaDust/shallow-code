@@ -11,7 +11,7 @@ import { createTestTool } from "./pi-test-tool.js";
 import { createAppTool } from "./pi-app-tool.js";
 import { installCapability, listCapabilities } from "./capability-catalog.js";
 
-export async function assertToolPath(root: string, input: string): Promise<string> {
+export async function assertToolPath(root: string, input: string, readOnlyFiles: readonly string[] = []): Promise<string> {
   const canonicalRoot = await realpath(root);
   const path = resolve(canonicalRoot, input);
   const contained = (value: string) => {
@@ -23,7 +23,14 @@ export async function assertToolPath(root: string, input: string): Promise<strin
   contained(path);
   let parent = path;
   while (true) {
-    try { contained(await realpath(parent)); break; }
+    try {
+      const canonical = await realpath(parent);
+      contained(canonical);
+      if (parent === path) for (const file of readOnlyFiles) {
+        if (relative(await realpath(file), canonical) === "") throw new Error("Builder skill files are read-only");
+      }
+      break;
+    }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const next = dirname(parent);
@@ -32,6 +39,14 @@ export async function assertToolPath(root: string, input: string): Promise<strin
     }
   }
   return path;
+}
+
+/** Only read may access the exact skill files explicitly loaded by the controller. */
+export async function assertToolReadPath(root: string, input: string, skillFiles: readonly string[]): Promise<string> {
+  const path = resolve(root, input);
+  const skill = skillFiles.find(file => relative(resolve(file), path) === "");
+  if (skill !== undefined) return realpath(skill);
+  return assertToolPath(root, input);
 }
 
 export function assertToolCommand(command: string, privateDirectory?: string, workspaceDirectory?: string): void {

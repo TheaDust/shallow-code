@@ -135,6 +135,11 @@ test("LLM grouping sends descriptions and original metrics once, with independen
     assert.equal(sent.scenarioCount, original.scenarios.length);
     assert.equal(sent.textChars, original.text.length + original.scenarios.reduce((sum, scenario) => sum + scenario.length, 0));
     assert.equal("scenarios" in sent, false);
+    for (const fact of sent.scenarioFacts) for (const source of fact.sources) {
+      assert.equal(original.scenarioContracts!.find(scenario => scenario.id === source.scenarioId)!.steps[source.stepIndex].content, fact.content);
+    }
+    assert.equal(sent.scenarioFacts.flatMap((fact: { sources: unknown[] }) => fact.sources).length,
+      original.scenarioContracts!.reduce((count, scenario) => count + scenario.steps.length, 0));
   }
   assert.equal(new Set(payload.ancestors.map((ancestor: { id: string }) => ancestor.id)).size, payload.ancestors.length);
   assert.deepEqual(usages, [{ input: 60, output: 20, cacheRead: 40, cacheWrite: 0, total: 120 }]);

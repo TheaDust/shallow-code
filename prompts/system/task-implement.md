@@ -4,8 +4,6 @@
 
 {{RECEIPT}}
 
-{{FRAGMENTS}}
-
 # 当前任务
 
 目标项目目录：{{OUTPUT_DIR}}

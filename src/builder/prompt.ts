@@ -11,17 +11,12 @@ import type {
   BuilderShadowObservation,
   DeliveryFailureObservation,
 } from "./prompt-input.js";
-import {
-  PROMPT_FRAGMENTS,
-  selectPromptFragments,
-  type PromptFragmentId,
-} from "./prompt-fragments.js";
 import { fillTemplate, loadPrompt } from "../prompt-assets.js";
+import { scenarioPhaseIndex } from "../requirement-analysis.js";
 
 export interface CompiledBuilderPrompt {
   systemPrompt: string;
   taskPrompt: string;
-  fragmentIds: PromptFragmentId[];
 }
 
 const SYSTEM_PROMPT = [
@@ -36,7 +31,6 @@ export function compileBuilderPrompt(
   return {
     systemPrompt: SYSTEM_PROMPT,
     taskPrompt: buildBuilderTaskPrompt(request),
-    fragmentIds: selectPromptFragments(request),
   };
 }
 
@@ -55,7 +49,6 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
           PROJECT_CONTEXT: projectContextSection(request.projectContext),
           WORK_PACKET: workPacketSection(request.packet),
           PLATFORM_CONTRACT: platformContractSection(request.platformContract),
-          FRAGMENTS: fragmentSection(selectPromptFragments(request)),
           RECEIPT: receipt,
         },
       );
@@ -77,7 +70,6 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
         PROJECT_CONTEXT: projectContextSection(request.projectContext),
         WORK_PACKET: workPacketSection(request.packet),
         PLATFORM_CONTRACT: platformContractSection(request.platformContract),
-        FRAGMENTS: fragmentSection(selectPromptFragments(request)),
         RECEIPT: receipt,
       });
       return task.trim();
@@ -89,7 +81,6 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
           OUTPUT_DIR: request.outputDir,
           ACTION: deliveryRepairAction(request.deliveryFailure),
           PLATFORM_CONTRACT: platformContractSection(request.platformContract),
-          FRAGMENTS: fragmentSection(selectPromptFragments(request)),
           RECEIPT: receipt,
         },
       );
@@ -235,6 +226,11 @@ function renderRequirement(requirement: AtomicRequirement): string {
     "",
     "验收场景：",
     requirement.scenarios.join("\n\n") || "无",
+    ...(requirement.scenarioContracts?.length ? [
+      "",
+      "场景阶段索引（与原文步骤一一对应，AND/BUT 延续所属阶段）：",
+      JSON.stringify(scenarioPhaseIndex(requirement)),
+    ] : []),
     "",
     "引用资料：",
     requirement.references.join("、") || "无",
@@ -285,14 +281,6 @@ function platformContractSection(contract: PlatformContract): string {
     DATA_ENV_VAR: contract.dataEnvVar ?? "SHALLOW_DATA_DIR",
     DATA_PATHS: contract.dataPaths?.join("、") || "未声明继承数据目录",
   });
-}
-
-function fragmentSection(fragmentIds: PromptFragmentId[]): string {
-  return [
-    "## 本次适用的实现规则",
-    "",
-    fragmentIds.map((id) => PROMPT_FRAGMENTS[id]).join("\n\n"),
-  ].join("\n");
 }
 
 function receiptSection(): string {

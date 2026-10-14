@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -14,8 +14,19 @@ test("Shell guards use the actual private run directory while allowing absolute 
   });
 });
 
-import { assertNotTestCommand, assertToolCommand, assertToolPath } from "../src/builder/pi-tools.js";
+import { assertNotTestCommand, assertToolCommand, assertToolPath, assertToolReadPath } from "../src/builder/pi-tools.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+
+test("Loaded skill files remain read-only even when located inside the target workspace", async () => {
+  await withTempDir("shallow-skill-guard-", async root => {
+    const skillFile = join(root, "SKILL.md");
+    await writeFile(skillFile, "approved guidance");
+    await assert.doesNotReject(assertToolReadPath(root, skillFile, [skillFile]));
+    await assert.rejects(assertToolPath(root, skillFile, [skillFile]), /read-only/);
+    await assert.doesNotReject(assertToolPath(root, "app.ts", [skillFile]));
+    assert.equal(await readFile(skillFile, "utf8"), "approved guidance");
+  });
+});
 
 test("Builder tools cannot reach the product-visible progress journal", async () => {
   await withTempDir("shallow-pi-tools-", async (root) => {

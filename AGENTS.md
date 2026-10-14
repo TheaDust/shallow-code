@@ -33,7 +33,7 @@
 - 入口通过 `resolveRuntimeContract` 装配运行合同；评测端口仅在显式预留时存在。Builder 测试与 app、候选及交付检查共享合同，数据路径与注入变量均按声明使用。
 - 已有项目通过 `project-workspace.ts` 复制到运行拥有的目录，包含当前 staged 和未跟踪源码。原目录与 Git index 保持不动；GitOps 以显式接管参数操作副本，回滚只恢复该副本的输入检查点。
 - `run-record.ts` 保存输入摘要与基线。resume 核对输入和合同，恢复接受检查点并重新验收；apply 核对补丁和受影响文件的完整输入内容后写回，保留用户 index。交付配置须与本轮运行合同一致，需求与参考文件使用私有快照。
-- 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充；新增 fragment 同步 `prompt-fragments.ts` 与测试。
+- 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充。Builder 技能位于 `prompts/skills/<name>/SKILL.md`，用 name/description 描述适用条件，正文按需读取；Pi 只显式加载该目录，技能文件仅允许 read 访问。
 - 合同修改核对 Builder、Planner、复核、精化及 baseline 的适用资产和动态装配，而非只改一份 Markdown。
 - 新增或调整运行事件同步 `types.ts`、`human-log.ts` 与对应测试；主线观测经 `RunStateStore.record` 发射，诊断使用统一脱敏。
 
@@ -42,10 +42,10 @@
 | 任务 | 优先入口 |
 | --- | --- |
 | 生产装配、CLI、项目运行配置 | `index.ts`、`bin/shallow.mjs`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
-| 需求解析、依赖、增量范围 | `src/catalog.ts`、`src/evolution.ts`、`src/scheduler.ts` |
+| 需求解析、原文阶段分析、依赖、增量范围 | `src/catalog.ts`、`src/requirement-text.ts`、`src/requirement-analysis.ts`、`src/evolution.ts`、`src/scheduler.ts` |
 | 功能分组 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`prompts/planning/feature-grouping.md` |
 | 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/run-record.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |
-| Builder 提示词与执行 | `src/builder/prompt.ts`、`prompt-builder.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`） |
+| Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
 | Judge 规划、覆盖、恢复与执行 | `src/judge/llm-probe-planner.ts`、`probe-schema.ts`、`probe-coverage.ts`、`audit.ts`、`playwright-probe-runner.ts`（均在 `src/judge/`） |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
 | 继承数据 | `src/inherited-data.ts` |

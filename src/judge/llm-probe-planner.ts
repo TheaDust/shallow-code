@@ -21,6 +21,7 @@ import {
   type ProbePlan,
 } from "./probe-schema.js";
 import { assertCoverageAccountedFor, assertOutcomeAccounting, probeCoverageGaps, scenarioOutcomes } from "./probe-coverage.js";
+import { scenarioPhaseIndex } from "../requirement-analysis.js";
 import { parsePlanReview, preparationReviewJsonSchema, type PlanReview, PROBE_REVIEW_JSON_SCHEMA } from "./semantic-review.js";
 
 export interface ProbePlanOptions {
@@ -102,6 +103,7 @@ export class LlmProbePlanner implements ProbePlanner {
             ancestors: requirement.ancestors,
             ...(requirement.scenarioContracts?.length ? {} : { scenarios: requirement.scenarios }),
             scenarioContracts: requirement.scenarioContracts,
+            scenarioPhases: scenarioPhaseIndex(requirement),
             scenarioOutcomes: scenarioOutcomes([requirement]),
             references: requirement.references,
             exactUiStrings: requirement.exactUiStrings,
@@ -243,6 +245,7 @@ export class LlmProbePlanner implements ProbePlanner {
             ...(requirement.scenarioContracts?.length ? {} : { scenarios: requirement.scenarios }),
             references: requirement.references,
             scenarioContracts: requirement.scenarioContracts,
+            scenarioPhases: scenarioPhaseIndex(requirement),
             scenarioOutcomes: scenarioOutcomes([requirement]),
             exactUiStrings: requirement.exactUiStrings,
             seedDeclarations: requirement.seedDeclarations,

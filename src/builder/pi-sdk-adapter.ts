@@ -9,7 +9,8 @@ import type { GatewayConfig } from "../runtime-config.js";
 import type { CodingAgentRequest } from "./execution-port.js";
 import type { BuilderResult, BuilderTermination } from "./port.js";
 import type { BuilderTool, ToolImage } from "./tool-contract.js";
-import { assertToolPath, createBuilderTools, createShellExecutor } from "./pi-tools.js";
+import { assertToolPath, assertToolReadPath, createBuilderTools, createShellExecutor } from "./pi-tools.js";
+import { BUILDER_SKILLS_DIR } from "./skills.js";
 import { PiExecutionCollector, type ExecutionSummary } from "./pi-execution-stats.js";
 import { piProviderModel } from "./pi-model-config.js";
 import { opencodeSessionHeaders } from "../gateway-headers.js";
@@ -63,13 +64,15 @@ function toPiTool(tool: BuilderTool): ToolDefinition {
 // Headless sessions need no renderer types; keep native renderer fields at runtime.
 type PiTool = Omit<ToolDefinition, "renderCall" | "renderResult">;
 
-function createTools(input: PiSessionOptions): ToolDefinition[] {
+function createTools(input: PiSessionOptions, skillFiles: readonly string[]): ToolDefinition[] {
   const { outputDir: cwd, platformContract: contract } = input;
   const privateDirectory = dirname(input.sessionDir);
   const guard = <T extends PiTool>(tool: T): T => ({ ...tool,
     async execute(...args: Parameters<T["execute"]>) {
-      await assertToolPath(cwd, (args[1] as { path: string }).path);
-      return tool.execute(args[0], args[1], args[2], args[3], args[4]);
+      const params = args[1] as { path: string };
+      const path = tool.name === "read" ? await assertToolReadPath(cwd, params.path, skillFiles)
+        : await assertToolPath(cwd, params.path, skillFiles);
+      return tool.execute(args[0], { ...params, path }, args[2], args[3], args[4]);
     },
   });
   const files = [guard(createReadToolDefinition(cwd)), guard(createEditToolDefinition(cwd)), guard(createWriteToolDefinition(cwd))];
@@ -97,11 +100,12 @@ export async function createPiSession(input: PiSessionOptions,
     provider: { maxRetries: 0, timeoutMs: input.timeoutMs } }, compaction: { enabled: true }, enableInstallTelemetry: false });
   const resourceLoader = new DefaultResourceLoader({ cwd: input.outputDir, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+    additionalSkillPaths: [BUILDER_SKILLS_DIR],
     systemPrompt: input.systemPrompt });
   await resourceLoader.reload();
   const manager = input.sessionFile ? SessionManager.open(input.sessionFile) : SessionManager.create(input.outputDir, input.sessionDir);
   if (resolve(manager.getCwd()) !== resolve(input.outputDir)) throw new Error("Persisted Pi session workspace mismatch");
-  const tools = createTools(input);
+  const tools = createTools(input, resourceLoader.getSkills().skills.map(skill => skill.filePath));
   const { session, modelFallbackMessage } = await createAgentSession({ cwd: input.outputDir, agentDir,
     modelRuntime, model: modelRuntime.getModel("shallow-gateway", input.gateway.model),
     settingsManager, resourceLoader, sessionManager: manager,

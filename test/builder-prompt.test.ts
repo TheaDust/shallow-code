@@ -20,65 +20,22 @@ import type {
 import { FakeBuilder } from "./fakes/fake-builder.js";
 import { loadPrompt } from "../src/prompt-assets.js";
 
-test("Authorized entry guidance reaches every product and repair mode without mixing domain fragments", () => {
-  const accessibleFragment = loadPrompt("fragments", "accessible-web-controls");
-  assert.match(accessibleFragment, /仅依赖已确认身份、路由和权限/);
-  assert.match(accessibleFragment, /权限未知时先确认/);
-  assert.match(accessibleFragment, /身份或对象变化后重新校验/);
-  const selfTest = loadPrompt("system", "self-test");
-  assert.match(selfTest, /每段点击后立即核对/);
-  assert.match(selfTest, /用可控的未完成 Promise 延迟正文或列表响应/);
-  assert.match(selfTest, /同步检查已授权入口/);
-  assert.match(selfTest, /不能用直点替代需求明确规定的入口/);
-  assert.match(selfTest, /分别核对访客和登录用户/);
-  assert.match(selfTest, /检查全局控件位于 banner/);
+test("Builder contracts follow requirements and project choices across products and modes", () => {
+  const systems = new Set<string>();
   for (const kind of ["repository_collaboration", "spreadsheet", "generic_web"] as const) {
     for (const request of [implementRequest(), repairRequest("repair"), repairRequest("root_cause_repair")]) {
-      assert.ok("packet" in request);
+      if (request.mode === "delivery_repair") throw new Error("unexpected mode");
+      request.projectContext.product.kind = kind;
       request.packet.requirements[0].product.kind = kind;
-      if (request.projectContext) request.projectContext.product.kind = kind;
       const compiled = compileBuilderPrompt(request);
-      const body = compiled.systemPrompt + "\n" + compiled.taskPrompt;
-      assert.ok(compiled.taskPrompt.includes(accessibleFragment));
-      assert.match(body, /继承应用中的公共组件拷贝/);
-      assert.match(body, /管理型对话框保存后先呈现更新的列表/);
-      assert.match(body, /同一失败表单上下文/);
-      assert.match(body, /完整的数值与实体单位文字/);
-      assert.match(body, /全局控件在首页、登录后及实体详情/);
-      assert.match(body, /默认状态也写入地址/);
-      assert.match(body, /150ms、500ms 和失败分支/);
-      assert.ok(compiled.systemPrompt.includes(selfTest));
-      assert.match(compiled.systemPrompt, /全局页头使用顶层 `<header>`（banner）/);
-      assert.match(compiled.systemPrompt, /与唯一的 `<main>` 主内容区并列/);
-      assert.match(compiled.systemPrompt, /页面入口依据已确认的身份与权限呈现，不等待无关数据/);
-      assert.match(compiled.systemPrompt, /依赖未就绪数据的操作保留控件并暂时禁用/);
-      assert.match(compiled.systemPrompt, /脚手架混合 Combobox 分别用浏览器原生 selectOption/);
-      assert.match(compiled.systemPrompt, /专用 ARIA combobox 按需求核对输入、可见 option 与选择结果/);
-      assert.match(compiled.systemPrompt, /传统测试分别检查原生 disabled、非原生 aria-disabled 及实际操作效果/);
-      assert.match(compiled.systemPrompt, /真实浏览器用 toBeDisabled\/toBeEnabled 检查禁用和恢复/);
-      const repositoryFragment = loadPrompt("fragments", "repository-collaboration");
-      assert.equal(body.includes(repositoryFragment), kind === "repository_collaboration");
-      if (kind === "repository_collaboration") {
-        assert.match(body, /登录入口的角色、名称和容器以当前需求为准/);
-        assert.match(body, /先识别已知旧 ID 与关联引用/);
-        assert.match(body, /工作台提供当前身份可见的组织和可读仓库的具名入口/);
-        assert.match(body, /本包实现组织或仓库功能且提供登录工作台时/);
-        assert.match(body, /已登录身份与本页规定的具名对象入口一起就绪/);
-        assert.match(body, /同时保留需求规定的账户菜单、列表和搜索路径/);
-        assert.match(body, /身份或权限变化后重新核对列表/);
-        assert.match(body, /权限已确认且不依赖列表内容的创建入口也独立呈现/);
-        assert.match(body, /后台继续校验每次读取和写入的权限/);
-        assert.match(body, /先通过项目路由工具完成导航，再关闭菜单/);
-        assert.match(body, /在正式构建的应用中从首页登录，逐段检查/);
-      }
-      if (kind === "spreadsheet") {
-        assert.match(body, /按坐标提供可访问名称/);
-        assert.match(body, /条件格式检查实际计算背景色/);
-        assert.match(body, /明确的范围与列配置/);
-        assert.match(body, /先识别已知旧 ID 与关联引用/);
-      }
+      systems.add(compiled.systemPrompt);
+      assert.ok(compiled.taskPrompt.includes(request.packet.requirements[0].text));
+      assert.match(compiled.systemPrompt, /用 read 读取其 SKILL.md/);
+      assert.doesNotMatch(compiled.systemPrompt, /必须使用 HashRouter|全局页头使用顶层/);
+      assert.doesNotMatch(compiled.taskPrompt, /【仓库协作业务】|【电子表格业务】/);
     }
   }
+  assert.equal(systems.size, 1);
 });
 
 test("Builder prompt compiles a Chinese system contract and dynamic task prompt", () => {
@@ -99,14 +56,14 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.systemPrompt, /browser 是昂贵工具/);
   assert.match(compiled.systemPrompt, /清晰稳定的模块与接口边界/);
   assert.match(compiled.systemPrompt, /延续既有栈，不得换栈重写/);
-  assert.match(compiled.systemPrompt, /通用最小脚手架只建立 React\/Vite\/TypeScript/);
+  assert.match(compiled.systemPrompt, /通用最小脚手架提供运行配置/);
   assert.match(compiled.systemPrompt, /不代表任何业务需求已经实现/);
   assert.match(compiled.systemPrompt, /frontend\/src\/ui/);
   assert.match(compiled.systemPrompt, /list_capabilities/);
   assert.match(compiled.systemPrompt, /install_capability/);
   assert.match(compiled.systemPrompt, /React \+ Vite \+ TypeScript/);
-  assert.match(compiled.systemPrompt, /hash 路由/);
-  assert.match(compiled.systemPrompt, /必须使用 HashRouter/);
+  assert.match(compiled.systemPrompt, /路由方案按页面直达、刷新/);
+  assert.doesNotMatch(compiled.systemPrompt, /必须使用 HashRouter/);
   assert.match(compiled.systemPrompt, /@testing-library\/react/);
   assert.match(compiled.systemPrompt, /按其所属控件或文本逐字实现/);
   assert.match(compiled.systemPrompt, /不得缩写、加长、同义替换或翻译/);
@@ -137,20 +94,6 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.taskPrompt, /reference\/profile\.png/);
   assert.match(compiled.taskPrompt, /Profile name \| Save/);
   assert.match(compiled.taskPrompt, /引号原词（须按原文区分界面名称、数据值与示例）/);
-  assert.match(compiled.taskPrompt, /输入控件使用符合用途的原生类型/);
-  assert.match(compiled.taskPrompt, /优先使用脚手架混合 Combobox/);
-  assert.match(compiled.taskPrompt, /不只依赖浏览器原生校验气泡/);
-  assert.match(compiled.taskPrompt, /同名操作可以重复/);
-  assert.match(compiled.taskPrompt, /打开对象的方式依需求/);
-  assert.match(compiled.taskPrompt, /<h1>–<h6>/);
-  assert.match(compiled.taskPrompt, /要求 menu\/menuitem 时提供相应角色与键盘行为/);
-  assert.match(compiled.taskPrompt, /按需求使用 table、row、cell/);
-  assert.match(compiled.taskPrompt, /使用 status 或 alert/);
-  assert.match(compiled.taskPrompt, /禁用的原生控件用 disabled/);
-  assert.match(compiled.taskPrompt, /对话框有可访问名称/);
-  assert.match(compiled.taskPrompt, /需求或场景要求悬停显示的次要操作应在悬停后出现/);
-  assert.match(compiled.taskPrompt, /可访问的 option、radio、checkbox/);
-  assert.match(compiled.taskPrompt, /背景不可操作/);
   assert.match(compiled.taskPrompt, /cwd=frontend: npm run build/);
   assert.match(compiled.taskPrompt, /http:\/\/127\.0\.0\.1:3000/);
   assert.match(compiled.taskPrompt, /PORT/);
@@ -159,10 +102,6 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.doesNotMatch(compiled.taskPrompt, /acceptedSha|global budget|\/workspace\/tests/i);
   // 技术栈缺省（React+Vite）只出现在固定系统合同里；任务模板不向既有项目推销换栈
   assert.doesNotMatch(compiled.taskPrompt, /use React|use Vue/i);
-  assert.deepEqual(compiled.fragmentIds, [
-    "accessible_web_controls",
-    "server_persistence",
-  ]);
   assert.match(compiled.taskPrompt, /结果：完成 \| 阻塞/);
 });
 
@@ -298,8 +237,8 @@ test("Every Builder mode includes shared handoff and public-entry contracts", ()
   for (const request of [implementRequest(), repairRequest("repair"), repairRequest("root_cause_repair"), deliveryRequest()]) {
     const compiled = compileBuilderPrompt(request);
     assert.equal(compiled.systemPrompt.split(architectureNotes).length, 2);
-    assert.match(compiled.systemPrompt, /全局页头使用顶层 `<header>`（banner）/);
-    assert.match(compiled.systemPrompt, /检查全局控件位于 banner/);
+    assert.match(compiled.systemPrompt, /需求声明全局页头时/);
+    assert.match(compiled.systemPrompt, /按需求核对全局控件的作用域/);
     assert.match(compiled.systemPrompt, /选定本包实现入口、调用方和测试/);
     assert.match(compiled.systemPrompt, /已读且未变化的内容沿用上下文/);
     assert.match(compiled.systemPrompt, /修改后按需要重读受影响片段/);
@@ -427,7 +366,7 @@ test("Delivery repair renders the failure without any work packet context", () =
   assert.match(compiled.taskPrompt, /失败命令：\n未提供/);
   assert.match(compiled.taskPrompt, /平台构建命令成功退出并生成生产构建产物/);
   assert.match(compiled.taskPrompt, /实际观察：\nproduction build failed/);
-  assert.match(compiled.taskPrompt, /【交付合同】/);
+  assert.match(compiled.systemPrompt, /用 read 读取其 SKILL.md/);
   assert.match(compiled.taskPrompt, /依次补齐安装、构建、探针端口启动、健康检查和根页面访问/);
   assert.match(compiled.taskPrompt, /沿用本轮已成功且输入未变的安装、构建结果/);
   assert.doesNotMatch(compiled.taskPrompt, /当前工作包|delivery-repair/);
@@ -436,13 +375,12 @@ test("Delivery repair renders the failure without any work packet context", () =
     compiled.taskPrompt,
     /【状态与持久化】|【身份与权限】|【仓库协作业务】|【电子表格业务】/,
   );
-  assert.deepEqual(compiled.fragmentIds, ["delivery_contract"]);
   assert.match(compiled.taskPrompt, /结果：完成 \| 阻塞/);
   assert.ok(compiled.taskPrompt.indexOf("cwd=frontend: npm run build") < compiled.taskPrompt.indexOf("实际观察："));
   assert.equal(compiled.taskPrompt.split("cwd=frontend: npm run build").length, 2);
 });
 
-test("Startup failures append the delivery contract on top of the product base", () => {
+test("Startup repairs retain the runtime contract and observed failure", () => {
   const compiled = compileBuilderPrompt(
     repairRequest("repair", {
       applicationStartupFailed: true,
@@ -457,8 +395,7 @@ test("Startup failures append the delivery contract on top of the product base",
     }),
   );
 
-  assert.match(compiled.taskPrompt, /【交付合同】/);
-  assert.match(compiled.taskPrompt, /【状态与持久化】/);
+  assert.match(compiled.systemPrompt, /用 read 读取其 SKILL.md/);
   assert.match(compiled.taskPrompt, /Application exited before readiness/);
 });
 

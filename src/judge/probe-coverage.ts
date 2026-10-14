@@ -1,6 +1,7 @@
 import type { AtomicRequirement } from "../types.js";
 import type { ProbeCase, ProbePlan, ProbeStep } from "./probe-schema.js";
-import { maskRequirementLiterals, requirementSentences } from "../requirement-text.js";
+import { maskRequirementLiterals, requirementLiterals, requirementOutcomeClauses } from "../requirement-text.js";
+import { scenarioStepPhases } from "../requirement-analysis.js";
 
 export interface ScenarioOutcome {
   scenarioId: string;
@@ -41,12 +42,10 @@ export interface UncoveredOutcome {
 
 export function scenarioOutcomes(requirements: readonly AtomicRequirement[]): ScenarioOutcome[] {
   return requirements.flatMap(requirement => (requirement.scenarioContracts ?? []).flatMap(scenario => {
-    let inThen = false;
+    const phases = scenarioStepPhases(scenario);
     return scenario.steps.flatMap((step, stepIndex) => {
-      const keyword = step.keyword.toUpperCase();
-      if (keyword !== "AND" && keyword !== "BUT") inThen = keyword === "THEN";
-      if (!inThen) return [];
-      const clauses = outcomeClauses(step.content);
+      if (phases[stepIndex] !== "then") return [];
+      const clauses = requirementOutcomeClauses(step.content);
       return clauses.map((text, clauseIndex) => ({ scenarioId: scenario.id, stepIndex, text, requirementId: requirement.id,
         facets: observableFacets(text),
         ...(clauses.length > 1 ? { clauseIndex } : {}) }));
@@ -63,7 +62,7 @@ export function scenarioOutcomes(requirements: readonly AtomicRequirement[]): Sc
  */
 export function observableFacets(text: string): ObservableFacet[] {
   const masked = maskRequirementLiterals(text);
-  const afterReload = /\b(?:after|following)\s+(?:a\s+)?(?:reload|refresh|reopen(?:ing)?)\b|\b(?:persists?|remains?|retains?)\b[^.!?]*\b(?:reload|refresh|reopen(?:ing)?)\b/i.test(masked);
+  const afterReload = /\b(?:after|following)\s+(?:a\s+)?(?:reload|refresh|reopen(?:ing)?)\b|\b(?:persists?|remains?|retains?)\b[^.!?]*\b(?:reload|refresh|reopen(?:ing)?)\b|(?:刷新|重开|重新打开)(?:页面|应用|浏览器)?(?:后|之后|以后)/i.test(masked);
   const phase = afterReload ? "after_reload" as const : "immediate" as const;
   const facets: ObservableFacet[] = [];
   const add = (kind: ObservableFacetKind, value = text): void => {
@@ -92,22 +91,22 @@ export function observableFacets(text: string): ObservableFacet[] {
 }
 
 function observableLiterals(text: string): string[] {
-  const values = [...text.matchAll(/`([^`]+)`|“([^”]+)”|"([^"\n]+)"/g)]
-    .map(match => (match[1] ?? match[2] ?? match[3]).replace(/\s+/g, " ").trim())
+  const values = requirementLiterals(text)
+    .map(literal => literal.value.replace(/\s+/g, " ").trim())
     .filter(value => value.length > 0 && value.length <= 256);
   return [...new Set(values)];
 }
 
 function displayedLiterals(text: string): string[] {
   const verb = /\b(?:displays?|shows?|contains?|prefilled|lists?)\b/i.exec(maskRequirementLiterals(text));
-  const values = [...text.matchAll(/`([^`]+)`|“([^”]+)”|"([^"\n]+)"/g)].filter(match => {
-    const prefix = text.slice(0, match.index);
+  const values = requirementLiterals(text).filter(literal => {
+    const prefix = text.slice(0, literal.start);
     if (/\b(?:aria-[\w-]+|data-[\w-]+)\s*=\s*$/.test(prefix)) return false;
-    if (verb && match.index! < verb.index) return false;
+    if (verb && literal.start < verb.index) return false;
     if (/\b(?:in|within|inside|via|using|through)\s*$/i.test(prefix)) return false;
-    if (/\bsame\s*$/i.test(prefix) && /^\s+value\b/i.test(text.slice(match.index! + match[0].length))) return false;
-    return !match[0].includes("/");
-  }).map(match => (match[1] ?? match[2] ?? match[3]).replace(/\s+/g, " ").trim());
+    if (/\bsame\s*$/i.test(prefix) && /^\s+value\b/i.test(text.slice(literal.end))) return false;
+    return !literal.value.includes("/");
+  }).map(literal => literal.value.replace(/\s+/g, " ").trim());
   return [...new Set(values.filter(value => value.length > 0 && value.length <= 256))];
 }
 
@@ -127,24 +126,6 @@ function commaSegments(text: string): string[] {
   const tail = text.slice(start).trim();
   if (tail) segments.push(tail);
   return segments;
-}
-
-/** Split explicit result coordination, preserving alternatives and quoted data as a unit. */
-function outcomeClauses(text: string): string[] {
-  const seedMarker = maskRequirementLiterals(text).search(/\bSeed (?:data|values):/i);
-  const source = seedMarker < 0 ? text : text.slice(0, seedMarker);
-  return requirementSentences(source).flatMap(sentence => {
-    const clauses: string[] = [];
-    let start = 0;
-    for (const separator of maskRequirementLiterals(sentence).matchAll(/;\s*|\s+(?:and|but)\s+/gi)) {
-      const clause = sentence.slice(start, separator.index).trim().replace(/,$/, "");
-      if (clause) clauses.push(clause);
-      start = separator.index! + separator[0].length;
-    }
-    const tail = sentence.slice(start).trim();
-    if (tail) clauses.push(tail);
-    return clauses;
-  });
 }
 
 export function outcomeKey(value: Pick<OutcomeCheck, "scenarioId" | "stepIndex" | "clauseIndex">): string {

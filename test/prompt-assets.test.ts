@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { fillTemplate, loadPrompt } from "../src/prompt-assets.js";
-import { PROMPT_FRAGMENTS } from "../src/builder/prompt-fragments.js";
 import { readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -40,29 +39,29 @@ test("fillTemplate deduplicates residual placeholder names", () => {
 });
 
 test("loadPrompt reads an asset verbatim with LF endings", async () => {
-  const source = await readFile(new URL("../prompts/fragments/repository-collaboration.md", import.meta.url), "utf8");
+  const source = await readFile(new URL("../prompts/system/builder-system.md", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\r/);
   assert.equal(
-    loadPrompt("fragments", "repository-collaboration"),
+    loadPrompt("system", "builder-system"),
     source.trimEnd(),
   );
 });
 
 test("loadPrompt normalizes CRLF line endings", async () => {
   const probe = fileURLToPath(
-    new URL("../prompts/fragments/__crlf-probe__.md", import.meta.url),
+    new URL("../prompts/system/__crlf-probe__.md", import.meta.url),
   );
   await writeFile(probe, "第一行\r\n第二行\r\n", "utf8");
   try {
-    assert.equal(loadPrompt("fragments", "__crlf-probe__"), "第一行\n第二行");
+    assert.equal(loadPrompt("system", "__crlf-probe__"), "第一行\n第二行");
   } finally {
     await rm(probe, { force: true });
   }
 });
 
 test("loadPrompt caches by category and name", () => {
-  const first = loadPrompt("fragments", "repository-collaboration");
-  assert.ok(first === loadPrompt("fragments", "repository-collaboration"));
+  const first = loadPrompt("system", "builder-system");
+  assert.ok(first === loadPrompt("system", "builder-system"));
 });
 
 test("loadPrompt throws a locating error for missing assets", () => {
@@ -70,21 +69,6 @@ test("loadPrompt throws a locating error for missing assets", () => {
     () => loadPrompt("system", "does-not-exist"),
     /system\/does-not-exist/,
   );
-});
-
-test("each prompt fragment id maps to exactly one file and there are no orphans", async () => {
-  const directory = fileURLToPath(
-    new URL("../prompts/fragments", import.meta.url),
-  );
-  const files = new Set(
-    (await readdir(directory)).filter((name) => name.endsWith(".md")),
-  );
-  for (const id of Object.keys(PROMPT_FRAGMENTS)) {
-    const file = `${id.replaceAll("_", "-")}.md`;
-    assert.ok(files.has(file), `missing fragment file: ${file}`);
-    files.delete(file);
-  }
-  assert.deepEqual([...files], []);
 });
 
 test("fixed system assets keep their Chinese anchors", () => {
@@ -136,8 +120,8 @@ test("fixed system assets keep their Chinese anchors", () => {
   assert.match(loadPrompt("system", "builder-system"), /只有现有实现和适用的批准能力无法可靠满足当前需求时，才从 npm 安装公开、任务无关/);
   assert.match(loadPrompt("system", "builder-system"), /不得安装含成品页面、业务流程/);
   assert.match(loadPrompt("system", "builder-system"), /不得从 git URL、任意远程脚本或未批准的 Pi package 加载/);
-  assert.match(loadPrompt("system", "builder-system"), /hash 路由/);
-  assert.match(loadPrompt("system", "builder-system"), /必须使用 HashRouter/);
+  assert.match(loadPrompt("system", "builder-system"), /路由方案按页面直达、刷新/);
+  assert.doesNotMatch(loadPrompt("system", "builder-system"), /必须使用 HashRouter/);
   assert.match(loadPrompt("system", "builder-system"), /零依赖原生 http/);
   assert.match(loadPrompt("system", "builder-system"), /单个场景 GIVEN 中的初始条件/);
   assert.match(loadPrompt("system", "builder-system"), /页面入口依据已确认的身份与权限呈现，不等待无关数据/);
@@ -189,8 +173,8 @@ test("Module action assets retain placeholders and bounded self-test responsibil
 test("Builder and Judge assets preserve global-entry and separate-role contracts", async () => {
   const builder = loadPrompt("system", "builder-system");
   for (const text of [builder]) {
-    assert.match(text, /全局页头使用顶层 `<header>`（banner）/);
-    assert.match(text, /与唯一的 `<main>` 主内容区并列/);
+    assert.match(text, /需求声明全局页头时/);
+    assert.match(text, /与 `<main>` 主内容区区分/);
     assert.match(text, /页面标题与同名导航链接/);
   }
   for (const asset of ["probe-planner", "probe-refinement", "probe-review"]) {
@@ -220,7 +204,6 @@ test("task templates carry their placeholders", () => {
     "{{PROJECT_CONTEXT}}",
     "{{WORK_PACKET}}",
     "{{PLATFORM_CONTRACT}}",
-    "{{FRAGMENTS}}",
     "{{RECEIPT}}",
   ];
   for (const name of [
@@ -234,7 +217,7 @@ test("task templates carry their placeholders", () => {
     }
   }
   const delivery = loadPrompt("system", "task-delivery-repair");
-  for (const placeholder of ["{{OUTPUT_DIR}}", "{{ACTION}}", "{{FRAGMENTS}}", "{{PLATFORM_CONTRACT}}", "{{RECEIPT}}"]) {
+  for (const placeholder of ["{{OUTPUT_DIR}}", "{{ACTION}}", "{{PLATFORM_CONTRACT}}", "{{RECEIPT}}"]) {
     assert.ok(delivery.includes(placeholder), `missing ${placeholder}`);
   }
   assert.ok(!delivery.includes("{{PACKET_ID}}"));
@@ -321,7 +304,7 @@ test("Judge contracts preserve explicit scenario inputs and distinguish unexecut
 });
 
 test("prompt assets contain no CR characters", async () => {
-  const categories = ["system", "fragments", "judge", "planning"] as const;
+  const categories = ["system", "judge", "planning"] as const;
   for (const category of categories) {
     const directory = fileURLToPath(
       new URL(`../prompts/${category}`, import.meta.url),

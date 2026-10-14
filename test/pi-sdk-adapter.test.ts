@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createPiSession, type PiSessionSnapshot } from "../src/builder/pi-sdk-adapter.js";
 import { resolveRuntimeContract } from "../src/project-spec.js";
+import { BUILDER_SKILLS_DIR } from "../src/builder/skills.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 function reply(res: ServerResponse, tool?: { name: string; arguments: object }) {
@@ -24,7 +25,16 @@ test("Pi adapter preserves native file tools and guards their actual execution",
     const privateFile = join(root, "private.txt");
     await writeFile(visibleFile, "visible content");
     await writeFile(privateFile, "private content");
+    const skillFile = join(BUILDER_SKILLS_DIR, "accessible-web-controls", "SKILL.md");
+    const skillContent = await readFile(skillFile, "utf8");
+    await mkdir(join(app, ".pi", "skills", "unapproved"), { recursive: true });
+    await writeFile(join(app, ".pi", "skills", "unapproved", "SKILL.md"),
+      "---\nname: unapproved\ndescription: WORKSPACE_SKILL_SENTINEL\n---\nworkspace skill");
     const cases = [
+      { name: "read", arguments: { path: skillFile }, expected: /# 可访问 Web 交互/ },
+      { name: "read", arguments: { path: join(BUILDER_SKILLS_DIR, "..", "system", "builder-system.md") }, expected: /outside the application/ },
+      { name: "write", arguments: { path: skillFile, content: skillContent }, expected: /outside the application/ },
+      { name: "edit", arguments: { path: skillFile, edits: [{ oldText: "SKILL_GUARD_SENTINEL_NOT_PRESENT", newText: "unchanged" }] }, expected: /outside the application/ },
       { name: "read", arguments: { path: visibleFile }, expected: /visible content/ },
       { name: "read", arguments: { path: privateFile }, expected: /outside the application/ },
       { name: "write", arguments: { path: privateFile, content: "overwritten" }, expected: /outside the application/ },
@@ -37,6 +47,14 @@ test("Pi adapter preserves native file tools and guards their actual execution",
       let body = ""; for await (const part of req) body += part;
       const request = JSON.parse(body);
       const index = Math.floor(calls++ / 2);
+      if (calls === 1) {
+        const system = JSON.stringify(request.messages.filter((message: { role: string }) => message.role === "system"));
+        for (const name of ["accessible-web-controls", "persistent-state", "identity-and-permissions", "linked-records", "editable-grid", "web-delivery"]) {
+          assert.ok(system.includes(name), name);
+        }
+        assert.ok(system.includes("SKILL.md"));
+        assert.doesNotMatch(system, /# 可访问 Web 交互|WORKSPACE_SKILL_SENTINEL/);
+      }
       if (calls % 2 === 1) reply(res, cases[index]);
       else {
         const result = request.messages.at(-1);

@@ -3,6 +3,7 @@ import { PlannerJsonClient, PlannerRequestError, extractJsonPayload, type Planne
 import { loadPrompt } from "./prompt-assets.js";
 import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets, requirementTextChars } from "./scheduler.js";
 import type { RequirementCatalog } from "./types.js";
+import { requirementScenarioFacts } from "./requirement-analysis.js";
 
 export class LlmFeatureGrouper implements FeatureGrouper {
   private readonly client: PlannerJsonClient;
@@ -19,6 +20,7 @@ export class LlmFeatureGrouper implements FeatureGrouper {
       folderPath: requirement.folderPath, dependencyIds: requirement.dependencyIds,
       externalDependencyIds: requirement.externalDependencyIds ?? [],
       text: requirement.text, scenarioCount: requirement.scenarios.length,
+      scenarioFacts: requirementScenarioFacts(requirement),
       textChars: requirementTextChars(requirement),
     }));
     const modules = new Map<string, string[]>();
@@ -35,7 +37,7 @@ export class LlmFeatureGrouper implements FeatureGrouper {
         ancestors: [...ancestors.values()],
         modules: [...modules].map(([moduleId, requirementIds]) => ({ moduleId, requirementIds })),
         referenceGroups: featureGroupPackets(catalog).packets.map(packet => packet.requirementIds),
-        scenarioInput: "本次省略场景正文；容量仍用原始场景计数。需求描述完整提供。",
+        scenarioInput: "scenarioFacts 按 GIVEN/WHEN/THEN 阶段保留原文摘录与全部来源；重复原文只在同一阶段合并。容量仍用原始场景计数与完整文本长度。",
         requirements,
         ...(options.feedback ? { previousAttempt: options.feedback,
           instruction: "根据上次错误重新返回完整分组。保留全部需求且只输出 ID 与简短目的，省略额外解释。" } : {}),
