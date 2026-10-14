@@ -4,12 +4,13 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 export function terminalTheme(colour = process.env.NO_COLOR === undefined && process.env.TERM !== "dumb") {
   const paint = (code: string) => (text: string): string => colour ? `\x1b[${code}m${text}\x1b[0m` : text;
   return {
-    accent: paint("36"),
+    // Bright variants stay legible on dark terminals; "muted" is intentionally subtle.
+    accent: paint("96"),
     muted: paint("2"),
     strong: paint("1"),
-    success: paint("32"),
-    warning: paint("33"),
-    error: paint("31"),
+    success: paint("92"),
+    warning: paint("93"),
+    error: paint("91"),
   };
 }
 

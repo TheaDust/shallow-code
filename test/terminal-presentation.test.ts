@@ -147,3 +147,36 @@ test("Result card offers applicable commands, quotes paths and separates skips f
   assert.match(delivered, /shallow build apply/);
   assert.doesNotMatch(delivered, /\x1b\[/);
 });
+
+test("Progress entries drop internal packet ids", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "builder_started", {}, "packet-a");
+  receive(view, "audit_result", { requirementIds: ["A"], status: "verified" }, "packet-a");
+  receive(view, "execution_fault", { source: "runner", code: "browser_launch", retry: true }, "packet-b");
+  const text = view.render(80).join("\n");
+  assert.match(text, /Builder 开始编写代码/);
+  assert.match(text, /独立验收通过/);
+  assert.match(text, /执行基础设施故障（runner \/ browser_launch）/);
+  assert.doesNotMatch(text, /packet-a|packet-b/);
+});
+
+test("Activity line rotates a spinner frame with wall-clock time", (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  t.mock.timers.setTime(0);
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "builder_started", {}, "packet-a");
+  const glyph = (text: string): string | undefined => /([⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏])/.exec(text)?.[1];
+  const first = glyph(view.render(80).join("\n"));
+  t.mock.timers.setTime(1_000);
+  const second = glyph(view.render(80).join("\n"));
+  assert.ok(first !== undefined && second !== undefined);
+  assert.notEqual(first, second);
+});
+
+test("Semantic colours use bright ANSI variants", () => {
+  const theme = terminalTheme(true);
+  assert.match(theme.accent("x"), /^\x1b\[96m/);
+  assert.match(theme.success("x"), /^\x1b\[92m/);
+  assert.match(theme.warning("x"), /^\x1b\[93m/);
+  assert.match(theme.error("x"), /^\x1b\[91m/);
+});

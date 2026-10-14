@@ -9,6 +9,11 @@ const PHASES: Record<string, string> = {
   implementation: "模块实现", audit: "独立验收", repair: "修复与回归", delivery: "最终交付",
 };
 
+/** Braille spinner for the activity line; the frame follows wall-clock time. */
+const ACTIVITY_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/** Render cadence while running; also the spinner frame duration. */
+const RENDER_INTERVAL_MS = 200;
+
 export interface BuildTuiOptions {
   requirementIds: string[];
   onInterrupt(): void;
@@ -64,8 +69,13 @@ export class BuildView implements Component {
     }
     if (event.type.endsWith("_usage") || event.type === "builder_reference_images") return;
     const message = line.replace(/^\[[^\]]+\]\s*/, "").replace(/ \[#.*\]$/, "");
-    this.recent.push(event.type === "packet_selected" && ids("names").length
-      ? `开始处理 ${ids("names").join("、")}` : message.split("；", 1)[0]);
+    // Packet ids stay in run-log.txt; the progress list reads as user-facing text.
+    const readable = event.packetId
+      ? message.replaceAll(`（${event.packetId}）`, "").replaceAll(`（${event.packetId}，`, "（").trim()
+      : message;
+    this.recent.push(event.type === "packet_selected"
+      ? `开始处理 ${ids("names").join("、") || "当前需求包"}`
+      : readable.split("；", 1)[0]);
     if (this.recent.length > 5) this.recent.shift();
     if (event.type === "packet_selected") {
       this.packetId = event.packetId;
@@ -82,11 +92,14 @@ export class BuildView implements Component {
     const t = this.theme;
     const counts = { todo: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0 };
     for (const id of this.scope) counts[this.statuses.get(id) ?? "todo"]++;
-    const status = `${t.success(`已验证 ${counts.verified}/${this.scope.size}`)}  ` +
-      `${(counts.failed ? t.error : t.muted)(`失败 ${counts.failed}`)}  ` +
-      `${(counts.inconclusive ? t.warning : t.muted)(`证据不足 ${counts.inconclusive}`)}  ` +
-      t.muted(`阻塞 ${counts.blocked} · 待处理 ${counts.todo}`);
-    const activity = ` ${t.accent("●")} ${this.activity}`;
+    const status = [
+      t.strong(t.success(`已验证 ${counts.verified}/${this.scope.size}`)),
+      counts.failed ? t.strong(t.error(`失败 ${counts.failed}`)) : t.muted(`失败 ${counts.failed}`),
+      counts.inconclusive ? t.strong(t.warning(`证据不足 ${counts.inconclusive}`)) : t.muted(`证据不足 ${counts.inconclusive}`),
+      t.muted(`阻塞 ${counts.blocked} · 待处理 ${counts.todo}`),
+    ].join("  ");
+    const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
+    const activity = ` ${t.accent(frame)} ${this.activity}`;
     const footer = t.muted(" d 详细日志   ? 帮助   Ctrl+C 中断");
     if (this.rows() < 18) return [terminalHeader("Build Agent", width, t)[0],
       activity, " " + status, footer].slice(0, this.rows()).map(line => fitTerminalText(line, width));
@@ -160,7 +173,7 @@ export class BuildTui {
   start(): void {
     this.started = true;
     this.tui.start();
-    this.timer = setInterval(() => this.tui.requestRender(), 1_000);
+    this.timer = setInterval(() => this.tui.requestRender(), RENDER_INTERVAL_MS);
   }
 
   record(rawLine: string, line: string): void {
