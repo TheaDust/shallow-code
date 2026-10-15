@@ -220,17 +220,25 @@ test("GitOps open refuses dirty inputs even when their root commit resembles con
   });
 });
 
-test("GitOps open preserves private records in an existing repository", async () => {
+test("GitOps open preserves private records and run metadata in an existing repository", async () => {
   await withTempDir("shallow-git-", async (directory) => {
     await initRepoWithRootCommit(directory, "shallow: initial state");
     await mkdir(join(directory, ".arc"));
     const events = join(directory, ".arc", "runner-events.jsonl");
     await writeFile(events, "stale event\n", "utf8");
+    await mkdir(join(directory, ".requirements-agent"));
+    const draft = join(directory, ".requirements-agent", "draft.json");
+    await writeFile(draft, "{}\n", "utf8");
+    await mkdir(join(directory, "shallow-progress"));
+    const progress = join(directory, "shallow-progress", "progress.log");
+    await writeFile(progress, "step 1\n", "utf8");
 
     await GitCliOps.open(directory);
 
     assert.equal(await readFile(join(directory, "app.txt"), "utf8"), "committed");
     assert.equal(await readFile(events, "utf8"), "stale event\n");
+    assert.equal(await readFile(draft, "utf8"), "{}\n");
+    assert.equal(await readFile(progress, "utf8"), "step 1\n");
   });
 });
 

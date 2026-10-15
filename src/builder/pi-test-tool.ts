@@ -9,7 +9,7 @@ import { spawnProcess } from "../process-spawn.js";
 import { stopProcess } from "../final-verifier.js";
 import { minimalWebProjectSpec, DEFAULT_TEST_TIMEOUT_MS } from "../project-spec.js";
 import type { PlatformContract } from "../types.js";
-import { PROGRESS_DIR_NAME } from "../progress-journal.js";
+import { NON_APPLICATION_METADATA_NAMES } from "../controller-metadata.js";
 
 const MAX_OUTPUT_CHARS = 30_000;
 const MAX_SUCCESS_OUTPUT_CHARS = 2_000;
@@ -33,7 +33,7 @@ interface SuiteResult {
   output: string;
   cached?: boolean;
 }
-const DIGEST_IGNORED_DIRECTORIES = new Set(["node_modules", ".git", ".arc", PROGRESS_DIR_NAME]);
+const DIGEST_IGNORED_DIRECTORIES = new Set<string>(["node_modules", ...NON_APPLICATION_METADATA_NAMES]);
 
 /** Execute the frozen project declaration; template tests use single-worker commands. */
 export function createTestTool(cwd: string, options: TestToolOptions = {}): BuilderTool<typeof parameters> {

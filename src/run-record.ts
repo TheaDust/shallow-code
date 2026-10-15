@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { NON_APPLICATION_METADATA } from "./controller-metadata.js";
 import type { ProjectSpec } from "./project-spec.js";
 import { parseProjectSpec } from "./project-spec.js";
 import type { RunSummary } from "./pipeline.js";
@@ -36,7 +37,7 @@ export async function snapshotFiles(directory: string, excludes: readonly string
   async function walk(prefix: string): Promise<void> {
     for (const entry of await readdir(join(directory, prefix), { withFileTypes: true })) {
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if ([".git", ".arc", "shallow-progress", "node_modules"].includes(entry.name) ||
+      if (NON_APPLICATION_METADATA.has(entry.name) || entry.name === "node_modules" ||
         excludes.some(p => path === p || path.startsWith(p + "/"))) continue;
       if (entry.isSymbolicLink()) throw new Error(`Input links are not supported: ${path}`);
       if (entry.isDirectory()) await walk(path);
@@ -163,7 +164,8 @@ export async function applyRun(runDirectory: string, allowPartial = false): Prom
   for (const line of stats.stdout.split("\0").filter(Boolean)) {
     const path = line.slice(line.indexOf("\t", line.indexOf("\t") + 1) + 1);
     const parts = path.split(/[\\/]/);
-    if (isAbsolute(path) || /^[A-Za-z]:/.test(path) || parts.some(p => ["..", ".git", ".arc", "shallow-progress"].includes(p.toLowerCase()))) throw new Error(`Invalid patch path: ${path}`);
+    if (isAbsolute(path) || /^[A-Za-z]:/.test(path) ||
+      parts.some(p => p === ".." || NON_APPLICATION_METADATA.has(p.toLowerCase()))) throw new Error(`Invalid patch path: ${path}`);
     const rel = relative(target, resolve(target, path));
     if (!rel || isAbsolute(rel) || rel.startsWith("..")) throw new Error(`Patch path escapes project: ${path}`);
     let ancestor = target;

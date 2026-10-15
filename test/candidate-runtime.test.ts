@@ -138,16 +138,19 @@ test("new source and untracked files invalidate the build but retain owned depen
   });
 });
 
-test("output audit changes do not invalidate a build; runtime data stays outside it", async () => {
+test("output audit and requirements metadata changes do not invalidate a build; runtime data stays outside it", async () => {
   await fixture(async ({ output, candidate, contract, counts }) => {
     const app = await candidate.start(output, contract);
     await mkdir(join(output, ".arc"));
     await writeFile(join(output, ".arc/events.jsonl"), "audit");
+    await mkdir(join(output, ".requirements-agent"));
+    await writeFile(join(output, ".requirements-agent/draft.json"), "{}");
     await app.assertUnchanged?.();
     await app.stop();
     await candidate.prepare();
     assert.equal(await counts(), "install\nbuild\n");
     await assert.rejects(access(join(candidate.directory, ".arc")));
+    await assert.rejects(access(join(candidate.directory, ".requirements-agent")));
   });
 });
 
@@ -318,7 +321,7 @@ for (const attributes of ["text", "text=auto", "eol=lf"] as const) {
   });
 }
 
-test("the product-visible progress journal does not invalidate accepted input evidence", async () => {
+test("the product-visible progress journal and requirements draft do not invalidate accepted input evidence", async () => {
   await fixture(async ({ output, candidate, contract }) => {
     await writeFile(join(output, ".gitignore"), "dist/\nnode_modules/\n");
     await execFileAsync("git", ["-C", output, "init"]);
@@ -329,6 +332,8 @@ test("the product-visible progress journal does not invalidate accepted input ev
     // The journal is untracked but not ignored, so it must be excluded by path.
     await mkdir(join(output, "shallow-progress"), { recursive: true });
     await writeFile(join(output, "shallow-progress", "progress.log"), "step 1\n");
+    await mkdir(join(output, ".requirements-agent"), { recursive: true });
+    await writeFile(join(output, ".requirements-agent", "draft.json"), "{}");
     await candidate.assertAcceptedInput();
     await app.stop();
   });

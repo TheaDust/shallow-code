@@ -1,12 +1,11 @@
 import { copyFile, lstat, mkdir, readdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { CONTROLLER_METADATA, EXCLUDED_METADATA_NAMES, NON_APPLICATION_METADATA } from "./controller-metadata.js";
 import { runGit } from "./git-ops.js";
 
-const METADATA = new Set([".git", ".gitignore", ".arc", "requirements", ".requirements-agent", "shallow-progress", "shallowcode.config.json"]);
-
-/** A fresh output may carry configuration and requirements before a scaffold exists. */
+/** A fresh output may carry configuration, requirements or run metadata before a scaffold exists. */
 export async function hasProjectFiles(directory: string): Promise<boolean> {
-  return (await readdir(directory)).some(name => !METADATA.has(name));
+  return (await readdir(directory)).some(name => !CONTROLLER_METADATA.has(name));
 }
 
 /** Snapshot current files, including staged and untracked source, without changing the input repository. */
@@ -26,7 +25,7 @@ export async function copyProjectWorkspace(sourceDirectory: string, workspaceDir
   async function copy(directory: string, prefix = ""): Promise<void> {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const rel = prefix ? prefix + "/" + entry.name : entry.name;
-      if (entry.name === "node_modules" || (!prefix && [".git", ".arc", "shallow-progress"].includes(entry.name)) ||
+      if (entry.name === "node_modules" || (!prefix && NON_APPLICATION_METADATA.has(entry.name)) ||
         generatedPaths.some(p => rel === p || rel.startsWith(p + "/"))) continue;
       const from = join(directory, entry.name), to = join(workspace, rel);
       if (entry.isSymbolicLink()) throw new Error("Project links are not supported: " + rel);
@@ -48,7 +47,7 @@ export async function writeProjectPatch(directory: string, baseline: string, run
   const index = join(resolve(runDirectory), "patch-index");
   const patch = join(resolve(runDirectory), "changes.patch");
   const environment = { GIT_INDEX_FILE: index };
-  const paths = ["--", ".", ":(top,exclude).arc", ":(top,exclude)shallow-progress"];
+  const paths = ["--", ".", ...EXCLUDED_METADATA_NAMES.map(name => `:(top,exclude)${name}`)];
   const invoke = async (args: string[]) => {
     const result = await runGit(directory, args, true, 30_000, environment);
     if (result.code !== 0) throw new Error(result.stderr.trim() || "Could not export project changes");

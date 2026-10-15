@@ -53,7 +53,7 @@ shallow build resume --run-dir E:\runs\<运行目录>
 shallow build apply --run-dir E:\runs\<运行目录>
 ```
 
-`shallow build` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。省略 `--requirements-dir` 时在当前目录及其子目录中查找唯一的 `requirements.yaml`，找不到或找到多个都报错并要求显式指定；省略 `--output-dir`/`--project` 时输出目录缺省为当前目录，当前目录已有项目文件时按增量起点处理，改动经 `apply` 写回。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
+`shallow build` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。省略 `--requirements-dir` 时在当前目录及其子目录中查找唯一的 `requirements.yaml`，找不到或找到多个都报错并要求显式指定；省略 `--output-dir`/`--project` 时输出目录缺省为当前目录，当前目录已有项目文件时按增量起点处理，改动经 `apply` 写回（`requirements`、`.requirements-agent`、`.arc`、`shallow-progress`、`shallowcode.config.json` 等由 `src/controller-metadata.ts` 统一声明的控制器元数据不算项目文件，也不再要求填写运行配置）。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
 
 真实终端中，`req` 与 `build` 使用一致的单列 TUI：进入时清空控制台页面，从全新页面开始渲染。`req` 在输入区上方显示当前模型、草案版本、场景数与待确认问题，`F2` 打开可滚动草案（方向键、PgUp/PgDn 或鼠标滚轮），`v` 切换完整 YAML。`build` 显式标注本轮实际使用的 Builder 与 Judge 模型，并显示当前模块、活动耗时、本轮验收状态，按总计、Builder、Judge 三行显示 token 总量、输入/输出、缓存读写和按标价估算的费用；当前 Builder 快照计入对应分组与总计，调用结束后结算一次。Builder 包含实现、修复、图片预检及降级重试；Judge 包含功能分组、规划、复核和定位精化。未定价调用保留 token，标注“费用未知”；混合计价显示“已知费用（部分未计价）”。`d` 查看详细日志，`?` 查看帮助，`Esc` 返回状态页，`Ctrl+C` 中断。结束后保留报告、产物位置、累计用量、总耗时与适用的恢复或应用命令。`NO_COLOR` 关闭界面配色；管道、重定向与 `TERM=dumb` 使用纯文本构建日志。
 

@@ -2,10 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { copyFile, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { NON_APPLICATION_METADATA, isNonApplicationMetadataPath } from "./controller-metadata.js";
 import { CommandAppLifecycle, CandidatePreparationError, runCommand } from "./final-verifier.js";
 import { runGit } from "./git-ops.js";
 import { sharedMemoryGate, type MemoryGate } from "./memory-gate.js";
-import { PROGRESS_DIR_NAME, isProgressPath } from "./progress-journal.js";
 import { copyInheritedData } from "./inherited-data.js";
 import type { AppLifecycle } from "./pipeline.js";
 import type { CandidateEvidence, PlatformContract, RunEvent } from "./types.js";
@@ -228,7 +228,7 @@ async function snapshot(root: string, generatedPaths: readonly string[] = []): P
   const files: Snapshot = new Map();
   async function visit(directory: string, prefix = ""): Promise<void> {
     for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name < b.name ? -1 : 1)) {
-      if (entry.name === "node_modules" || (!prefix && [".git", ".arc", PROGRESS_DIR_NAME].includes(entry.name))) continue;
+      if (entry.name === "node_modules" || (!prefix && NON_APPLICATION_METADATA.has(entry.name))) continue;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (generatedPaths.some(p => path === p || path.startsWith(p + "/"))) continue;
       const absolute = join(directory, entry.name);
@@ -299,7 +299,7 @@ async function restorableInputDigest(root: string, generatedPaths: readonly stri
           const separator = entry.indexOf("\t");
           if (separator < 0) throw new Error("Unexpected git ls-files --eol output");
           const path = entry.slice(separator + 1);
-          if (path === ".arc" || path.startsWith(".arc/") || isProgressPath(path) || generatedPaths.some(p => path === p || path.startsWith(p + "/"))) continue;
+          if (isNonApplicationMetadataPath(path) || generatedPaths.some(p => path === p || path.startsWith(p + "/"))) continue;
           paths.set(path, normalizesLineEndings(entry.slice(0, separator), autoCrlf));
         }
         const files: Snapshot = new Map();

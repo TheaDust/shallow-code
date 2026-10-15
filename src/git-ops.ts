@@ -1,6 +1,11 @@
 import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import {
+  CONTROLLER_METADATA,
+  EXCLUDED_METADATA_NAMES,
+  IGNORED_METADATA_RULES,
+} from "./controller-metadata.js";
 import { spawnProcess } from "./process-spawn.js";
 import { PROGRESS_DIR_NAME } from "./progress-journal.js";
 
@@ -18,9 +23,10 @@ interface CommandResult {
 
 const GIT_TIMEOUT_MS = 30_000;
 
-/** req 草稿目录：启动目录元数据，不进入应用历史。 */
-const REQUIREMENTS_AGENT_DIR = ".requirements-agent";
-const GITIGNORE_CONTENT = ["node_modules/", "dist/", "build/", ".next/", ".env", `${REQUIREMENTS_AGENT_DIR}/`, ""].join("\n");
+const pathspecExcludes = (names: readonly string[]): string[] => names.map(name => `:(top,exclude)${name}`);
+const cleanExcludes = (names: readonly string[]): string[] => names.flatMap(name => ["-e", `${name}/`]);
+
+const GITIGNORE_CONTENT = ["node_modules/", "dist/", "build/", ".next/", ".env", ...IGNORED_METADATA_RULES, ""].join("\n");
 
 export class GitCliOps implements GitOps {
   private constructor(private readonly repositoryRoot: string) {}
@@ -46,7 +52,8 @@ export class GitCliOps implements GitOps {
     if (!samePath(await realpath(actualRoot.stdout.trim()), canonical)) {
       throw new Error("Output directory must be a Git repository root: " + canonical);
     }
-    if (options.allowExisting) await ensureLocalExclude(canonical, options.generatedPaths);
+    // 首轮运行也要写本地 exclude：即使仓库自带 .gitignore，元数据忽略规则也必须生效。
+    await ensureLocalExclude(canonical, options.generatedPaths ?? []);
     await ensureIgnoreRules(canonical, options.generatedPaths ?? (options.allowExisting ? [] : undefined));
     return new GitCliOps(canonical);
   }
@@ -55,6 +62,8 @@ export class GitCliOps implements GitOps {
     await this.validateRoot();
     // Keep the product-visible progress journal untracked so the platform still
     // packages it (it only filters gitignored paths) without it entering history.
+    // 被忽略的元数据目录不能出现在 exclude 路径规格里（git add 会因此报错），
+    // 它们由 .gitignore / 本地 exclude 规则排除。
     await requireGit(this.repositoryRoot, ["add", "-A", "--", ".", `:(top,exclude)${PROGRESS_DIR_NAME}`]);
     const head = await runGit(
       this.repositoryRoot,
@@ -84,7 +93,7 @@ export class GitCliOps implements GitOps {
   async hasApplicationChanges(sinceSha: string): Promise<boolean> {
     await this.validateRoot();
     if (!/^[0-9a-f]{40,64}$/i.test(sinceSha)) throw new Error("Invalid application baseline SHA");
-    const paths = ["--", ".", ":(top,exclude).arc", `:(top,exclude)${PROGRESS_DIR_NAME}`];
+    const paths = ["--", ".", ...pathspecExcludes(EXCLUDED_METADATA_NAMES)];
     const [changed, untracked] = await Promise.all([
       requireGit(this.repositoryRoot, ["diff", "--name-only", sinceSha, ...paths]),
       requireGit(this.repositoryRoot, ["ls-files", "--others", "--exclude-standard", ...paths]),
@@ -111,9 +120,9 @@ export class GitCliOps implements GitOps {
     // deleting history.
     await requireGit(this.repositoryRoot, [
       "restore", "--source", sha, "--staged", "--worktree", "--", ".",
-      ":(top,exclude).arc", `:(top,exclude)${PROGRESS_DIR_NAME}`,
+      ...pathspecExcludes(EXCLUDED_METADATA_NAMES),
     ]);
-    await requireGit(this.repositoryRoot, ["clean", "-fd", "-e", ".arc/", "-e", `${PROGRESS_DIR_NAME}/`]);
+    await requireGit(this.repositoryRoot, ["clean", "-fd", ...cleanExcludes(EXCLUDED_METADATA_NAMES)]);
     await requireGit(this.repositoryRoot, [
       "-c",
       "user.name=ShallowCode",
@@ -216,7 +225,7 @@ async function ensureIgnoreRules(root: string, generatedPaths?: readonly string[
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const content = generatedPaths === undefined ? GITIGNORE_CONTENT
-    : ["node_modules/", ".env", `${REQUIREMENTS_AGENT_DIR}/`, ...generatedPaths.map(path => `/${path}/`), ""].join("\n");
+    : ["node_modules/", ".env", ...IGNORED_METADATA_RULES, ...generatedPaths.map(path => `/${path}/`), ""].join("\n");
   await writeFile(gitignorePath, content, "utf8");
   await requireGit(root, ["add", ".gitignore"]);
   await requireGit(root, [
@@ -231,14 +240,18 @@ async function ensureIgnoreRules(root: string, generatedPaths?: readonly string[
   ]);
 }
 
-const FIRST_RUN_ALLOWED_ENTRIES = new Set([".gitignore", ".arc", "requirements", REQUIREMENTS_AGENT_DIR, "shallowcode.config.json"]);
+/**
+ * 首轮运行允许预先存在的控制器元数据；`.git` 由 GitOps 单独判定
+ * （走到这里说明该目录还不是仓库根）。
+ */
+const FIRST_RUN_ALLOWED_ENTRIES = new Set([...CONTROLLER_METADATA].filter(name => name !== ".git"));
 
 async function requireEmptyOutputDirectory(root: string): Promise<void> {
   const unexpected = (await readdir(root)).filter(name => !FIRST_RUN_ALLOWED_ENTRIES.has(name));
   if (unexpected.length) throw new Error("Output directory must be empty before the first run: " + root);
 }
 
-const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env", `${REQUIREMENTS_AGENT_DIR}/`];
+const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env", ...IGNORED_METADATA_RULES];
 
 /** Keep dependency and build output out of the base commit without rewriting
  * the template's own .gitignore, which its author still owns. */
@@ -266,7 +279,7 @@ async function uncommittedEntries(root: string): Promise<string[]> {
     "--porcelain",
     "--",
     ".",
-    ":(top,exclude).arc",
+    ...pathspecExcludes(EXCLUDED_METADATA_NAMES),
   ]);
   return status.stdout
     .split(/\r?\n/)

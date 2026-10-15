@@ -2,6 +2,8 @@ import { cp, readdir, stat, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { basename, join, resolve } from "node:path";
 
+import { CONTROLLER_METADATA } from "./controller-metadata.js";
+import { PROJECT_SPEC_FILENAME } from "./project-spec.js";
 import type { PlatformContract } from "./types.js";
 
 export type StarterScaffoldStatus =
@@ -15,14 +17,11 @@ export interface StarterScaffoldResult {
   files: string[];
 }
 
-const EMPTY_OUTPUT_METADATA = new Set([
-  ".arc",
-  ".git",
-  ".gitignore",
-  "requirements",
-  ".requirements-agent",
-  "shallow-progress",
-]);
+/**
+ * 元数据目录不影响安装；预先存在的 shallowcode.config.json 表示项目自带运行
+ * 合同与结构，模板不安装也不覆盖。
+ */
+const EMPTY_OUTPUT_METADATA = new Set([...CONTROLLER_METADATA].filter(name => name !== PROJECT_SPEC_FILENAME));
 const SCAFFOLD_RUNTIME_ARTIFACTS = new Set(["node_modules", "dist", "build"]);
 
 /**
