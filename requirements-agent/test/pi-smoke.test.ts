@@ -211,7 +211,10 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
     ? `需求要点都写在 docs 目录里。\n请查看并整理。${enter}`
     : `需求要点都写在 docs 目录里，请查看并整理。${enter}`);
   await waitFor(interactive ? /草案更新/ : /【本轮修改】/);
-  write(`生成需求文档${enter}`);
+  write(`继续整理。${enter}`);
+  await waitFor(interactive ? /本轮草案无变化/ : /【本轮修改】无变化/);
+  const requestsBeforeGeneration = gateway.requests.length;
+  write(`${interactive ? "生成" : "生成需求文档"}${enter}`);
   await waitFor(/是否生成这份需求文档/);
   write(`是${enter}`);
   setTimeout(() => child?.stdin?.end(), 500);
@@ -251,6 +254,7 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   assert.match(yaml, /“准备会议”/);
 
   assert.equal(gateway.requests.length, 5, "模型请求次数异常");
+  assert.equal(gateway.requests.length, requestsBeforeGeneration, "生成指令和确认不应请求模型");
   for (const request of gateway.requests) {
     assert.deepEqual([...request.toolNames].sort(), ["ls", "read", "update_requirements"], "工具白名单异常");
     assert.ok(request.hasSystemPrompt, "系统提示词缺失");

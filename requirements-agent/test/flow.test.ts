@@ -159,6 +159,7 @@ test("生成请求在草案不完整时被拦下并继续对话", async (t) => {
   assert.match(all(), /缺少场景/);
   assert.doesNotMatch(all(), /是否生成这份需求文档/);
   assert.ok(!existsSync(join(base, "requirements")));
+  assert.equal(agent.sends.length, 1, "不完整草案由程序拦截，无需调用模型");
 });
 
 test("存在未决问题时生成请求被拦下", async (t) => {
@@ -184,6 +185,66 @@ test("存在未决问题时生成请求被拦下", async (t) => {
   assert.equal(result.status, "ended");
   assert.match(all(), /未决问题/);
   assert.doesNotMatch(all(), /是否生成这份需求文档/);
+  assert.equal(agent.sends.length, 1, "未决问题由程序拦截，无需调用模型");
+});
+
+test("单独输入生成直接审阅，再次输入生成才写出；全程不调用模型", async (t) => {
+  const store = createDraftStore();
+  const value = validTree();
+  value.guidance = ["页面简洁，保留设计约定。"];
+  assert.equal(store.submit(value, []).ok, true);
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const { out, all } = collect();
+  const agent = new FakeAgent(store, [], [{ ok: false, error: "网关不可用" }]);
+  async function* input() {
+    yield "生成";
+    assert.match(all(), /是否生成这份需求文档/);
+    assert.ok(!existsSync(join(base, "requirements")), "审阅前不能直接写出文件");
+    yield "生成！";
+  }
+  const result = await runConversation({ agent, store, input: input(), out, baseDir: base });
+  assert.equal(result.status, "generated");
+  if (result.status !== "generated") return;
+  const written = normalizeDraft(parse(await readFile(result.file, "utf8")));
+  assert.ok(written.ok);
+  assert.deepEqual(written.tree, store.tree);
+  assert.equal(store.revision, 1);
+  assert.deepEqual(store.pendingInputs, []);
+  assert.equal(agent.sends.length, 0);
+});
+
+test("空草案收到生成指令时直接提示补充需求，不调用模型", async (t) => {
+  const store = createDraftStore();
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const { out, all } = collect();
+  const agent = new FakeAgent(store);
+  const result = await runConversation({ agent, store, input: scripted(["生成"]), out, baseDir: base });
+  assert.equal(result.status, "ended");
+  assert.match(all(), /需求草案为空/);
+  assert.equal(agent.sends.length, 0);
+  assert.ok(!existsSync(join(base, "requirements")));
+});
+
+test("同时修改需求并请求生成时，先由模型更新，再审阅并写出修改后的草案", async (t) => {
+  const store = createDraftStore();
+  assert.equal(store.submit(validTree(), []).ok, true);
+  const changed = validTree();
+  (changed.children as Record<string, unknown>[])[0].description = "标题选填。";
+  const agent = new FakeAgent(store, [async ({ tool }) => {
+    await tool.execute("call-1", { requirements: changed, questions: [] });
+  }]);
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const { out, all } = collect();
+  const result = await runConversation({ agent, store,
+    input: scripted(["把标题改成选填，然后生成需求文档", "是"]), out, baseDir: base });
+  assert.equal(result.status, "generated");
+  if (result.status !== "generated") return;
+  assert.equal(agent.sends.length, 1);
+  assert.match(all(), /标题选填/);
+  assert.equal(parse(await readFile(result.file, "utf8")).children[0].description, "标题选填。");
 });
 
 test("完整草案经确认后生成 requirements.yaml", async (t) => {
@@ -240,8 +301,8 @@ test("审阅后回复非确认内容会回到对话且不生成", async (t) => {
 
   assert.equal(result.status, "ended");
   assert.match(all(), /是否生成这份需求文档/);
-  assert.equal(agent.sends.length, 3);
-  assert.match(agent.sends[2], /再加一个删除功能/);
+  assert.equal(agent.sends.length, 2);
+  assert.match(agent.sends[1], /再加一个删除功能/);
   assert.ok(!existsSync(join(base, "requirements")));
 });
 
@@ -317,6 +378,7 @@ test("参考文件缺失时继续对话；审阅后来源消失导致写出失�
   }]);
   const { out, all } = collect();
   async function* input() {
+    yield "整理需求";
     yield "生成需求文档"; // 缺失附件，不能进入确认态。
     assert.doesNotMatch(all(), /是否生成这份需求文档/);
     await writeFile(source, "image");
@@ -331,7 +393,7 @@ test("参考文件缺失时继续对话；审阅后来源消失导致写出失�
   const result = await runConversation({ agent, store, input: input(), out, baseDir: base });
   assert.equal(result.status, "generated");
   assert.match(all(), /参考文件不存在/);
-  assert.equal(agent.sends.length, 2, "确认重试不应调用模型");
+  assert.equal(agent.sends.length, 1, "生成指令和确认重试不应调用模型");
 });
 
 test("update_requirements 拒绝非法草案并保留旧草案", async () => {
@@ -403,11 +465,15 @@ test("输入直接结束时不写文件", async (t) => {
 });
 
 test("requestsGeneration 与 isAffirmative 识别自然语言", () => {
+  assert.equal(requestsGeneration("生成"), true);
+  assert.equal(requestsGeneration(" 生成！ "), true);
+  assert.equal(requestsGeneration("generate"), true);
   assert.equal(requestsGeneration("生成需求文档"), true);
   assert.equal(requestsGeneration("整理好了"), true);
   assert.equal(requestsGeneration("帮我加一个导出，然后生成需求文档"), true);
   assert.equal(requestsGeneration("再加一个删除功能"), false);
   assert.equal(requestsGeneration("是"), false);
+  assert.equal(requestsGeneration("不生成"), false);
 
   assert.equal(isAffirmative("是"), true);
   assert.equal(isAffirmative(" 好。 "), true);

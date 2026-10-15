@@ -135,9 +135,9 @@ test("Interactive review exports its prepared tree only after explicit confirmat
   value.children[0].visual_reference = [];
   assert.equal(store.submit(value, []).ok, true);
   const views: ConversationView[] = [];
-  const inputs = async function* () { yield "生成需求文档"; yield "是"; };
+  const inputs = async function* () { yield "生成"; yield "是"; };
   const result = await runConversation({ store, baseDir: directory, input: inputs(), out() {}, onView: view => { views.push(view); },
-    agent: { async send() { return { ok: true }; }, abort() {}, dispose() {} } });
+    agent: { async send() { assert.fail("纯生成指令应直接审阅"); }, abort() {}, dispose() {} } });
   assert.equal(result.status, "generated");
   if (result.status !== "generated") return;
   const review = views.find(view => view.type === "review");
@@ -151,7 +151,7 @@ test("An interrupted turn displays an already committed draft without entering g
   const store = createDraftStore();
   const value = tree();
   const views: ConversationView[] = [];
-  const inputs = async function* () { yield "生成需求文档"; };
+  const inputs = async function* () { yield "整理需求后生成需求文档"; };
   const result = await runConversation({ store, baseDir: process.cwd(), input: inputs(), out() {}, onView: view => { views.push(view); },
     agent: { async send() { store.submit(value, []); return { ok: false, error: "cancelled" }; }, abort() {}, dispose() {} } });
   assert.equal(result.status, "ended");

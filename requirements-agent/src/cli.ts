@@ -83,9 +83,15 @@ const GENERATE_PATTERNS: RegExp[] = [
   /导出(需求|文档)/i,
 ];
 
+const GENERATE_COMMANDS = new Set([
+  "生成", "生成需求", "生成文档", "生成需求文档", "需求生成", "文档生成", "yaml生成",
+  "整理好", "整理好了", "整理完成", "可以生成", "确认生成",
+  "导出需求", "导出文档", "导出需求文档", "generate",
+]);
+
 /** 用户是否请求生成需求文档（审阅流程的入口）。 */
 export function requestsGeneration(text: string): boolean {
-  return GENERATE_PATTERNS.some((pattern) => pattern.test(text));
+  return GENERATE_COMMANDS.has(normalizeReply(text)) || GENERATE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 const AFFIRMATIVE_WORDS = new Set([
@@ -95,8 +101,11 @@ const AFFIRMATIVE_WORDS = new Set([
 
 /** 审阅态下的确认词：整句匹配，避免把“是，但要改”误判为确认。 */
 export function isAffirmative(text: string): boolean {
-  const normalized = text.trim().replace(/[。．.!！?？~～\s]+$/u, "").toLowerCase();
-  return AFFIRMATIVE_WORDS.has(normalized);
+  return AFFIRMATIVE_WORDS.has(normalizeReply(text));
+}
+
+function normalizeReply(text: string): string {
+  return text.trim().replace(/[。．.!！?？~～\s]+$/u, "").toLowerCase();
 }
 
 /** 每轮向代理提供当前草案与未决问题，再附上用户输入。 */
@@ -171,7 +180,7 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     "Requirements Agent — 需求整理\n" +
       "用普通文字描述你的需求，我会整理草案并追问缺失信息；\n" +
       "已有写好的需求文档时，直接给出文件或目录路径即可读取。\n" +
-      "需要生成时输入“生成需求文档”；" +
+      "需要生成时输入“生成”或“生成需求文档”；" +
       (options.inputHelp ?? "行尾加 \\ 可以续行；Ctrl+C 退出。") + "\n\n",
   );
   if (store.tree || store.pendingInputs.length) {
@@ -208,20 +217,23 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       // 非确认内容按普通修改继续对话。
     }
     const generateRequested = requestsGeneration(text);
-    const before = store.tree;
-    store.recordInput(text);
-    const result = await agent.send(buildTurnMessage(text, store));
-    if (!result.ok) {
-      if (options.onView && store.tree !== before) options.onView({ type: "draft", revision: store.revision,
-        tree: store.tree, questions: store.questions, changes: diffRequirements(before, store.tree) });
-      out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
-      continue;
+    // 纯生成指令直接审阅；混合修改或中断后尚未完成的输入仍交给代理处理。
+    if (!GENERATE_COMMANDS.has(normalizeReply(text)) || store.pendingInputs.length) {
+      const before = store.tree;
+      store.recordInput(text);
+      const result = await agent.send(buildTurnMessage(text, store));
+      if (!result.ok) {
+        if (options.onView && store.tree !== before) options.onView({ type: "draft", revision: store.revision,
+          tree: store.tree, questions: store.questions, changes: diffRequirements(before, store.tree) });
+        out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
+        continue;
+      }
+      store.finishTurn();
+      const changes = diffRequirements(before, store.tree);
+      if (options.onView) options.onView({ type: "draft", revision: store.revision,
+        tree: store.tree, questions: store.questions, changes });
+      else out(`${formatTurnSummary(store, changes)}\n\n`);
     }
-    store.finishTurn();
-    const changes = diffRequirements(before, store.tree);
-    if (options.onView) options.onView({ type: "draft", revision: store.revision,
-      tree: store.tree, questions: store.questions, changes });
-    else out(`${formatTurnSummary(store, changes)}\n\n`);
     if (!generateRequested) continue;
     if (!store.tree) {
       out("还不能生成这份需求文档：需求草案为空，请先描述需求。\n\n");

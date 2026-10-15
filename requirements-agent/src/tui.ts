@@ -126,7 +126,7 @@ export class RequirementsTui {
     if (view.type === "intro") {
       this.append(new Text(t.strong("从一句想法开始。") + "\n" +
         "描述你想做的应用，也可以给出现有需求文档或目录的路径。\n" +
-        t.muted("需要生成时输入“生成需求文档”；我会先展示草案供你确认。"), 1, 0));
+        t.muted("需要生成时输入“生成”；程序会先展示草案供你确认。"), 1, 0));
     } else if (view.type === "draft") {
       this.draft = view;
       this.review = undefined;
@@ -290,7 +290,7 @@ export class RequirementsTui {
     const state = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
     const count = `模型 ${this.options.model} · ${state}`;
     const next = this.review ? "等待确认 · 回复“是”生成" : this.draft?.questions.length
-      ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成需求文档”" : "描述你的想法";
+      ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成”" : "描述你的想法";
     const usage = this.usage ? `模型用量 tokens ${formatTokenCount(this.usage.tokens)}` +
       (this.usage.cost > 0 ? ` · 费用 ${formatCostUsd(this.usage.cost)}` : "") : "";
     this.context.setText(this.theme.muted(count) + "\n" + (this.review ? this.theme.warning(next) : this.theme.muted(next)) +
