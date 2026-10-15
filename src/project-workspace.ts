@@ -2,7 +2,7 @@ import { copyFile, lstat, mkdir, readdir, realpath, writeFile } from "node:fs/pr
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { runGit } from "./git-ops.js";
 
-const METADATA = new Set([".git", ".gitignore", ".arc", "requirements", "shallow-progress", "shallowcode.config.json"]);
+const METADATA = new Set([".git", ".gitignore", ".arc", "requirements", ".requirements-agent", "shallow-progress", "shallowcode.config.json"]);
 
 /** A fresh output may carry configuration and requirements before a scaffold exists. */
 export async function hasProjectFiles(directory: string): Promise<boolean> {

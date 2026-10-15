@@ -14,6 +14,7 @@ import {
 } from "../index.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { loadRunRecord } from "../src/run-record.js";
+import { minimalWebProjectSpec, npmExecutable } from "../src/project-spec.js";
 
 test("The production entry resumes an owned checkpoint with fresh artifacts and applies without gateway credentials", { timeout: 60_000 }, async () => {
   await withTempDir("shallow-entry-resume-", async root => {
@@ -74,6 +75,31 @@ test("An existing Web project without a run declaration reports the missing conf
     await writeFile(join(source, "server.js"), "source");
     await writeFile(join(requirements, "requirements.yaml"), "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
     await assert.rejects(main(["--requirements-dir", requirements, "--project", source], gatewayEnv(), async () => { throw new Error("must not execute"); }, null), /Missing project run configuration/);
+  });
+});
+
+test("An output directory carrying only requirements metadata starts a blank template run", async () => {
+  await withTempDir("shallow-entry-metadata-", async root => {
+    const output = join(root, "web2");
+    const requirements = join(output, "requirements");
+    await mkdir(requirements, { recursive: true });
+    await writeFile(join(requirements, "requirements.yaml"), "id: ROOT\nname: Root\ntype: FOLDER\nchildren: []\n");
+    // req 生成后残留的草稿目录属于元数据，输出目录仍按空白模板处理。
+    await mkdir(join(output, ".requirements-agent"));
+    let received: AgentExecutionContext | undefined;
+    const exitCode = await main(
+      ["--requirements-dir", requirements, "--output-dir", output],
+      { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "runs") },
+      async context => {
+        received = context;
+        return { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [] };
+      },
+      null,
+    );
+    assert.equal(exitCode, 0);
+    assert.equal(received?.runRecord.sourceProjectDir, undefined, "req 元数据目录不应被当作已有项目");
+    assert.equal(received?.pipelineOptions.outputDir, output);
+    assert.deepEqual(received?.runRecord.projectSpec, minimalWebProjectSpec(npmExecutable()), "空白目录使用随附模板的运行合同");
   });
 });
 

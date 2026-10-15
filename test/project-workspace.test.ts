@@ -51,7 +51,13 @@ test("A project snapshot preserves staged and untracked inputs while keeping the
 test("Workspace preparation rejects source overlap and distinguishes configuration from application files", async () => {
   await withTempDir("shallow-workspace-", async root => {
     await writeFile(join(root, "shallowcode.config.json"), "{}");
-    assert.equal(await hasProjectFiles(root), false);
+    await mkdir(join(root, "requirements"));
+    await writeFile(join(root, "requirements", "requirements.yaml"), "id: app\n");
+    // req 的草稿目录是启动目录元数据：空目录或残留草稿都不算应用文件。
+    await mkdir(join(root, ".requirements-agent"));
+    assert.equal(await hasProjectFiles(root), false, "空白模板目录只能携带配置与需求元数据");
+    await writeFile(join(root, ".requirements-agent", "draft.json"), "{}");
+    assert.equal(await hasProjectFiles(root), false, "残留需求草稿不算应用文件");
     await writeFile(join(root, "server.js"), "source");
     assert.equal(await hasProjectFiles(root), true);
     await assert.rejects(copyProjectWorkspace(root, join(root, "nested")), /separate from its source/);
