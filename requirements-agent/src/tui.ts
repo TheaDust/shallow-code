@@ -126,7 +126,7 @@ export class RequirementsTui {
     if (view.type === "intro") {
       this.append(new Text(t.strong("从一句想法开始。") + "\n" +
         "描述你想做的应用，也可以给出现有需求文档或目录的路径。\n" +
-        t.muted("需要生成时输入“生成”；程序会先展示草案供你确认。"), 1, 0));
+        t.muted("需要生成时输入“生成”，也可直接要求更新现有需求文档；程序会先展示供你确认。"), 1, 0));
     } else if (view.type === "draft") {
       this.draft = view;
       this.review = undefined;
@@ -143,11 +143,15 @@ export class RequirementsTui {
     } else if (view.type === "review") {
       this.review = view;
       this.append(new Text(t.accent(t.strong(`需求审阅 · r${view.revision}`)), 1, 0));
+      if (view.file) this.append(new Text(`将更新原文件：${view.file}`, 1, 0));
+      if (view.changes) this.append(new Text(`相较原文件：新增 ${view.changes.added.length} 项 · ` +
+        `修改 ${view.changes.changed.length} 项 · 删除 ${view.changes.removed.length} 项`, 1, 0));
       this.append(new Text(formatRequirementPreview(view.tree), 1, 0));
       if (view.references.length) this.append(new Text(t.muted("将交接的参考文件") + "\n" +
         view.references.map(ref => `${ref.source} → ${ref.destination}`).join("\n"), 1, 0));
-      this.append(new Text(t.strong("是否生成这份需求文档？") + "\n" +
-        "回复“是”生成；回复其他内容继续修改。" + t.muted("  F2 可滚动审阅或查看完整 YAML。"), 1, 0));
+      const action = view.file ? "更新" : "生成";
+      this.append(new Text(t.strong(`是否${action}这份需求文档？`) + "\n" +
+        `回复“是”${action}；回复其他内容继续修改。` + t.muted("  F2 可滚动审阅或查看完整 YAML。"), 1, 0));
     } else if (view.type === "edit") {
       this.review = undefined;
     }
@@ -289,7 +293,7 @@ export class RequirementsTui {
     const summary = tree ? summarizeTree(tree) : null;
     const state = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
     const count = `模型 ${this.options.model} · ${state}`;
-    const next = this.review ? "等待确认 · 回复“是”生成" : this.draft?.questions.length
+    const next = this.review ? `等待确认 · 回复“是”${this.review.file ? "更新原文件" : "生成"}` : this.draft?.questions.length
       ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成”" : "描述你的想法";
     const usage = this.usage ? `模型用量 tokens ${formatTokenCount(this.usage.tokens)}` +
       (this.usage.cost > 0 ? ` · 费用 ${formatCostUsd(this.usage.cost)}` : "") : "";
@@ -381,6 +385,7 @@ function toolMessage(name: string, args: unknown): string {
     return path ? `正在查看目录：${path}` : "正在查看目录…";
   }
   if (name === "update_requirements") return "正在更新需求草案…";
+  if (name === "review_requirements") return "正在准备需求审阅…";
   return `正在执行 ${name}…`;
 }
 

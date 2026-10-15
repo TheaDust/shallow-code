@@ -20,8 +20,10 @@ import {
   assembleInputLines,
   createDraftStore,
   createRequirementsTool,
+  createReviewTool,
   runConversation,
   type ChatAgent,
+  type RequirementsOutputMode,
 } from "./cli.js";
 import { loadGatewayEnv, opencodeSessionHeaders, type GatewayEnv } from "./env.js";
 import { runPiTurn } from "./pi-turn.js";
@@ -92,9 +94,9 @@ export async function main(): Promise<number> {
     // 终端恢复后先补一行累计用量，再打印最终产物路径，避免被最后一帧覆盖。
     const usage = sessionUsage(agent.session);
     if (usage) process.stdout.write(`${usage}\n`);
-    if (tui && result.status === "generated") {
+    if (tui && result.status !== "ended") {
       const theme = terminalTheme();
-      process.stdout.write(`\n${theme.success("✓ 已生成需求文档")}\n  ${result.file}\n\n` +
+      process.stdout.write(`\n${theme.success(result.status === "updated" ? "✓ 已更新需求文档" : "✓ 已生成需求文档")}\n  ${result.file}\n\n` +
         `${theme.muted("下一步")}\n  shallow build --requirements-dir ${shellArgument(dirname(result.file))}\n\n`);
     }
     return 0;
@@ -195,7 +197,9 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
     await resourceLoader.reload();
     const model = modelRuntime.getModel(PROVIDER, options.gateway.model);
     if (!model) throw new Error(`网关模型未注册：${options.gateway.model}`);
-    const customTools = [options.requirementsTool] as ToolDefinition[];
+    let requestedOutput: RequirementsOutputMode | undefined;
+    const reviewTool = createReviewTool((mode) => { requestedOutput = mode; });
+    const customTools = [options.requirementsTool, reviewTool] as ToolDefinition[];
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       agentDir,
@@ -223,6 +227,7 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
         if (event.toolName === options.requirementsTool.name) {
           output("\n[正在更新需求草案…]\n");
         }
+        if (event.toolName === reviewTool.name) output("\n[正在准备需求审阅…]\n");
         if (event.toolName === READ_TOOL_NAME) {
           const requested = typeof event.args?.path === "string" ? event.args.path : "";
           output(requested ? `\n[正在读取文件：${requested}]\n` : "\n[正在读取文件…]\n");
@@ -236,7 +241,11 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
 
     return {
       session,
-      send: (text) => runPiTurn(session, text),
+      async send(text) {
+        requestedOutput = undefined;
+        const result = await runPiTurn(session, text);
+        return result.ok && requestedOutput ? { ...result, output: requestedOutput } : result;
+      },
       async abort() {
         try {
           session.abortCompaction();

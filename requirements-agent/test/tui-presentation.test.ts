@@ -56,6 +56,12 @@ test("Req status and preview keys reflect the draft and leave editing available"
   assert.equal(ui.tui.hasOverlay(), false);
   ui.present({ type: "review", revision: 2, tree: value, references: [] });
   assert.match(ui.tui.render(80).join("\n"), /等待确认 · 回复“是”生成/);
+  const file = "E:\\project\\requirements\\requirements.yaml";
+  ui.present({ type: "review", revision: 2, tree: value, references: [], file, changes: diffRequirements(null, value) });
+  const update = ui.tui.render(80).join("\n");
+  assert.ok(update.includes(file));
+  assert.match(update, /相较原文件：新增 2 项/);
+  assert.match(update, /等待确认 · 回复“是”更新原文件/);
   ui.present({ type: "edit" });
   assert.doesNotMatch(ui.tui.render(80).join("\n").slice(-200), /等待确认/);
 });

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "yaml";
@@ -18,7 +18,7 @@ import {
   type ChatTurnResult,
   type DraftStore,
 } from "../src/cli.js";
-import { normalizeDraft } from "../src/dsl.js";
+import { normalizeDraft, serializeRequirementsYaml } from "../src/dsl.js";
 
 function validTree(): Record<string, unknown> {
   return {
@@ -97,6 +97,16 @@ async function* scripted(lines: string[]): AsyncIterable<string> {
 
 async function tempBase(): Promise<string> {
   return mkdtemp(join(tmpdir(), "requirements-agent-test-"));
+}
+
+async function existingDocument(base: string, value = validTree()): Promise<string> {
+  const normalized = normalizeDraft(value);
+  assert.ok(normalized.ok);
+  const directory = join(base, "requirements");
+  await mkdir(directory);
+  const file = join(directory, "requirements.yaml");
+  await writeFile(file, serializeRequirementsYaml(normalized.tree));
+  return file;
 }
 
 test("普通回合展示草案摘要与最多三个优先问题，后续回合带上当前草案", async (t) => {
@@ -234,7 +244,7 @@ test("同时修改需求并请求生成时，先由模型更新，再审阅并�
   (changed.children as Record<string, unknown>[])[0].description = "标题选填。";
   const agent = new FakeAgent(store, [async ({ tool }) => {
     await tool.execute("call-1", { requirements: changed, questions: [] });
-  }]);
+  }], [{ ok: true, output: "create" }]);
   const base = await tempBase();
   t.after(() => rm(base, { recursive: true, force: true }));
   const { out, all } = collect();
@@ -245,6 +255,113 @@ test("同时修改需求并请求生成时，先由模型更新，再审阅并�
   assert.equal(agent.sends.length, 1);
   assert.match(all(), /标题选填/);
   assert.equal(parse(await readFile(result.file, "utf8")).children[0].description, "标题选填。");
+});
+
+test("自然语言请求同步最新草案时，审阅文件差异并确认后更新原 YAML", async (t) => {
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const file = await existingDocument(base);
+  const original = await readFile(file, "utf8");
+  const changed = validTree();
+  changed.guidance = ["保留用户的设计约定。"];
+  (changed.children as Record<string, unknown>[])[0].description = "标题选填。";
+  const store = createDraftStore(base);
+  assert.equal(store.submit(changed, []).ok, true);
+  const { out, all } = collect();
+  const agent = new FakeAgent(store, [], [{ ok: true, output: "update" }]);
+  async function* input() {
+    yield "根据最新草案更新需求";
+    assert.match(all(), /是否更新这份需求文档/);
+    assert.ok(all().includes(file));
+    assert.match(all(), /相较原文件.*修改 2 项/);
+    assert.equal(await readFile(file, "utf8"), original, "审阅时还不能覆盖原文件");
+    yield "是";
+  }
+  const result = await runConversation({ agent, store, input: input(), out, baseDir: base });
+  assert.equal(result.status, "updated");
+  if (result.status !== "updated") return;
+  assert.equal(result.file, file);
+  assert.equal(store.revision, 1, "同步文件无需重提交未变化的草案");
+  const written = normalizeDraft(parse(await readFile(file, "utf8")));
+  assert.ok(written.ok);
+  assert.deepEqual(written.tree, store.tree);
+  assert.equal(existsSync(join(base, "requirements-2")), false);
+  assert.equal(existsSync(store.file!), false);
+  assert.equal(agent.sends.length, 1);
+  assert.ok(agent.sends[0].includes(file));
+  assert.match(all(), /已更新/);
+});
+
+test("更新时引用复制失败保留原文件和引用；重试成功后写出审阅内容", async (t) => {
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const file = await existingDocument(base);
+  const original = await readFile(file, "utf8");
+  const referenceDirectory = join(base, "requirements", "references");
+  await mkdir(referenceDirectory);
+  await writeFile(join(referenceDirectory, "old.png"), "old-image");
+  const source = join(base, "new.png");
+  await writeFile(source, "new-image");
+  const changed = validTree();
+  changed.visual_reference = ["new.png"];
+  const store = createDraftStore(base);
+  assert.equal(store.submit(changed, []).ok, true);
+  const { out, all } = collect();
+  const agent = new FakeAgent(store, [], [{ ok: true, output: "update" }]);
+  async function* input() {
+    yield "把刚才整理的内容同步进 YAML";
+    await rm(source);
+    yield "是";
+    assert.match(all(), /更新失败/);
+    assert.equal(await readFile(file, "utf8"), original);
+    assert.deepEqual(await readdir(referenceDirectory), ["old.png"]);
+    assert.ok(existsSync(store.file!));
+    await writeFile(source, "new-image");
+    yield "是";
+  }
+  const result = await runConversation({ agent, store, input: input(), out, baseDir: base });
+  assert.equal(result.status, "updated");
+  const written = parse(await readFile(file, "utf8"));
+  assert.match(written.visual_reference[0], /^references\/update-[^/]+\/1-new\.png$/);
+  assert.equal(await readFile(join(base, "requirements", written.visual_reference[0]), "utf8"), "new-image");
+  assert.equal(await readFile(join(referenceDirectory, "old.png"), "utf8"), "old-image");
+  assert.ok(all().includes(await readFile(file, "utf8")), "审阅 YAML 与写回内容一致");
+  assert.deepEqual(store.tree?.visual_reference, ["new.png"]);
+});
+
+test("审阅后原 YAML 被修改时拒绝覆盖，并保留草稿供重新审阅", async (t) => {
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const file = await existingDocument(base);
+  const store = createDraftStore(base);
+  assert.equal(store.submit(validTree(), []).ok, true);
+  const agent = new FakeAgent(store, [], [{ ok: true, output: "update" }]);
+  const { out, all } = collect();
+  const externalEdit = "用户在审阅期间改动了原文件。\n";
+  async function* input() {
+    yield "按草案更新 YAML";
+    await writeFile(file, externalEdit);
+    yield "是";
+  }
+  const result = await runConversation({ agent, store, input: input(), out, baseDir: base });
+  assert.equal(result.status, "ended");
+  assert.equal(await readFile(file, "utf8"), externalEdit);
+  assert.match(all(), /原文件在审阅后已改变/);
+  assert.ok(existsSync(store.file!));
+});
+
+test("请求更新不存在的文档时说明目标缺失并保留草稿", async (t) => {
+  const base = await tempBase();
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const store = createDraftStore(base);
+  assert.equal(store.submit(validTree(), []).ok, true);
+  const agent = new FakeAgent(store, [], [{ ok: true, output: "update" }]);
+  const { out, all } = collect();
+  const result = await runConversation({ agent, store, input: scripted(["更新现有 YAML"]), out, baseDir: base });
+  assert.equal(result.status, "ended");
+  assert.match(all(), /待更新的需求文档不存在/);
+  assert.equal(existsSync(join(base, "requirements")), false);
+  assert.ok(existsSync(store.file!));
 });
 
 test("完整草案经确认后生成 requirements.yaml", async (t) => {
@@ -464,16 +581,18 @@ test("输入直接结束时不写文件", async (t) => {
   assert.match(all(), /requirements-agent|需求整理/);
 });
 
-test("requestsGeneration 与 isAffirmative 识别自然语言", () => {
+test("纯生成指令走快捷入口，复合或否定语句交由模型理解", () => {
   assert.equal(requestsGeneration("生成"), true);
   assert.equal(requestsGeneration(" 生成！ "), true);
   assert.equal(requestsGeneration("generate"), true);
   assert.equal(requestsGeneration("生成需求文档"), true);
   assert.equal(requestsGeneration("整理好了"), true);
-  assert.equal(requestsGeneration("帮我加一个导出，然后生成需求文档"), true);
+  assert.equal(requestsGeneration("帮我加一个导出，然后生成需求文档"), false);
   assert.equal(requestsGeneration("再加一个删除功能"), false);
   assert.equal(requestsGeneration("是"), false);
   assert.equal(requestsGeneration("不生成"), false);
+  assert.equal(requestsGeneration("不要生成需求文档"), false);
+  assert.equal(requestsGeneration("根据最新草案更新需求"), false);
 
   assert.equal(isAffirmative("是"), true);
   assert.equal(isAffirmative(" 好。 "), true);

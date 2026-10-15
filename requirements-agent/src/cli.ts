@@ -1,9 +1,12 @@
-import { copyFile, mkdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { Type } from "typebox";
+import { parse } from "yaml";
 
 import {
   diffRequirements,
+  normalizeDraft,
   serializeRequirementsYaml,
   summarizeTree,
   validateForGeneration,
@@ -14,9 +17,12 @@ import type { DraftStore } from "./draft-store.js";
 
 export { createDraftStore, type DraftStore } from "./draft-store.js";
 
+export type RequirementsOutputMode = "create" | "update";
+
 export interface ChatTurnResult {
   ok: boolean;
   error?: string;
+  output?: RequirementsOutputMode;
 }
 
 /** 对话代理：一次 send 对应一个完整的用户回合（含工具循环与自动重试）。 */
@@ -73,15 +79,26 @@ export function createRequirementsTool(store: DraftStore) {
   };
 }
 
-const GENERATE_PATTERNS: RegExp[] = [
-  /生成(需求|文档)/,
-  /(需求|文档|yaml)\s*生成/i,
-  /整理好(了)?/,
-  /整理完成/,
-  /可以生成/,
-  /确认生成/,
-  /导出(需求|文档)/i,
-];
+/** 模型表达文件操作意图；这里只请求审阅，确认与写入仍由对话程序执行。 */
+export function createReviewTool(request: (mode: RequirementsOutputMode) => void) {
+  return {
+    name: "review_requirements",
+    label: "审阅需求文档",
+    description:
+      "用户要求生成、保存、导出需求文档，或根据最新草案更新、同步现有需求时调用。" +
+      "create 创建新需求目录，update 更新启动目录下的 requirements/requirements.yaml。" +
+      "先完成用户要求的草案修改；草案没有变化时也可直接调用。" +
+      "程序在本回合成功结束后校验并展示草案与目标文件，用户确认后才写入。",
+    parameters: Type.Object({ mode: Type.Union([Type.Literal("create"), Type.Literal("update")]) }),
+    async execute(_toolCallId: string, params: { mode: RequirementsOutputMode }) {
+      request(params.mode);
+      return {
+        content: [{ type: "text" as const, text: "已请求需求审阅；本回合结束后由程序展示，确认后写入。" }],
+        details: { mode: params.mode },
+      };
+    },
+  };
+}
 
 const GENERATE_COMMANDS = new Set([
   "生成", "生成需求", "生成文档", "生成需求文档", "需求生成", "文档生成", "yaml生成",
@@ -89,9 +106,9 @@ const GENERATE_COMMANDS = new Set([
   "导出需求", "导出文档", "导出需求文档", "generate",
 ]);
 
-/** 用户是否请求生成需求文档（审阅流程的入口）。 */
+/** 纯生成指令的快捷入口；其他自然语言意图通过 review_requirements 表达。 */
 export function requestsGeneration(text: string): boolean {
-  return GENERATE_COMMANDS.has(normalizeReply(text)) || GENERATE_PATTERNS.some((pattern) => pattern.test(text));
+  return GENERATE_COMMANDS.has(normalizeReply(text));
 }
 
 const AFFIRMATIVE_WORDS = new Set([
@@ -109,7 +126,7 @@ function normalizeReply(text: string): string {
 }
 
 /** 每轮向代理提供当前草案与未决问题，再附上用户输入。 */
-export function buildTurnMessage(text: string, store: DraftStore): string {
+export function buildTurnMessage(text: string, store: DraftStore, outputFile?: string): string {
   const sections: string[] = [];
   if (store.tree) {
     sections.push(
@@ -123,6 +140,7 @@ export function buildTurnMessage(text: string, store: DraftStore): string {
       ? `【未决问题】\n${numberList(store.questions)}`
       : "【未决问题】无。",
   );
+  if (outputFile) sections.push(`【需求文档路径】\n${outputFile}\n更新现有需求文档时使用此路径；创建新文档由程序选择新目录。`);
   // 最后一项是本轮输入；前面的项来自中断或失败的回合。
   const unfinished = store.pendingInputs.slice(0, -1);
   if (unfinished.length) sections.push(`【此前未完成的输入】\n${numberList(unfinished)}`);
@@ -166,11 +184,12 @@ export type ConversationView =
   | { type: "intro" }
   | { type: "draft"; revision: number; tree: RequirementNode | null; questions: string[];
       changes: ReturnType<typeof diffRequirements>; restored?: boolean }
-  | { type: "review"; revision: number; tree: RequirementNode; references: ReferenceCopy[] }
+  | { type: "review"; revision: number; tree: RequirementNode; references: ReferenceCopy[];
+      file?: string; changes?: ReturnType<typeof diffRequirements> }
   | { type: "edit" };
 
 export type ConversationOutcome =
-  | { status: "generated"; file: string }
+  | { status: "generated" | "updated"; file: string }
   | { status: "ended" };
 
 export async function runConversation(options: ConversationOptions): Promise<ConversationOutcome> {
@@ -180,7 +199,7 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     "Requirements Agent — 需求整理\n" +
       "用普通文字描述你的需求，我会整理草案并追问缺失信息；\n" +
       "已有写好的需求文档时，直接给出文件或目录路径即可读取。\n" +
-      "需要生成时输入“生成”或“生成需求文档”；" +
+      "需要生成时输入“生成”；更新文档可说“按最新草案更新需求文档”；" +
       (options.inputHelp ?? "行尾加 \\ 可以续行；Ctrl+C 退出。") + "\n\n",
   );
   if (store.tree || store.pendingInputs.length) {
@@ -198,17 +217,20 @@ export async function runConversation(options: ConversationOptions): Promise<Con
     if (!text) continue;
     if (reviewedOutput) {
       if (isAffirmative(text)) {
+        const action = reviewedOutput.update ? "更新" : "生成";
         try {
-          const file = await writeRequirementsOutput(reviewedOutput.tree, baseDir, reviewedOutput.references);
+          const file = reviewedOutput.update
+            ? await writeRequirementsUpdate(reviewedOutput.tree, reviewedOutput.update, reviewedOutput.references)
+            : await writeRequirementsOutput(reviewedOutput.tree, baseDir, reviewedOutput.references);
           try {
             store.clearSavedDraft();
           } catch (error) {
             out(`需求文档已写出，但草稿清理失败：${error instanceof Error ? error.message : String(error)}。下次启动仍会恢复此草稿。\n`);
           }
-          out(`已生成 ${file}\n`);
-          return { status: "generated", file };
+          out(`已${action} ${file}\n`);
+          return { status: reviewedOutput.update ? "updated" : "generated", file };
         } catch (error) {
-          out(`生成失败：${error instanceof Error ? error.message : String(error)}。回复“是”重试，或继续修改需求。\n\n`);
+          out(`${action}失败：${error instanceof Error ? error.message : String(error)}。回复“是”重试，或继续修改需求。\n\n`);
           continue;
         }
       }
@@ -216,34 +238,36 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       options.onView?.({ type: "edit" });
       // 非确认内容按普通修改继续对话。
     }
-    const generateRequested = requestsGeneration(text);
+    let outputMode: RequirementsOutputMode | undefined = requestsGeneration(text) ? "create" : undefined;
     // 纯生成指令直接审阅；混合修改或中断后尚未完成的输入仍交给代理处理。
-    if (!GENERATE_COMMANDS.has(normalizeReply(text)) || store.pendingInputs.length) {
+    if (!outputMode || store.pendingInputs.length) {
       const before = store.tree;
       store.recordInput(text);
-      const result = await agent.send(buildTurnMessage(text, store));
+      const result = await agent.send(buildTurnMessage(text, store, join(baseDir, "requirements", "requirements.yaml")));
       if (!result.ok) {
         if (options.onView && store.tree !== before) options.onView({ type: "draft", revision: store.revision,
           tree: store.tree, questions: store.questions, changes: diffRequirements(before, store.tree) });
         out(`本轮处理失败：${result.error ?? "未知错误"}。可以重试或继续输入。\n\n`);
         continue;
       }
+      outputMode = result.output ?? outputMode;
       store.finishTurn();
       const changes = diffRequirements(before, store.tree);
       if (options.onView) options.onView({ type: "draft", revision: store.revision,
         tree: store.tree, questions: store.questions, changes });
       else out(`${formatTurnSummary(store, changes)}\n\n`);
     }
-    if (!generateRequested) continue;
+    if (!outputMode) continue;
+    const action = outputMode === "update" ? "更新" : "生成";
     if (!store.tree) {
-      out("还不能生成这份需求文档：需求草案为空，请先描述需求。\n\n");
+      out(`还不能${action}这份需求文档：需求草案为空，请先描述需求。\n\n`);
       continue;
     }
     const generationErrors = validateForGeneration(store.tree);
     if (generationErrors.length) {
       out(
-        `还不能生成这份需求文档：\n- ${generationErrors.join("\n- ")}\n` +
-          "请继续补充或修正后再生成。\n\n",
+        `还不能${action}这份需求文档：\n- ${generationErrors.join("\n- ")}\n` +
+          "请继续补充或修正后再请求审阅。\n\n",
       );
       continue;
     }
@@ -256,21 +280,24 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       continue;
     }
     try {
-      reviewedOutput = await prepareRequirementsOutput(store.tree, baseDir);
+      reviewedOutput = await prepareRequirementsOutput(store.tree, baseDir, outputMode);
     } catch (error) {
-      out(`还不能生成这份需求文档：${error instanceof Error ? error.message : String(error)}。请修正参考文件后重新生成。\n\n`);
+      out(`还不能${action}这份需求文档：${error instanceof Error ? error.message : String(error)}。请修正后重新请求审阅。\n\n`);
       continue;
     }
     if (options.onView) options.onView({ type: "review", revision: store.revision,
-      tree: reviewedOutput.tree, references: reviewedOutput.references });
+      tree: reviewedOutput.tree, references: reviewedOutput.references,
+      ...(reviewedOutput.update ? { file: reviewedOutput.update.file, changes: reviewedOutput.changes } : {}) });
     else out(
       `──────── 需求审阅（第 ${store.revision} 版）────────\n` +
+        (reviewedOutput.update ? `【将更新原文件】${reviewedOutput.update.file}\n` +
+          `【相较原文件】${formatChanges(reviewedOutput.changes!)}\n` : "") +
         `${serializeRequirementsYaml(reviewedOutput.tree)}` +
         (reviewedOutput.references.length
           ? `【将交接的参考文件】\n${numberList(reviewedOutput.references.map((reference) => `${reference.source} → ${reference.destination}`))}\n`
           : "") +
         "────────\n" +
-        "是否生成这份需求文档？回复“是”生成；回复其他内容继续修改。\n\n",
+        `是否${action}这份需求文档？回复“是”${action}；回复其他内容继续修改。\n\n`,
     );
   }
   out("未生成需求文档，本次会话结束。" +
@@ -286,13 +313,24 @@ interface ReferenceCopy {
 interface PreparedRequirementsOutput {
   tree: RequirementNode;
   references: ReferenceCopy[];
+  update?: { file: string; content: string };
+  changes?: ReturnType<typeof diffRequirements>;
 }
 
 /** 在审阅前核对本地参考文件，审阅视图与最终 YAML 使用同一份树。 */
 export async function prepareRequirementsOutput(
   tree: RequirementNode,
   baseDir: string,
+  mode: RequirementsOutputMode = "create",
 ): Promise<PreparedRequirementsOutput> {
+  const file = resolve(baseDir, "requirements", "requirements.yaml");
+  const update = mode === "update" ? { file, content: await readFile(file, "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`待更新的需求文档不存在：${file}`);
+    throw error;
+  }) } : undefined;
+  const previous = update ? normalizeDraft(parse(update.content)) : undefined;
+  if (previous && !previous.ok) throw new Error(`现有需求文档格式无效：${previous.errors.join("；")}`);
+  const referenceDirectory = update ? `references/update-${randomUUID()}` : "references";
   const outputTree = structuredClone(tree);
   const references = new Map<string, ReferenceCopy>();
   const visit = async (node: RequirementNode): Promise<void> => {
@@ -309,7 +347,7 @@ export async function prepareRequirementsOutput(
           throw new Error(`参考文件不存在或不可读取：${path}`);
         });
         if (!file.isFile()) throw new Error(`参考路径必须是普通文件：${path}`);
-        reference = { source, destination: `references/${references.size + 1}-${basename(source)}` };
+        reference = { source, destination: `${referenceDirectory}/${references.size + 1}-${basename(source)}` };
         references.set(source, reference);
       }
       rewritten.set(path, reference.destination);
@@ -320,7 +358,39 @@ export async function prepareRequirementsOutput(
     for (const child of node.children) await visit(child);
   };
   await visit(outputTree);
-  return { tree: outputTree, references: [...references.values()] };
+  return { tree: outputTree, references: [...references.values()],
+    ...(update && previous?.ok ? { update, changes: diffRequirements(previous.tree, outputTree) } : {}) };
+}
+
+/** 先复制本次引用并写好临时 YAML，再替换原文件；失败不删除或改写原文档及其引用。 */
+async function writeRequirementsUpdate(
+  tree: RequirementNode,
+  target: { file: string; content: string },
+  references: ReferenceCopy[],
+): Promise<string> {
+  const directory = dirname(target.file);
+  const temporary = join(directory, `.requirements-${randomUUID()}.tmp`);
+  const referenceDirectory = references.length ? join(directory, dirname(references[0].destination)) : undefined;
+  let referencesCreated = false;
+  let written = false;
+  try {
+    if (referenceDirectory) {
+      await mkdir(join(directory, "references"), { recursive: true });
+      await mkdir(referenceDirectory);
+      referencesCreated = true;
+    }
+    for (const reference of references) await copyFile(reference.source, join(directory, reference.destination));
+    await writeFile(temporary, serializeRequirementsYaml(tree), { encoding: "utf8", flag: "wx" });
+    if (await readFile(target.file, "utf8") !== target.content) {
+      throw new Error("原文件在审阅后已改变，请重新请求审阅");
+    }
+    await rename(temporary, target.file);
+    written = true;
+    return target.file;
+  } finally {
+    await rm(temporary, { force: true });
+    if (!written && referencesCreated) await rm(referenceDirectory!, { recursive: true, force: true });
+  }
 }
 
 export async function writeRequirementsOutput(
@@ -360,11 +430,7 @@ function formatTurnSummary(
   } else {
     lines.push("【草案】尚未建立");
   }
-  const changes: string[] = [];
-  if (diff.added.length) changes.push(`新增 ${diff.added.length} 项：${formatRefs(diff.added)}`);
-  if (diff.changed.length) changes.push(`修改 ${diff.changed.length} 项：${formatRefs(diff.changed)}`);
-  if (diff.removed.length) changes.push(`删除 ${diff.removed.length} 项：${formatRefs(diff.removed)}`);
-  lines.push(changes.length ? `【本轮修改】${changes.join("；")}` : "【本轮修改】无变化");
+  lines.push(`【本轮修改】${formatChanges(diff)}`);
   if (store.questions.length > 3) {
     lines.push(`【未决问题（共 ${store.questions.length} 个，显示前 3 个）】\n${numberList(store.questions.slice(0, 3))}`);
   } else if (store.questions.length) {
@@ -373,6 +439,14 @@ function formatTurnSummary(
     lines.push("【未决问题】无");
   }
   return lines.join("\n");
+}
+
+function formatChanges(diff: ReturnType<typeof diffRequirements>): string {
+  const changes: string[] = [];
+  if (diff.added.length) changes.push(`新增 ${diff.added.length} 项：${formatRefs(diff.added)}`);
+  if (diff.changed.length) changes.push(`修改 ${diff.changed.length} 项：${formatRefs(diff.changed)}`);
+  if (diff.removed.length) changes.push(`删除 ${diff.removed.length} 项：${formatRefs(diff.removed)}`);
+  return changes.length ? changes.join("；") : "无变化";
 }
 
 function formatRefs(refs: RequirementRef[]): string {
