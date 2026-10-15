@@ -35,6 +35,8 @@ export interface SessionStatsSource {
 }
 
 export interface RequirementsTuiOptions {
+  /** 当前对话使用的模型 id；状态区显式标注来源。 */
+  model: string;
   /** 中止当前回合（Esc 或处理中的 Ctrl+C）。 */
   onAbort(): void;
   /** 用户请求退出（空输入时连续两次 Ctrl+C，或 Ctrl+D）。 */
@@ -123,7 +125,7 @@ export class RequirementsTui {
     const t = this.theme;
     if (view.type === "intro") {
       this.append(new Text(t.strong("从一句想法开始。") + "\n" +
-        "描述你想做的应用，也可以给出现有需求文档的路径。\n" +
+        "描述你想做的应用，也可以给出现有需求文档或目录的路径。\n" +
         t.muted("需要生成时输入“生成需求文档”；我会先展示草案供你确认。"), 1, 0));
     } else if (view.type === "draft") {
       this.draft = view;
@@ -285,7 +287,8 @@ export class RequirementsTui {
   private updateContext(): void {
     const tree = this.draft?.tree;
     const summary = tree ? summarizeTree(tree) : null;
-    const count = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
+    const state = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
+    const count = `模型 ${this.options.model} · ${state}`;
     const next = this.review ? "等待确认 · 回复“是”生成" : this.draft?.questions.length
       ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成需求文档”" : "描述你的想法";
     const usage = this.usage ? `模型用量 tokens ${formatTokenCount(this.usage.tokens)}` +
@@ -370,11 +373,20 @@ export function formatRequirementPreview(tree: RequirementNode): string {
 
 function toolMessage(name: string, args: unknown): string {
   if (name === "read") {
-    const path = (args as { path?: unknown } | null | undefined)?.path;
-    return typeof path === "string" && path ? `正在读取文件：${path}` : "正在读取文件…";
+    const path = toolPath(args);
+    return path ? `正在读取文件：${path}` : "正在读取文件…";
+  }
+  if (name === "ls") {
+    const path = toolPath(args);
+    return path ? `正在查看目录：${path}` : "正在查看目录…";
   }
   if (name === "update_requirements") return "正在更新需求草案…";
   return `正在执行 ${name}…`;
+}
+
+function toolPath(args: unknown): string {
+  const path = (args as { path?: unknown } | null | undefined)?.path;
+  return typeof path === "string" ? path : "";
 }
 
 /** 连接 TUI 提交与工作流循环的串行队列；ready 在本回合处理完成后触发。 */

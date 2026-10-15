@@ -19,6 +19,8 @@ const RENDER_INTERVAL_MS = 200;
 
 export interface BuildTuiOptions {
   requirementIds: string[];
+  /** 本轮实际使用的模型；状态页显式标注来源。 */
+  models: { builder: string; judge: string };
   onInterrupt(): void;
 }
 
@@ -125,9 +127,10 @@ export class BuildView implements Component {
     ].join("  ");
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
     const activity = ` ${t.accent(frame)} ${this.activity}`;
+    const models = ` ${t.muted("模型")}  Builder ${this.options.models.builder} ${t.muted("·")} Judge ${this.options.models.judge}`;
     const footer = t.muted(" d 详细日志   ? 帮助   Ctrl+C 中断");
     const usage = formatModelUsageSummary(this.usage.summary(this.live));
-    const compact = () => [terminalHeader("Build Agent", width, t)[0], activity,
+    const compact = () => [terminalHeader("Build Agent", width, t)[0], models, activity,
       ...usage.map(line => ` ${line}`), " " + status, footer]
       .slice(0, this.rows()).map(line => fitTerminalText(line, width));
     if (this.rows() < 18) return compact();
@@ -136,6 +139,7 @@ export class BuildView implements Component {
       ...terminalHeader("Build Agent", width, t), "",
       terminalRow(` ${t.strong(this.phase)}`, t.muted(elapsedTime(Date.now() - this.startedAt) + " "), width),
       ` ${t.muted("模块")}  ${this.module}`,
+      models,
       ...usageLines,
       activity,
       t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),

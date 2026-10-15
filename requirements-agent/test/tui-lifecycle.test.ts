@@ -11,7 +11,7 @@ import { RequirementsTui } from "../src/tui.js";
 test("未启动的 TUI 不渲染终端，关闭时不操作终端", async (t) => {
   const write = t.mock.method(ProcessTerminal.prototype, "write", () => {});
   const stop = t.mock.method(ProcessTerminal.prototype, "stop", () => {});
-  const tui = new RequirementsTui({ onAbort() {}, onExit() {} });
+  const tui = new RequirementsTui({ model: "provider/requirements-model", onAbort() {}, onExit() {} });
   t.after(() => tui.stop());
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(write.mock.callCount(), 0);

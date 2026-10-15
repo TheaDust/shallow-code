@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { readFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,7 +75,7 @@ function startFakeGateway(pauseAfterUpdate = false): Promise<{ port: number; req
         .map((message) => String(message.content)).join("\n"),
     });
     // 草稿工具已提交，最终回复仍在等待：用于验证回合中途退出。
-    if (pauseAfterUpdate && toolMessages.length >= 2 && !lastUserText.includes("生成")) return;
+    if (pauseAfterUpdate && toolMessages.length >= 3 && !lastUserText.includes("生成")) return;
 
     const chunk = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
     const wrap = (delta: unknown, finish: string | null) => chunk({
@@ -92,7 +92,22 @@ function startFakeGateway(pauseAfterUpdate = false): Promise<{ port: number; req
       res.write(wrap({ content: "可以生成文档。" }, null));
       res.write(wrap({}, "stop"));
     } else if (toolMessages.length === 0) {
-      res.write(wrap({ role: "assistant", content: "我先读取你的需求文件。" }, null));
+      // 用户给出目录：先列目录，再读取其中的文件。
+      res.write(wrap({ role: "assistant", content: "我先查看你给出的目录。" }, null));
+      res.write(wrap({
+        tool_calls: [{
+          index: 0,
+          id: "call_ls",
+          type: "function",
+          function: {
+            name: "ls",
+            arguments: JSON.stringify({ path: "docs" }),
+          },
+        }],
+      }, null));
+      res.write(wrap({}, "tool_calls"));
+    } else if (toolMessages.length === 1) {
+      res.write(wrap({ role: "assistant", content: "我读取目录里的需求文件。" }, null));
       res.write(wrap({
         tool_calls: [{
           index: 0,
@@ -100,12 +115,12 @@ function startFakeGateway(pauseAfterUpdate = false): Promise<{ port: number; req
           type: "function",
           function: {
             name: "read",
-            arguments: JSON.stringify({ path: "需求.md" }),
+            arguments: JSON.stringify({ path: "docs/需求.md" }),
           },
         }],
       }, null));
       res.write(wrap({}, "tool_calls"));
-    } else if (toolMessages.length === 1) {
+    } else if (toolMessages.length === 2) {
       res.write(wrap({ role: "assistant", content: "我来整理一版草案。" }, null));
       res.write(wrap({
         tool_calls: [{
@@ -141,7 +156,8 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   const tsxLoader = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
   const mainTs = fileURLToPath(new URL("../src/main.ts", import.meta.url));
   const base = await mkdtemp(join(tmpdir(), "requirements-agent-smoke-"));
-  await writeFile(join(base, "需求.md"), "需求文档：必须支持导出 CSV。\n", "utf8");
+  await mkdir(join(base, "docs"), { recursive: true });
+  await writeFile(join(base, "docs", "需求.md"), "需求文档：必须支持导出 CSV。\n", "utf8");
   const ttyImport = join(base, "tty.mjs");
   if (interactive) {
     // Exercise the custom TUI and keyboard processing without requiring the
@@ -192,8 +208,8 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   const enter = interactive ? "\r" : "\n";
   await waitFor(/需要生成时输入/);
   write(interactive
-    ? `需求要点都写在 需求.md 里。\n请读取并整理。${enter}`
-    : `需求要点都写在 需求.md 里，请读取并整理。${enter}`);
+    ? `需求要点都写在 docs 目录里。\n请查看并整理。${enter}`
+    : `需求要点都写在 docs 目录里，请查看并整理。${enter}`);
   await waitFor(interactive ? /草案更新/ : /【本轮修改】/);
   write(`生成需求文档${enter}`);
   await waitFor(/是否生成这份需求文档/);
@@ -217,7 +233,9 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   assert.equal(exitCode, 0, `CLI 退出码异常；stdout:\n${stdout}\nstderr:\n${stderr}`);
   assert.ok(!stderr.includes("启动失败"), `启动失败：${stderr}`);
   assert.match(stdout, interactive ? /Shallow Code/ : /Requirements Agent/);
-  assert.match(stdout, /我先读取你的需求文件/, "流式回复未显示");
+  assert.match(stdout, /我先查看你给出的目录/, "流式回复未显示");
+  assert.match(stdout, /我读取目录里的需求文件/, "流式回复未显示");
+  if (!interactive) assert.match(stdout, /正在查看目录/, "目录工具执行标记缺失");
   if (!interactive) assert.match(stdout, /正在读取文件/, "读取工具执行标记缺失");
   assert.match(stdout, /整理一版草案/, "流式回复未显示");
   if (!interactive) assert.match(stdout, /正在更新需求草案/, "工具执行标记缺失");
@@ -232,9 +250,9 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   assert.match(yaml, /keyword: AND/);
   assert.match(yaml, /“准备会议”/);
 
-  assert.equal(gateway.requests.length, 4, "模型请求次数异常");
+  assert.equal(gateway.requests.length, 5, "模型请求次数异常");
   for (const request of gateway.requests) {
-    assert.deepEqual([...request.toolNames].sort(), ["read", "update_requirements"], "工具白名单异常");
+    assert.deepEqual([...request.toolNames].sort(), ["ls", "read", "update_requirements"], "工具白名单异常");
     assert.ok(request.hasSystemPrompt, "系统提示词缺失");
   }
   assert.ok(gateway.requests.some((request) => request.hasToolResult), "工具结果未回传给模型");
@@ -250,7 +268,7 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
     assert.match(stdout, /shallow build --requirements-dir/, "生成后交接命令缺失");
     assert.match(stdout, /›/, "TUI 未回显用户输入");
     assert.ok(!stdout.includes("Ctrl+O"), "TUI 不应出现 Pi 命令面板提示");
-    assert.ok(gateway.requests[0].lastUserText.includes("需求要点都写在 需求.md 里。\n请读取并整理。"),
+    assert.ok(gateway.requests[0].lastUserText.includes("需求要点都写在 docs 目录里。\n请查看并整理。"),
       "多行编辑未传入同一回合");
   }
 });
@@ -259,7 +277,8 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
 for (const interactive of [false, true]) {
 test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 在模型回合中被终止后恢复草稿并生成`, { timeout: 60_000 }, async (t) => {
   const base = await mkdtemp(join(tmpdir(), "requirements-restart-"));
-  await writeFile(join(base, "需求.md"), "任务列表刷新后仍保留。\n");
+  await mkdir(join(base, "docs"), { recursive: true });
+  await writeFile(join(base, "docs", "需求.md"), "任务列表刷新后仍保留。\n");
   const ttyImport = join(base, "tty.mjs");
   if (interactive) await writeFile(ttyImport,
     "Object.defineProperty(process.stdin, 'isTTY', { value: true });\n" +
@@ -302,15 +321,15 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 在模型回合中被终�
   const enter = interactive ? "\r" : "\n";
   const first = launch();
   await first.waitFor(() => /需要生成时输入/.test(first.stdout()));
-  first.child.stdin!.write(`需求要点都写在 需求.md 里，请读取并整理。${enter}`);
+  first.child.stdin!.write(`需求要点都写在 docs 目录里，请查看并整理。${enter}`);
   const draftFile = join(base, ".requirements-agent", "draft.json");
-  await first.waitFor(() => gateway.requests.length === 3 && existsSync(draftFile));
+  await first.waitFor(() => gateway.requests.length === 4 && existsSync(draftFile));
   first.child.kill();
   await first.exit;
   const saved = JSON.parse(await readFile(draftFile, "utf8"));
   assert.equal(saved.revision, 1);
   assert.equal(saved.tree.id, "task-app");
-  assert.deepEqual(saved.pendingInputs, ["需求要点都写在 需求.md 里，请读取并整理。"]);
+  assert.deepEqual(saved.pendingInputs, ["需求要点都写在 docs 目录里，请查看并整理。"]);
 
   const second = launch();
   await second.waitFor(() => /已恢复需求草稿/.test(second.stdout()));
@@ -326,9 +345,9 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 在模型回合中被终�
   assert.equal(await second.exit, 0);
   assert.ok(existsSync(join(base, "requirements", "requirements.yaml")));
   assert.equal(existsSync(draftFile), false);
-  assert.equal(gateway.requests.length, 4);
-  assert.match(gateway.requests[3].lastUserText, /【当前需求草案（第 1 版）】/);
-  assert.match(gateway.requests[3].lastUserText, /【此前未完成的输入】/);
-  assert.match(gateway.requests[3].lastUserText, /create-task/);
+  assert.equal(gateway.requests.length, 5);
+  assert.match(gateway.requests[4].lastUserText, /【当前需求草案（第 1 版）】/);
+  assert.match(gateway.requests[4].lastUserText, /【此前未完成的输入】/);
+  assert.match(gateway.requests[4].lastUserText, /create-task/);
 });
 }

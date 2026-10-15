@@ -350,6 +350,7 @@ async function executeProduction(
     if (process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb") {
       tui = new BuildTui({
         requirementIds: Object.keys(context.runRecord.requirementDigests!),
+        models: { builder: builderGateway.model, judge: judgeGateway.model },
         onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
       });
       tui.start();

@@ -13,7 +13,7 @@ import type { RunEvent } from "../src/types.js";
 import { MemoryTerminal } from "./helpers/terminal.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-const options = { requirementIds: ["A", "B", "C"], onInterrupt() {} };
+const options = { requirementIds: ["A", "B", "C"], models: { builder: "gateway/builder-model", judge: "gateway/judge-model" }, onInterrupt() {} };
 const formatter = new HumanRunFormatter();
 function receive(view: BuildView, type: RunEvent["type"], detail: Record<string, unknown> = {}, packetId = "packet-a"): void {
   const event = { at: "2026-10-13T00:00:00Z", type, packetId, detail } as RunEvent;
@@ -43,6 +43,15 @@ test("Evolution skips stay outside the current numerator and denominator", () =>
   const text = view.render(80).join("\n");
   assert.match(text, /已验证 1\/2/);
   assert.match(text, /沿用跳过 1/);
+});
+
+test("Run view names the models it runs with in full and compact layouts", () => {
+  const full = new BuildView(options, () => 24, terminalTheme(false)).render(80).join("\n");
+  assert.match(full, /模型\s+Builder gateway\/builder-model/);
+  assert.match(full, /Judge gateway\/judge-model/);
+  const compact = new BuildView(options, () => 8, terminalTheme(false)).render(80).join("\n");
+  assert.match(compact, /模型\s+Builder gateway\/builder-model/);
+  assert.match(compact, /Judge gateway\/judge-model/);
 });
 
 test("Run view preserves foreground activity during background planning and fits smaller terminals", () => {

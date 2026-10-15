@@ -31,8 +31,9 @@ import { formatUsageSummary, type ModelRates } from "../../src/model-usage.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
-/** Pi 内置 read 工具的名称；通过 createAgentSession 的 tools 白名单启用。 */
+/** Pi 内置 read / ls 工具的名称；通过 createAgentSession 的 tools 白名单启用。 */
 const READ_TOOL_NAME = "read";
+const LS_TOOL_NAME = "ls";
 
 export async function main(): Promise<number> {
   const baseDir = process.cwd();
@@ -70,6 +71,7 @@ export async function main(): Promise<number> {
   try {
     if (interactive) {
       tui = new RequirementsTui({
+        model: gateway.model,
         onAbort: () => { void agent.abort().catch(() => {}); },
         onExit: leave,
       });
@@ -202,9 +204,9 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
       settingsManager,
       resourceLoader,
       sessionManager: SessionManager.inMemory(),
-      // tools 白名单只放行内置 read 与需求工具；noTools 是白名单缺省时的兜底。
+      // tools 白名单只放行内置 read / ls 与需求工具；noTools 是白名单缺省时的兜底。
       noTools: "builtin",
-      tools: [READ_TOOL_NAME, ...customTools.map((tool) => tool.name)],
+      tools: [READ_TOOL_NAME, LS_TOOL_NAME, ...customTools.map((tool) => tool.name)],
       customTools,
     });
     if (modelFallbackMessage) {
@@ -224,6 +226,10 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
         if (event.toolName === READ_TOOL_NAME) {
           const requested = typeof event.args?.path === "string" ? event.args.path : "";
           output(requested ? `\n[正在读取文件：${requested}]\n` : "\n[正在读取文件…]\n");
+        }
+        if (event.toolName === LS_TOOL_NAME) {
+          const requested = typeof event.args?.path === "string" ? event.args.path : "";
+          output(requested ? `\n[正在查看目录：${requested}]\n` : "\n[正在查看目录…]\n");
         }
       }
     }) : undefined;

@@ -38,13 +38,14 @@ test("Readable preview retains descriptions, guidance, seed identity, references
 
 test("Req status and preview keys reflect the draft and leave editing available", (t) => {
   const terminal = new MemoryTerminal();
-  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  const ui = new RequirementsTui({ model: "provider/requirements-model", onAbort() {}, onExit() {} }, terminal);
   t.after(() => ui.stop());
   ui.start();
   ui.present({ type: "intro" });
   const value = tree();
   ui.present({ type: "draft", revision: 2, tree: value, questions: ["谁可以创建任务？"], changes: diffRequirements(null, value) });
   const lines = ui.tui.render(80);
+  assert.match(lines.join("\n"), /模型 provider\/requirements-model/);
   assert.match(lines.join("\n"), /草案 r2 · 1 个功能 · 1 个场景/);
   assert.match(lines.join("\n"), /待确认 1 个问题/);
   assert.ok(lines.every(line => visibleWidth(line) <= 80));
@@ -61,7 +62,7 @@ test("Req status and preview keys reflect the draft and leave editing available"
 
 test("Req TUI clears the console page and reports the wheel only while the preview is open", (t) => {
   const terminal = new MemoryTerminal();
-  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  const ui = new RequirementsTui({ model: "provider/requirements-model", onAbort() {}, onExit() {} }, terminal);
   t.after(() => ui.stop());
   ui.start();
   assert.equal(terminal.writes[0], "\x1b[2J\x1b[H\x1b[3J", "进入 req 应先清空控制台页面");
@@ -79,7 +80,7 @@ test("Req TUI clears the console page and reports the wheel only while the previ
 
 test("Req status area tracks live model usage from the session", (t) => {
   const terminal = new MemoryTerminal();
-  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  const ui = new RequirementsTui({ model: "provider/requirements-model", onAbort() {}, onExit() {} }, terminal);
   t.after(() => ui.stop());
   ui.start();
   assert.doesNotMatch(ui.tui.render(80).join("\n"), /模型用量/);
@@ -95,7 +96,7 @@ test("Req status area tracks live model usage from the session", (t) => {
 
 test("Draft card reports revision changes without repeating pending questions", (t) => {
   const terminal = new MemoryTerminal();
-  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  const ui = new RequirementsTui({ model: "provider/requirements-model", onAbort() {}, onExit() {} }, terminal);
   t.after(() => ui.stop());
   ui.start();
   const value = tree();
@@ -110,7 +111,7 @@ test("Draft card reports revision changes without repeating pending questions", 
 
 test("Tool activity occupies the status area without adding a chat entry", (t) => {
   const terminal = new MemoryTerminal();
-  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  const ui = new RequirementsTui({ model: "provider/requirements-model", onAbort() {}, onExit() {} }, terminal);
   t.after(() => ui.stop());
   ui.start();
   let listener: Parameters<RequirementsTui["watchSession"]>[0] extends { subscribe(listener: infer L): unknown } ? L : never;
@@ -122,6 +123,8 @@ test("Tool activity occupies the status area without adding a chat entry", (t) =
   const during = ui.tui.render(80);
   assert.match(during.join("\n"), /正在读取文件：需求.md/);
   assert.equal(during.length, before);
+  listener!({ type: "tool_execution_start", toolCallId: "call", toolName: "ls", args: { path: "docs" } });
+  assert.match(ui.tui.render(80).join("\n"), /正在查看目录：docs/);
 });
 
 test("Interactive review exports its prepared tree only after explicit confirmation", async (t) => {
