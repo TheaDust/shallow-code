@@ -6,6 +6,7 @@ import { parseProjectSpec } from "./project-spec.js";
 import type { RunSummary } from "./pipeline.js";
 import { runGit } from "./git-ops.js";
 import { saveRequirementDigests, type HistoricalRequirements } from "./evolution.js";
+import { formatModelUsageSummary } from "./model-usage.js";
 
 export interface RunRecord {
   version: 1;
@@ -128,6 +129,7 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary, 
     "| 需求 | 当前状态 |", "| --- | --- |", ...rows, "",
     ...((summary.scenarioResults?.length ?? 0) > 0 ? ["| 需求 / 场景 | 当前状态 | 原因 |", "| --- | --- | --- |",
       ...summary.scenarioResults!.map(s => `| ${s.requirementId} / ${s.scenarioId} | ${s.status} | ${(s.reason ?? "").replace(/[\r\n|]/g, " ")} |`), ""] : []),
+    ...(summary.modelUsage ? ["模型用量：", "", ...formatModelUsageSummary(summary.modelUsage).map(line => `- ${line}`), ""] : []),
     "完整执行记录与失败证据见同目录 run-ledger.jsonl 和 evidence/。", "",
   ].join("\n"), "utf8");
 }

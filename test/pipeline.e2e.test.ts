@@ -93,6 +93,57 @@ import { FakeBuilder } from "./fakes/fake-builder.js";
 import { startFixtureServer } from "./helpers/fixture-server.js";
 import { withModulePipeline, fail, pass, testPlan } from "./helpers/module-pipeline.js";
 
+test("Pipeline totals separate Builder from grouping and Judge planning/review without double counting receipts", async () => {
+  await withModulePipeline(async f => {
+    const builderUsage = { input: 10, output: 2, cacheRead: 1, cacheWrite: 0, total: 13, cost: 0.001 };
+    const judgeUsage = { input: 5, output: 1, cacheRead: 0, cacheWrite: 0, total: 6 };
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      await options?.onUsage?.(builderUsage);
+      return { ...result, execution: { engine: "pi", version: "test", nodeVersion: process.version,
+        workerPid: 1, resumed: false, durationMs: 0, cleanupMs: 0, usage: { status: "available", ...builderUsage } } };
+    };
+    f.deps.grouper = { group: async (catalog, options) => {
+      await options.onUsage?.(judgeUsage);
+      return { groups: catalog.requirements.map(requirement => ({ requirementIds: [requirement.id], purpose: "fixture" })) };
+    } };
+    let plannerCalls = 0;
+    f.deps.planner.plan = async (packet, _feedback, options) => {
+      plannerCalls++;
+      await options?.onUsage?.(judgeUsage);
+      await options?.onReviewUsage?.(judgeUsage);
+      return testPlan(packet);
+    };
+    const summary = await f.run();
+    const usage = summary.modelUsage!;
+    assert.equal(summary.status, "delivered");
+    assert.equal(usage.builder.total, f.builder.requests.length * 13);
+    assert.equal(usage.judge.total, (1 + plannerCalls * 2) * 6);
+    assert.equal(usage.total, usage.builder.total + usage.judge.total);
+    assert.equal(usage.unpricedTokens, usage.judge.total);
+    assert.ok(Math.abs(usage.cost! - f.builder.requests.length * 0.001) < 1e-10);
+    const events = await f.events();
+    assert.equal(events.filter(event => event.type === "builder_usage").length, f.builder.requests.length);
+    const finished = events.find(event => event.type === "pipeline_finished");
+    assert.deepEqual(finished?.detail?.modelUsage, usage);
+  });
+});
+
+test("Builder receipts supply usage when an execution port has no usage callback", async () => {
+  await withModulePipeline(async f => {
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => ({ ...await build(request, options),
+      execution: { engine: "pi", version: "test", nodeVersion: process.version, workerPid: 1, resumed: false,
+        durationMs: 0, cleanupMs: 0, usage: { status: "available", input: 3, output: 1, cacheRead: 0, cacheWrite: 0, total: 4 } } });
+    const { modelUsage: usage } = await f.run();
+    assert.equal(usage?.builder.total, f.builder.requests.length * 4);
+    assert.equal(usage?.judge.total, 0);
+    assert.equal(usage?.total, usage?.builder.total);
+    assert.equal(usage?.cost, undefined);
+  });
+});
+
 for (const missing of [false, true]) {
   test(`Public entry executes and repairs without a business plan, missing=${missing}`, async () => {
     await withModulePipeline(async f => {

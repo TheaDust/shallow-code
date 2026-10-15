@@ -39,6 +39,7 @@ import { memorySnapshot } from "./memory-snapshot.js";
 import { ExecutionFault } from "./execution-fault.js";
 import { GatewayRequestError } from "./gateway-failure.js";
 import { GatewayRecovery } from "./gateway-recovery.js";
+import { ModelUsageTotals, type ModelUsageSummary } from "./model-usage.js";
 import type { CandidateRuntime } from "./candidate-runtime.js";
 import type { CandidateEvidence } from "./types.js";
 import type { InconclusiveKind } from "./types.js";
@@ -135,6 +136,8 @@ export interface RunSummary {
   skippedRequirementIds?: string[];
   delivery?: FinalVerificationReport;
   scenarioResults?: RunScenarioResult[];
+  /** 本轮全部模型调用的 token 与费用（价格已知时）。 */
+  modelUsage?: ModelUsageSummary;
 }
 
 export async function runPipeline(options: PipelineOptions, deps: PipelineDeps): Promise<RunSummary> {
@@ -154,6 +157,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
   const auditInheritedRequirements = options.auditInheritedRequirements ?? false;
   const startedAt = deps.clock.nowMs();
   const budget = new RunBudget(options.totalBudgetMs, startedAt, () => deps.clock.nowMs());
+  const modelUsage = new ModelUsageTotals();
   const state = new RunStateStore({ statusByRequirementId: catalog.statusById,
     acceptedSha: await deps.git.captureAccepted("shallow: initial state"), startedAtMs: startedAt,
     totalBudgetMs: options.totalBudgetMs }, options.ledgerFile, deps.logSink ?? null, deps.diagnosticSecrets);
@@ -232,7 +236,10 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     };
   };
   const plannerUsage = (packetId: string, operation: "plan" | "refine" | "review") =>
-    (usage: ProbePlannerUsage) => state.record({ at: now(), type: "probe_planner_usage", packetId, detail: { operation, ...usage } });
+    (usage: ProbePlannerUsage) => {
+      modelUsage.add("judge", usage);
+      return state.record({ at: now(), type: "probe_planner_usage", packetId, detail: { operation, ...usage } });
+    };
   deps = { ...deps, planner: {
     plan: (packet, feedback, callOptions) => {
       const remaining = plannerWindow();
@@ -295,13 +302,20 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
         await state.record({ at: now(), type: "builder_started", packetId, detail: { mode: request.mode } });
         const at = deps.clock.nowMs();
         let result: BuilderResult;
-        try { result = await deps.builder.run(request, { ...runOptions, timeoutMs: Math.max(1, Math.floor(remaining())) }); }
+        let usageReported = false;
+        const onUsage: NonNullable<BuilderRunOptions["onUsage"]> = usage => {
+          usageReported = true;
+          modelUsage.add("builder", usage);
+          return state.record({ at: now(), type: "builder_usage", packetId, detail: { ...usage } });
+        };
+        try { result = await deps.builder.run(request, { ...runOptions, timeoutMs: Math.max(1, Math.floor(remaining())), onUsage }); }
         catch (error) {
           if (error instanceof ExecutionFault) throw error;
           result = { outcome: "failed", sessionId: "unavailable", summary: errorMessage(error),
             ...(error instanceof GatewayRequestError ? { gatewayFailure: error.gatewayFailure } : {}) };
         }
         lastResult = result;
+        if (!usageReported && result.execution?.usage.status === "available") await onUsage(result.execution.usage);
         await state.record({ at: now(), type: "builder_finished", packetId,
           detail: { ...result, durationMs: Math.max(0, deps.clock.nowMs() - at) } });
         if (result.referenceImages) await state.record({ at: now(), type: "builder_reference_images", packetId, detail: result.referenceImages });
@@ -946,7 +960,10 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
           // Pending responses wait within the run budget; transport recovery is shared.
           const proposal = await gateway.run("planner", "feature-grouping", remaining,
             () => deps.grouper!.group(implementationCatalog, { timeoutMs: Math.max(1, remaining()), signal: preplanAbort.signal,
-              feedback, onUsage: usage => state.record({ at: now(), type: "feature_grouping_usage", detail: { ...usage, attempt } }) }),
+              feedback, onUsage: usage => {
+                modelUsage.add("judge", usage);
+                return state.record({ at: now(), type: "feature_grouping_usage", detail: { ...usage, attempt } });
+              } }),
             preplanAbort.signal);
           featureGrouping = parseFeatureGrouping(proposal, implementationCatalog);
           source = "llm"; reason = undefined;
@@ -1283,6 +1300,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       implementedRequirementIds: [...implemented].filter(id => !skipped.has(id)), verifiedRequirementIds,
       blockedRequirementIds: ids("blocked"), failedRequirementIds: ids("failed"), inconclusiveRequirementIds: ids("inconclusive"), pendingRequirementIds: ids("todo"),
       missingPlanRequirementIds, inconclusiveByKind, scenarioResults,
+      modelUsage: modelUsage.summary(),
       ...(skipped.size > 0 ? { auditRequirementIds: auditedRequirements.map(item => item.id), skippedRequirementIds: [...skipped] } : {}) };
     await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo"), memory: await memorySnapshot() } });
     return summary;

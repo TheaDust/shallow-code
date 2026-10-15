@@ -71,6 +71,29 @@ test("Catalog carries ancestor visuals and quoted UI contracts without including
   });
 });
 
+test("Catalog carries implementation guidance from the root, ancestors and the atomic node", async () => {
+  await withYaml(JSON.stringify({
+    id: "ROOT", name: "App", type: "FOLDER", description: "Root.",
+    guidance: ["整体采用深色主题。"],
+    children: [
+      { id: "AREA", name: "Area", type: "FOLDER", description: "Area.",
+        guidance: ["区域卡片保持圆角。"],
+        children: [
+          { id: "A", name: "Editor", type: "ATOMIC", description: "Edit.",
+            guidance: ["提交按钮保持醒目。"],
+            scenarios: [{ name: "Save", steps: [{ keyword: "THEN", content: "Saved." }] }] },
+          { id: "B", name: "Other", type: "ATOMIC", description: "Other." },
+        ] },
+    ],
+  }), async file => {
+    const { requirements: [a, b] } = await loadRequirementCatalog(file);
+    assert.deepEqual(a.product.guidance, ["整体采用深色主题。"]);
+    assert.deepEqual(a.guidance, ["区域卡片保持圆角。", "提交按钮保持醒目。"]);
+    assert.deepEqual(b.guidance, ["区域卡片保持圆角。"], "文件夹指引沿层级继承");
+    assert.deepEqual(b.product.guidance, ["整体采用深色主题。"]);
+  });
+});
+
 test("Catalog loads Web requirements independently of legacy product titles", async () => {
   await withYaml(
     `id: ROOT\nname: GitHub Collaboration Platform Core Requirements\ntype: FOLDER\ndependencies: []\nchildren:\n  - id: X\n    name: One\n    type: ATOMIC\n    dependencies: []\n    description: One\n`,

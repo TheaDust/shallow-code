@@ -1,4 +1,5 @@
 import { matchesKey, Text, type Component, type TUI } from "@earendil-works/pi-tui";
+import { WHEEL_LINES_PER_NOTCH, wheelDirection } from "./mouse-wheel.js";
 import { terminalRow, type TerminalTheme } from "./theme.js";
 
 /** Read-only, scrollable document used for requirements and run details. */
@@ -39,7 +40,7 @@ export class TextViewer implements Component {
     this.pageSize = Math.max(1, this.tui.terminal.rows - 4);
     this.offset = Math.min(this.offset, Math.max(0, lines.length - this.pageSize));
     const position = `${this.offset + 1}–${Math.min(lines.length, this.offset + this.pageSize)} / ${lines.length}`;
-    const hint = this.onToggle ? "Enter 返回 · v YAML · ↑↓ 滚动" : "Esc 返回 · ↑↓ 滚动 · PgUp/Dn 翻页";
+    const hint = this.onToggle ? "Enter 返回 · v YAML · ↑↓/滚轮 滚动" : "Esc 返回 · ↑↓/滚轮 滚动 · PgUp/Dn 翻页";
     return [
       new Text(this.theme.accent(this.theme.strong(this.title)), 1, 0).render(width)[0],
       this.theme.muted("─".repeat(width)),
@@ -53,7 +54,9 @@ export class TextViewer implements Component {
   handleInput(data: string): void {
     if (matchesKey(data, "escape") || matchesKey(data, "enter")) { this.close(); return; }
     if (this.onToggle && data === "v") { this.onToggle(); return; }
-    if (matchesKey(data, "up")) this.offset--;
+    const wheel = wheelDirection(data);
+    if (wheel !== undefined) this.offset += wheel * WHEEL_LINES_PER_NOTCH;
+    else if (matchesKey(data, "up")) this.offset--;
     else if (matchesKey(data, "down")) this.offset++;
     else if (matchesKey(data, "pageUp")) this.offset -= this.pageSize;
     else if (matchesKey(data, "pageDown")) this.offset += this.pageSize;

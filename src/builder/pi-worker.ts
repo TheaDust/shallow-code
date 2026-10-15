@@ -1,4 +1,5 @@
-import { createPiSession } from "./pi-sdk-adapter.js";
+import { createPiSession, type PiSessionSnapshot } from "./pi-sdk-adapter.js";
+import { subtractUsage, type ExecutionUsage } from "./pi-execution-stats.js";
 import { installSseCapture } from "./sse-capture.js";
 import { installSseResilience } from "./sse-resilience.js";
 import { closeSharedBrowser } from "./pi-browser-tool.js";
@@ -20,11 +21,16 @@ function send(result: PiWorkerResult): void {
 }
 
 async function run(input: PiWorkerRequest): Promise<PiWorkerResult> {
+  let baseline: ExecutionUsage | undefined;
+  // 续做会话的统计包含此前调用；先记录基线，上报与回执都只给本次调用增量。
+  const rebase = (snapshot: PiSessionSnapshot): PiSessionSnapshot => baseline === undefined ? snapshot
+    : { ...snapshot, usage: subtractUsage(snapshot.usage, baseline) };
   const session = await createPiSession(input, snapshot => {
-    process.send?.({ type: "builder_progress", ...snapshot } satisfies PiWorkerProgress);
+    process.send?.({ type: "builder_progress", ...rebase(snapshot) } satisfies PiWorkerProgress);
   });
+  baseline = session.snapshot().usage;
   const reportProgress = () => {
-    process.send?.({ type: "builder_progress", ...session.snapshot() } satisfies PiWorkerProgress);
+    process.send?.({ type: "builder_progress", ...rebase(session.snapshot()) } satisfies PiWorkerProgress);
   };
   const progressTimer = setInterval(reportProgress, 15_000);
   progressTimer.unref();
@@ -54,7 +60,7 @@ async function run(input: PiWorkerRequest): Promise<PiWorkerResult> {
       result = await session.prompt(loadPrompt("system", "completion-receipt"));
     }
     const { outcome, summary, providerError, terminationReason } = result;
-    const stats = session.snapshot();
+    const stats = rebase(session.snapshot());
     const success = outcome === "completed";
     const observedFailure = gateway.failure();
     return { ...stats, outcome, summary: summary.slice(-8_000),

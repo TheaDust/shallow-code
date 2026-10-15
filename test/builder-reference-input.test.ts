@@ -7,19 +7,47 @@ import { loadRequirementCatalog } from "../src/catalog.js";
 import { auditPackets } from "../src/scheduler.js";
 import { minimalWebContract } from "../src/project-spec.js";
 import { VisionCapability } from "../src/builder/vision-probe.js";
+import { UsageTotals, type ModelRates, type UsageSummary } from "../src/model-usage.js";
 
-async function fixture(results: CodingAgentResult[], options: { referenceImages?: boolean; visionProbe?: VisionCapability; timeoutMs?: number } = {}) {
+async function fixture(results: CodingAgentResult[], options: { referenceImages?: boolean; visionProbe?: VisionCapability; timeoutMs?: number; modelCost?: ModelRates } = {}) {
   const calls: CodingAgentRequest[] = [];
   const catalog = await loadRequirementCatalog(resolve("test/fixtures/requirements.yaml"));
   const packet = auditPackets(catalog)[0];
   const builder = new PromptBuilder({ run: async request => { calls.push(request); return results.shift()!; }, close: async () => {} },
     { timeoutMs: options.timeoutMs ?? 1000, requirementsDir: resolve("test/fixtures"), contextWindow: 256_000,
-      referenceImages: options.referenceImages, visionProbe: options.visionProbe });
+      referenceImages: options.referenceImages, visionProbe: options.visionProbe, modelCost: options.modelCost });
   const request = { mode: "implement" as const, packet, outputDir: "application", platformContract: minimalWebContract({ port: 43210 }, "linux"),
     projectContext: { product: packet.requirements[0].product, ancestors: [], satisfiedDependencies: [] } };
   return { builder, calls, request };
 }
 const completed: CodingAgentResult = { sessionId: "done", outcome: "completed", summary: "done" };
+
+test("Builder accounts for image preflight and every fallback call without repeating cached preflight usage", async () => {
+  const result = (input: number, output: number, cost: number): CodingAgentResult => ({ ...completed,
+    execution: { engine: "pi", version: "test", nodeVersion: process.version, workerPid: 1, resumed: false,
+      durationMs: 0, cleanupMs: 0, usage: { status: "available", input, output, cacheRead: 0, cacheWrite: 0, total: input + output, cost } } });
+  const visionProbe = new VisionCapability({ baseUrl: "https://fake.invalid/v1", model: "fake", apiKey: "fake" },
+    async () => new Response(JSON.stringify({ usage: { prompt_tokens: 100, completion_tokens: 1 } })));
+  const f = await fixture([{ ...result(10, 2, 0.001), outcome: "failed", imageUnsupported: true },
+    result(20, 4, 0.002), result(5, 1, 0.001)], { referenceImages: true, visionProbe,
+    modelCost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } });
+  const seen: UsageSummary[] = [];
+  const onUsage = (usage: UsageSummary) => { seen.push(usage); };
+  assert.equal((await f.builder.run(f.request, { onUsage })).outcome, "completed");
+  assert.equal((await f.builder.run(f.request, { onUsage })).outcome, "completed");
+  assert.deepEqual(seen.map(usage => usage.total), [101, 12, 24, 6]);
+  const totals = new UsageTotals();
+  seen.forEach(usage => totals.add(usage));
+  assert.equal(totals.summary().total, 143);
+  assert.ok(Math.abs(totals.summary().cost! - 0.004101) < 1e-10);
+});
+
+test("Usage diagnostics cannot turn a completed Builder call into a failure", async () => {
+  const f = await fixture([{ ...completed,
+    execution: { engine: "pi", version: "test", nodeVersion: process.version, workerPid: 1, resumed: false,
+      durationMs: 0, cleanupMs: 0, usage: { status: "available", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 } } }]);
+  assert.equal((await f.builder.run(f.request, { onUsage: () => { throw new Error("log failed"); } })).outcome, "completed");
+});
 
 test("Builder forwards structured gateway failure metadata to the controller", async () => {
   const gatewayFailure = { kind: "rate_limit", retryable: true, status: 429, retryAfterMs: 30_000 } as const;

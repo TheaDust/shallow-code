@@ -24,6 +24,8 @@ export interface RequirementNode {
   name: string;
   type: RequirementType;
   description: string;
+  /** 用户提出但无法独立验收的期望（主题、风格、美观、语气等）；按原文保留。 */
+  guidance?: string[];
   dependencies: string[];
   children: RequirementNode[];
   scenarios: RequirementScenario[];
@@ -99,7 +101,7 @@ export function validateForGeneration(tree: RequirementNode | null): string[] {
   }
   for (const atomic of atomics) {
     if (!atomic.scenarios.length) {
-      errors.push(`${atomic.id} 缺少场景：每个 ATOMIC 至少需要一个场景。`);
+      errors.push(`${atomic.id} 缺少场景：每个 ATOMIC 至少需要一个可验收的场景；不可验收的期望写入 guidance。`);
       continue;
     }
     for (const scenario of atomic.scenarios) {
@@ -181,8 +183,10 @@ function normalizeNode(
   if (id && /\s/.test(id)) errors.push(`${path}.id 不能包含空白字符。`);
   const name = requiredText(value.name, `${path}.name`, errors);
   const description = requiredText(value.description, `${path}.description`, errors);
+  // 非验收期望：自由文本数组，与依赖/参考图共用非空字符串校验。
+  const guidance = normalizeTextList(value.guidance, `${path}.guidance`, errors);
   const type = normalizeType(value.type, `${path}.type`, errors);
-  const dependencies = normalizeIdList(value.dependencies, `${path}.dependencies`, errors);
+  const dependencies = normalizeTextList(value.dependencies, `${path}.dependencies`, errors);
 
   const children: RequirementNode[] = [];
   if (value.children !== undefined && !Array.isArray(value.children)) {
@@ -228,7 +232,8 @@ function normalizeNode(
   }
 
   const node: RequirementNode = { id, name, type, description, dependencies, children, scenarios };
-  const references = normalizeIdList(value.visual_reference, `${path}.visual_reference`, errors);
+  if (guidance.length) node.guidance = guidance;
+  const references = normalizeTextList(value.visual_reference, `${path}.visual_reference`, errors);
   if (references.length) node.visual_reference = references;
   if (isRoot) {
     const data = normalizeSeedData(value.data, `${path}.data`, errors);
@@ -315,7 +320,8 @@ function normalizeType(value: unknown, path: string, errors: string[]): Requirem
   return "ATOMIC";
 }
 
-function normalizeIdList(value: unknown, path: string, errors: string[]): string[] {
+/** 非空字符串数组：修剪空白、拒绝空项并去重；用于依赖、参考路径与实现指引。 */
+function normalizeTextList(value: unknown, path: string, errors: string[]): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     errors.push(`${path} 必须是字符串数组。`);
@@ -443,6 +449,7 @@ function ownSignature(node: RequirementNode): string {
     name: node.name,
     type: node.type,
     description: node.description,
+    guidance: node.guidance ?? [],
     dependencies: node.dependencies,
     scenarios: node.scenarios,
     visual_reference: node.visual_reference ?? [],
@@ -458,6 +465,7 @@ function toPlainNode(node: RequirementNode): Record<string, unknown> {
     dependencies: node.dependencies,
     description: node.description,
   };
+  if (node.guidance?.length) plain.guidance = node.guidance;
   if (node.children.length) plain.children = node.children.map(toPlainNode);
   if (node.visual_reference?.length) plain.visual_reference = node.visual_reference;
   if (node.scenarios.length) {

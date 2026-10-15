@@ -15,12 +15,16 @@ export interface HistoricalRequirements {
 }
 
 export function requirementDigest(requirement: AtomicRequirement, referenceFiles: Readonly<Record<string, string>> = {}): string {
+  // Guidance joins the digest only when declared: trees without it keep the
+  // historical digest so existing progress records stay comparable.
   return createHash("sha256").update(JSON.stringify({ name: requirement.name, text: requirement.text,
+    ...(requirement.guidance?.length ? { guidance: requirement.guidance } : {}),
     dependencyIds: requirement.dependencyIds, externalDependencyIds: requirement.externalDependencyIds ?? [],
     ancestors: requirement.ancestors.map(a => a.id === requirement.product.rootId ? { id: a.id, description: a.description } : a),
     scenarios: requirement.scenarioContracts ?? requirement.scenarios,
     references: requirement.references.map(path => [path, referenceFiles[path] ?? null]),
     productDescription: requirement.product.description, seedData: requirement.product.seedData,
+    ...(requirement.product.guidance?.length ? { productGuidance: requirement.product.guidance } : {}),
   })).digest("hex");
 }
 

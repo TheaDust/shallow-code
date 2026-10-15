@@ -1,10 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
+import { resolveModelRates, type ModelRates } from "../../src/model-usage.js";
+
 export interface GatewayEnv {
   apiKey: string;
   baseUrl: string;
   model: string;
+  /** 解析后的模型单价（USD / 百万 token）；null 表示只统计 token。 */
+  cost: ModelRates | null;
 }
 
 /** 本 agent 的组件级变量前缀，可分别覆盖公共网关配置。 */
@@ -35,7 +39,11 @@ export function resolveGatewayEnv(env: Record<string, string | undefined>): Gate
       `缺少模型配置（${missing.join("、")}）：请写在仓库根目录或当前目录的 .env 中，或设为进程环境变量。`,
     );
   }
-  return { apiKey: apiKey ?? "", baseUrl: (baseUrl ?? "").replace(/\/+$/, ""), model: model ?? "" };
+  const resolvedBaseUrl = (baseUrl ?? "").replace(/\/+$/, "");
+  const resolvedModel = model ?? "";
+  // 单价来自内置模型目录；REQUIREMENTS_AGENT_COST_* / MODEL_COST_* 可按字段覆盖。
+  const cost = resolveModelRates(resolvedBaseUrl, resolvedModel, { component: COMPONENT_PREFIX, env });
+  return { apiKey: apiKey ?? "", baseUrl: resolvedBaseUrl, model: resolvedModel, cost };
 }
 
 /**

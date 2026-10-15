@@ -408,6 +408,21 @@ test("Probe Planner reports usage from a non-stream JSON response", async () => 
   assert.deepEqual(seen, [{ input: 120, output: 30, cacheRead: 0, cacheWrite: 0, total: 150 }]);
 });
 
+test("Probe Planner prices usage when the controller resolved model rates", async () => {
+  const seen: unknown[] = [];
+  const planner = new LlmProbePlanner(
+    { ...config(), cost: { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 } },
+    async () => jsonResponse({
+      choices: [{ message: { content: JSON.stringify(validPlan()) } }],
+      usage: { prompt_tokens: 1000, completion_tokens: 50,
+        prompt_tokens_details: { cached_tokens: 300, cache_write_tokens: 100 } },
+    }),
+  );
+  await planner.plan(packet(), undefined, { timeoutMs: 1_000, onUsage: usage => { seen.push(usage); } });
+  assert.deepEqual(seen, [{ input: 700, output: 50, cacheRead: 200, cacheWrite: 100, total: 1050,
+    cost: (700 * 0.15 + 50 * 0.6 + 200 * 0.003 + 100 * 0) / 1_000_000 }]);
+});
+
 test("Usage is reported even when the plan fails validation, and omitted when the gateway has none", async () => {
   const seen: unknown[] = [];
   const invalid = new LlmProbePlanner(config(), async () => jsonResponse({

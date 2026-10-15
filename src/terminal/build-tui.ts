@@ -1,8 +1,11 @@
 import { join } from "node:path";
-import { matchesKey, ProcessTerminal, TuiMainScreen, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
+import { matchesKey, ProcessTerminal, Text, TuiMainScreen, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
 import type { RunSummary } from "../pipeline.js";
 import type { RequirementStatus, RunEvent } from "../types.js";
-import { elapsedTime, fitTerminalText, shellArgument, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
+import type { PiWorkerProgress } from "../builder/pi-worker-client.js";
+import { ModelUsageTotals, formatModelUsageSummary, type TokenUsage } from "../model-usage.js";
+import { setMouseTracking } from "./mouse-wheel.js";
+import { clearTerminalScreen, elapsedTime, fitTerminalText, shellArgument, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
 import { TextViewer } from "./text-viewer.js";
 
 const PHASES: Record<string, string> = {
@@ -32,6 +35,8 @@ export class BuildView implements Component {
   private packetId?: string;
   private lastActivityAt = Date.now();
   private readonly startedAt = Date.now();
+  private readonly usage = new ModelUsageTotals();
+  private live?: TokenUsage;
 
   constructor(
     private readonly options: BuildTuiOptions,
@@ -67,6 +72,18 @@ export class BuildView implements Component {
         for (const id of ids(key)) this.statuses.set(id, status);
       }
     }
+    if (event.type === "feature_grouping_usage" || event.type === "probe_planner_usage") {
+      this.addUsage("judge", detail);
+      return;
+    }
+    if (event.type === "builder_usage") {
+      this.addUsage("builder", detail);
+      this.live = undefined;
+      return;
+    }
+    if (event.type === "builder_finished") {
+      this.live = undefined;
+    }
     if (event.type.endsWith("_usage") || event.type === "builder_reference_images") return;
     const message = line.replace(/^\[[^\]]+\]\s*/, "").replace(/ \[#.*\]$/, "");
     // Packet ids stay in run-log.txt; the progress list reads as user-facing text.
@@ -86,6 +103,14 @@ export class BuildView implements Component {
     if (activity) { this.activity = activity; this.lastActivityAt = Date.now(); }
   }
 
+  /** 调用中的实时快照（仅呈现，不进入事件账本，也不授予验收）。 */
+  liveUsage(progress: { usage: PiWorkerProgress["usage"] }): void {
+    const usage = progress.usage;
+    this.live = usage.status === "available" && usage.total > 0
+      ? usage
+      : undefined;
+  }
+
   invalidate(): void {}
 
   render(width: number): string[] {
@@ -101,12 +126,17 @@ export class BuildView implements Component {
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
     const activity = ` ${t.accent(frame)} ${this.activity}`;
     const footer = t.muted(" d 详细日志   ? 帮助   Ctrl+C 中断");
-    if (this.rows() < 18) return [terminalHeader("Build Agent", width, t)[0],
-      activity, " " + status, footer].slice(0, this.rows()).map(line => fitTerminalText(line, width));
+    const usage = formatModelUsageSummary(this.usage.summary(this.live));
+    const compact = () => [terminalHeader("Build Agent", width, t)[0], activity,
+      ...usage.map(line => ` ${line}`), " " + status, footer]
+      .slice(0, this.rows()).map(line => fitTerminalText(line, width));
+    if (this.rows() < 18) return compact();
+    const usageLines = usage.flatMap(line => new Text(line, 1, 0).render(width));
     const lines = [
       ...terminalHeader("Build Agent", width, t), "",
       terminalRow(` ${t.strong(this.phase)}`, t.muted(elapsedTime(Date.now() - this.startedAt) + " "), width),
       ` ${t.muted("模块")}  ${this.module}`,
+      ...usageLines,
       activity,
       t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),
       "", " " + status,
@@ -114,12 +144,22 @@ export class BuildView implements Component {
         (this.skipped ? ` · 沿用跳过 ${this.skipped}` : "")),
       "", t.muted(" 最近进展"),
     ];
+    if (lines.length + 3 > this.rows()) return compact();
     const available = Math.max(0, this.rows() - lines.length - 3);
     for (const message of available ? this.recent.slice(-Math.min(5, available)) : []) {
       lines.push(` ${t.muted("·")} ${message}`);
     }
     lines.push("", t.muted("─".repeat(width)), footer);
     return lines.map(line => fitTerminalText(line, width));
+  }
+
+  private addUsage(source: "builder" | "judge", usage: Record<string, unknown> | undefined): void {
+    if (!usage || typeof usage.input !== "number" || typeof usage.output !== "number") return;
+    const number = (key: string) => typeof usage[key] === "number" ? usage[key] as number : 0;
+    const cost = typeof usage.cost === "number" ? usage.cost : undefined;
+    this.usage.add(source, { input: number("input"), output: number("output"), cacheRead: number("cacheRead"),
+      cacheWrite: number("cacheWrite"), ...(cost === undefined ? {} : { cost }),
+      ...(typeof usage.unpricedTokens === "number" ? { unpricedTokens: usage.unpricedTokens } : {}) });
   }
 
   private describeActivity(event: RunEvent, detail: Record<string, unknown> | undefined): string | undefined {
@@ -172,6 +212,8 @@ export class BuildTui {
 
   start(): void {
     this.started = true;
+    // 每次进入都是全新控制台页面：清空可视区与回滚缓冲后再渲染。
+    clearTerminalScreen(this.tui.terminal);
     this.tui.start();
     this.timer = setInterval(() => this.tui.requestRender(), RENDER_INTERVAL_MS);
   }
@@ -189,6 +231,7 @@ export class BuildTui {
     if (!this.started) return;
     this.started = false;
     clearInterval(this.timer);
+    setMouseTracking(this.tui.terminal, false);
     this.overlay?.hide();
     this.tui.stop();
   }
@@ -197,24 +240,31 @@ export class BuildTui {
     this.viewer = new TextViewer(this.tui, this.theme, "详细日志 · 最近 500 条",
       this.log.join("\n") || "等待运行事件…", () => this.closeViewer());
     this.viewer.scrollToEnd();
+    setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(this.viewer, { width: "100%", anchor: "top-left" });
   }
 
   private showHelp(): void {
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
-      "d  查看详细日志，包含安装、构建与模型用量\n↑↓ / PgUp / PgDn  滚动日志\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
+      "d  查看详细日志，包含安装、构建与模型用量\n↑↓ / 滚轮 / PgUp / PgDn  滚动日志\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
       "已验证：当前候选获得独立浏览器验收证据\n证据不足：本轮验收无法确定行为结果\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
       () => this.closeViewer());
+    setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
   }
 
   private closeViewer(): void {
     this.overlay?.hide(); this.overlay = undefined; this.viewer = undefined;
+    setMouseTracking(this.tui.terminal, false);
   }
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
+}
+
 export function buildResult(summary: RunSummary, runDirectory: string, patch: string | undefined,
-  projectDirectory: string, colour: boolean, width = 80): string {
+  projectDirectory: string, elapsedMs: number, colour: boolean, width = 80): string {
   const t = terminalTheme(colour);
   const status = summary.status === "delivered" ? t.success("✓ 交付完成")
     : summary.status === "partial" ? t.warning("◐ 部分完成") : t.error("× 交付失败");
@@ -222,6 +272,8 @@ export function buildResult(summary: RunSummary, runDirectory: string, patch: st
     ` 已验证 ${summary.verifiedRequirementIds.length} · 业务失败 ${summary.failedRequirementIds?.length ?? 0} · ` +
       `证据不足 ${summary.inconclusiveRequirementIds?.length ?? 0}`,
     ` 阻塞 ${summary.blockedRequirementIds.length} · 待处理 ${summary.pendingRequirementIds?.length ?? 0} · 沿用跳过 ${summary.skippedRequirementIds?.length ?? 0}`,
+    ` 总耗时  ${elapsedTime(elapsedMs)}`,
+    ...(summary.modelUsage ? formatModelUsageSummary(summary.modelUsage).map(line => ` ${line}`) : []),
     "", ` 报告  ${join(runDirectory, "report.md")}`, ` 日志  ${join(runDirectory, "run-log.txt")}`,
     ...(patch ? [` 补丁  ${patch}`] : []), "", t.muted(" 下一步")];
   if (patch && summary.status === "delivered") lines.push(` shallow build apply --run-dir ${shellArgument(runDirectory)}`);

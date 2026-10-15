@@ -124,6 +124,11 @@ function productContextSection(product: ProductContext): string {
     "",
     "产品目标：",
     product.description,
+    ...(product.guidance?.length ? [
+      "",
+      "实现指引（不可独立验收；按原文融入实现）：",
+      ...product.guidance.map((item) => `- ${item}`),
+    ] : []),
     ...(product.seedData.length > 0 ? [
       "",
       fillTemplate(loadPrompt("system", "seed-data"), {
@@ -223,6 +228,11 @@ function renderRequirement(requirement: AtomicRequirement): string {
     "",
     "需求原文：",
     requirement.text,
+    ...(requirement.guidance?.length ? [
+      "",
+      "实现指引（不可独立验收；按原文融入实现）：",
+      ...requirement.guidance.map((item) => `- ${item}`),
+    ] : []),
     "",
     "验收场景：",
     requirement.scenarios.join("\n\n") || "无",

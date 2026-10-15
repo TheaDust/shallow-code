@@ -91,6 +91,46 @@ test("Pi worker reports token usage and where Builder time went", { timeout: 60_
   });
 });
 
+test("Pi worker reports only the current call's tokens and cost after a session resume", { timeout: 60_000 }, async () => {
+  await withTempDir("shallow-pi-delta-", async root => {
+    const app = join(root, "app"); await mkdir(app);
+    let calls = 0;
+    const server = createServer(async (req, res) => {
+      let body = ""; for await (const chunk of req) body += chunk;
+      JSON.parse(body);
+      calls += 1;
+      const usage = calls === 1
+        ? { prompt_tokens: 10, completion_tokens: 4 }
+        : { prompt_tokens: 20, completion_tokens: 6 };
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    const client = new PiWorkerClient({ apiKey: "test-secret", baseUrl: `http://127.0.0.1:${port}/v1`, model: "test/model" }, join(root, "sessions"), undefined,
+      { modelCost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } });
+    try {
+      const input = { outputDir: app, sessionKey: "delta", systemPrompt: "Finish immediately.", taskPrompt: "first", timeoutMs: 20_000 };
+      const first = await client.run(input);
+      assert.ok(first.execution?.usage.status === "available");
+      const { cost: firstCost, ...firstUsage } = first.execution.usage;
+      assert.deepEqual(firstUsage,
+        { status: "available", input: 10, output: 4, cacheRead: 0, cacheWrite: 0, total: 14 });
+      assert.ok(Math.abs(firstCost! - 0.000018) < 1e-12);
+      const second = await client.run({ ...input, taskPrompt: "second" });
+      assert.equal(second.sessionId, first.sessionId);
+      // 会话统计是累计值；回执必须只包含本次调用。
+      assert.ok(second.execution?.usage.status === "available");
+      const { cost: secondCost, ...secondUsage } = second.execution.usage;
+      assert.deepEqual(secondUsage,
+        { status: "available", input: 20, output: 6, cacheRead: 0, cacheWrite: 0, total: 26 });
+      assert.ok(Math.abs(secondCost! - 0.000032) < 1e-12);
+    } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
+  });
+});
+
 test("Pi worker advertises every guarded tool, including the browser tool, to the model", { timeout: 30_000 }, async () => {
   await withTempDir("shallow-pi-tools-", async root => {
     const app = join(root, "app"); await mkdir(app);

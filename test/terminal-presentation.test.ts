@@ -7,6 +7,7 @@ import { BuildTui, BuildView, buildResult } from "../src/terminal/build-tui.js";
 import { TextViewer } from "../src/terminal/text-viewer.js";
 import { terminalTheme } from "../src/terminal/theme.js";
 import { HumanRunFormatter } from "../src/human-log.js";
+import { ModelUsageTotals } from "../src/model-usage.js";
 import { createRunLogSink } from "../index.js";
 import type { RunEvent } from "../src/types.js";
 import { MemoryTerminal } from "./helpers/terminal.js";
@@ -76,6 +77,27 @@ test("Document viewer scrolls wrapped CJK content, preserves reading position an
   assert.ok(viewer.render(24).every(line => visibleWidth(line) <= 24));
 });
 
+test("Document viewer scrolls with the pointer wheel and ignores other mouse events", () => {
+  const terminal = new MemoryTerminal();
+  terminal.rows = 12;
+  const tui = new TuiMainScreen(terminal);
+  const viewer = new TextViewer(tui, terminalTheme(false), "草案", Array.from({ length: 30 }, (_, i) => `第 ${i} 行`).join("\n"), () => {});
+  viewer.render(40);
+  viewer.handleInput("\x1b[<65;10;5M");
+  assert.match(viewer.render(40)[2], /第 3 行/, "滚轮向下按档滚动");
+  viewer.handleInput("\x1b[<64;10;5M");
+  assert.match(viewer.render(40)[2], /第 0 行/, "滚轮向上按档滚动");
+  viewer.handleInput("\x1b[<69;10;5M");
+  assert.match(viewer.render(40)[2], /第 3 行/, "带修饰键的滚轮同样生效");
+  viewer.handleInput("\x1b[<0;10;5M");
+  viewer.handleInput("\x1b[<0;10;5m");
+  viewer.handleInput("\x1b[<66;10;5M");
+  assert.match(viewer.render(40)[2], /第 3 行/, "点击与横向滚轮不滚动正文");
+  viewer.handleInput("\x1b[<64;10;5M");
+  viewer.handleInput("\x1b[<64;10;5M");
+  assert.match(viewer.render(40)[2], /第 0 行/, "顶部继续上滚保持在顶部");
+});
+
 class OverlayTui extends TuiMainScreen {
   compose(lines: string[], width: number, height: number): string[] {
     return this.compositeOverlays(lines, width, height);
@@ -118,6 +140,25 @@ test("Interactive details and interrupt keys leave the terminal restored", async
   assert.equal(terminal.stops, 1);
 });
 
+test("Interactive presentation clears the console page and reports the wheel only while a viewer is open", (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new BuildTui({ ...options, onInterrupt() {} }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  assert.equal(terminal.writes[0], "\x1b[2J\x1b[H\x1b[3J", "进入 build 应先清空控制台页面");
+  const on = () => terminal.writes.filter(write => write === "\x1b[?1000h\x1b[?1006h").length;
+  const off = () => terminal.writes.filter(write => write === "\x1b[?1000l\x1b[?1006l").length;
+  assert.equal(on(), 0);
+  terminal.input("d");
+  assert.equal(on(), 1, "打开详细日志后上报滚轮");
+  terminal.input("\x1b");
+  assert.equal(off(), 1, "关闭日志后交还终端原生鼠标");
+  terminal.input("?");
+  assert.equal(on(), 2);
+  terminal.input("\x1b");
+  assert.equal(off(), 2);
+});
+
 test("Interactive presentation keeps complete, colour-free logs on disk", async () => {
   await withTempDir("shallow-terminal-log-", async directory => {
     const file = join(directory, "run-log.txt");
@@ -138,14 +179,59 @@ test("Interactive presentation keeps complete, colour-free logs on disk", async 
 test("Result card offers applicable commands, quotes paths and separates skips from verification", () => {
   const summary = { status: "partial" as const, verifiedRequirementIds: ["A"], blockedRequirementIds: [], acceptedSha: "sha",
     inconclusiveRequirementIds: ["B"], skippedRequirementIds: ["C"] };
-  const partial = buildResult(summary, "E:\\runs\\user's run", "changes.patch", "demo", false);
+  const partial = buildResult(summary, "E:\\runs\\user's run", "changes.patch", "demo", 65_000, false);
+  assert.match(partial, /总耗时\s+01:05/);
   assert.match(partial, /已验证 1.*证据不足 1/);
   assert.match(partial, /沿用跳过 1/);
   assert.match(partial, /shallow build resume.*user''s run/);
   assert.doesNotMatch(partial, /shallow build apply/);
-  const delivered = buildResult({ ...summary, status: "delivered" }, "run", "changes.patch", "demo", false);
+  const delivered = buildResult({ ...summary, status: "delivered" }, "run", "changes.patch", "demo", 3_600_000, false);
+  assert.match(delivered, /总耗时\s+60:00/);
   assert.match(delivered, /shallow build apply/);
   assert.doesNotMatch(delivered, /\x1b\[/);
+  const usage = new ModelUsageTotals();
+  usage.add("builder", { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
+  const withUsage = buildResult({ ...summary, modelUsage: usage.summary() },
+    "run", "changes.patch", "demo", 5_000, false);
+  assert.match(withUsage, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 200） · 费用 \$0\.01/);
+  assert.match(withUsage, /Builder\s+tokens 1\.2k/);
+  assert.match(withUsage, /Judge\s+tokens 0/);
+});
+
+test("Run view accumulates model tokens and cost and shows in-flight progress until the call settles", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "feature_grouping_usage", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  receive(view, "probe_planner_usage", { operation: "plan", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  assert.match(view.render(80).join("\n"), /总计\s+tokens 240（入 200 \/ 出 40） · 费用 \$0\.0002/);
+  assert.match(view.render(80).join("\n"), /Judge\s+tokens 240/);
+  view.liveUsage({ usage: { status: "available", input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } });
+  assert.match(view.render(80).join("\n"), /Builder\s+tokens 1\.0k（入 800 \/ 出 200） · 费用 \$0\.0012/);
+  assert.match(view.render(80).join("\n"), /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
+  receive(view, "builder_usage", { input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 });
+  receive(view, "builder_finished", { outcome: "completed",
+    execution: { usage: { status: "available", input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } } });
+  const text = view.render(80).join("\n");
+  assert.match(text, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
+  assert.match(text, /Builder\s+tokens 1\.0k/);
+  assert.match(text, /Judge\s+tokens 240/);
+});
+
+test("Run view keeps grouped cache counts and partial cost visible in an 80-column terminal", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "builder_usage", { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,
+    cacheWrite: 1_000_000, total: 4_000_000, cost: 2 });
+  receive(view, "probe_planner_usage", { operation: "plan", input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1200 });
+  const lines = view.render(80);
+  const text = lines.join("\n");
+  assert.ok(lines.length <= 24);
+  assert.ok(lines.every(line => visibleWidth(line) <= 80));
+  assert.match(text, /总计/);
+  assert.match(text, /Builder/);
+  assert.match(text, /Judge/);
+  assert.match(text, /缓存读 1\.00M/);
+  assert.match(text, /缓存写 1\.00M/);
+  assert.match(text, /部分未计价/);
+  assert.match(text, /费用未知/);
 });
 
 test("Progress entries drop internal packet ids", () => {

@@ -45,6 +45,8 @@ export function createRequirementsTool(store: DraftStore) {
       "提交完整候选需求树与当前未决问题，替换当前草案。requirements 是根节点对象：" +
       "每个节点包含 id、name、type（ROOT/FOLDER/ATOMIC）、description、dependencies、children 与 scenarios；" +
       "scenario 包含 id、name、steps，step 由 keyword（GIVEN/WHEN/THEN/AND/BUT）与 content 组成；" +
+      "节点可包含 guidance 字符串数组：用户提出但无法从界面或行为独立验收的期望（页面主题、配色、风格、美观、语气等），" +
+      "按用户原措辞逐条保留在最相关的节点上，不要为它们编造场景；" +
       "根节点可包含 data 初始数据（每项含 category 与 items 字符串数组）。" +
       "用户提供的参考文件路径放在对应节点的 visual_reference 字符串数组中，保留原路径，程序导出时复制并改为相对路径。" +
       "校验失败会返回具体错误，请在本回合内修正后重新提交。",

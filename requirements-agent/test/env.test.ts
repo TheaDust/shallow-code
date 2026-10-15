@@ -30,6 +30,7 @@ test("resolveGatewayEnv 使用公共配置并修剪 baseUrl 末尾斜杠", () =>
     apiKey: "key",
     baseUrl: "https://gateway.example/v1",
     model: "provider/model",
+    cost: null,
   });
 });
 
@@ -45,6 +46,7 @@ test("REQUIREMENTS_AGENT_* 分别覆盖，未覆盖字段回退公共值", () =>
     apiKey: "key",
     baseUrl: "https://gateway.example/v1",
     model: "agent/model",
+    cost: null,
   });
 
   const agentOnly = resolveGatewayEnv({
@@ -56,6 +58,7 @@ test("REQUIREMENTS_AGENT_* 分别覆盖，未覆盖字段回退公共值", () =>
     apiKey: "agent-key",
     baseUrl: "https://agent.example/v1",
     model: "agent/model",
+    cost: null,
   });
 });
 
@@ -72,6 +75,22 @@ test("缺少必需配置时报错并列出可用变量名", () => {
     () => resolveGatewayEnv({ OPENAI_API_KEY: "key", OPENAI_BASE_URL: "https://g.example/v1" }),
     /REQUIREMENTS_AGENT_MODEL 或 MODEL/,
   );
+});
+
+test("网关 env 解析目录标价并支持 REQUIREMENTS_AGENT_COST_* 字段级覆盖", () => {
+  const resolved = resolveGatewayEnv({
+    OPENAI_API_KEY: "key",
+    OPENAI_BASE_URL: "https://opencode.ai/zen/go/v1",
+    MODEL: "deepseek-v4.1-flash",
+  });
+  assert.deepEqual(resolved.cost, { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 });
+  const overridden = resolveGatewayEnv({
+    OPENAI_API_KEY: "key",
+    OPENAI_BASE_URL: "https://opencode.ai/zen/go/v1",
+    MODEL: "deepseek-v4.1-flash",
+    REQUIREMENTS_AGENT_COST_OUTPUT: "1",
+  });
+  assert.deepEqual(overridden.cost, { input: 0.15, output: 1, cacheRead: 0.003, cacheWrite: 0 });
 });
 
 test("loadGatewayEnv 依序合并仓库根 .env、当前目录 .env 与进程环境", async (t) => {
@@ -93,6 +112,7 @@ test("loadGatewayEnv 依序合并仓库根 .env、当前目录 .env 与进程环
     apiKey: "root-key",
     baseUrl: "https://root.example/v1",
     model: "local/model",
+    cost: null,
   });
 
   // 进程环境变量最终优先。
@@ -115,6 +135,7 @@ test("loadGatewayEnv 依序合并仓库根 .env、当前目录 .env 与进程环
     apiKey: "local-key",
     baseUrl: "https://local.example/v1",
     model: "local/model",
+    cost: null,
   });
   await assert.rejects(
     loadGatewayEnv({ cwd: join(base, "empty"), rootEnvFile: join(base, "absent.env"), env: {} }),

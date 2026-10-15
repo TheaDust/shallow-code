@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { PiExecutionCollector } from "../src/builder/pi-execution-stats.js";
+import { PiExecutionCollector, subtractUsage } from "../src/builder/pi-execution-stats.js";
 
 test("Pi execution stats separate model and tool time and bound the slowest tools", () => {
   const collector = new PiExecutionCollector();
@@ -101,4 +101,19 @@ test("Pi execution stats count per-tool calls and assistant output size without 
   assert.deepEqual(summary.timing.toolCounts, [{ name: "shell", count: 2 }, { name: "read", count: 1 }]);
   assert.equal(summary.timing.outputBytes, 4_000);
   assert.equal("text" in summary, false);
+});
+
+test("Resumed-session usage is rebased to the current call", () => {
+  const before = { status: "available" as const, input: 100, output: 20, cacheRead: 10, cacheWrite: 0, total: 130, cost: 0.05 };
+  const after = { status: "available" as const, input: 160, output: 30, cacheRead: 20, cacheWrite: 0, total: 210, cost: 0.08 };
+  assert.deepEqual(subtractUsage(after, before),
+    { status: "available", input: 60, output: 10, cacheRead: 10, cacheWrite: 0, total: 80, cost: 0.03 });
+  // 任一侧没有费用数据时保留原值，不把未知价格当作 0。
+  assert.deepEqual(subtractUsage({ status: "available", input: 160, output: 30, cacheRead: 20, cacheWrite: 0, total: 210 }, before),
+    { status: "available", input: 60, output: 10, cacheRead: 10, cacheWrite: 0, total: 80 });
+  assert.deepEqual(subtractUsage(after, { status: "unavailable" }), after);
+  assert.deepEqual(subtractUsage({ status: "unavailable" }, before), { status: "unavailable" });
+  // 统计回退时差额不会为负。
+  assert.deepEqual(subtractUsage(before, after),
+    { status: "available", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 });
 });

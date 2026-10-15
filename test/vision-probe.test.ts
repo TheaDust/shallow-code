@@ -24,6 +24,21 @@ test("An accepted image request reports vision support", async () => {
   assert.equal(body.stream, false);
 });
 
+test("Vision preflight reports normalized usage once and remains supported when diagnostics fail", async () => {
+  const seen: unknown[] = [];
+  const probe = new VisionCapability(gateway, async () => new Response(JSON.stringify({
+    usage: { prompt_tokens: 100, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 30, cache_write_tokens: 10 } },
+  })));
+  const collect = (usage: unknown) => { seen.push(usage); };
+  await Promise.all([probe.supports(Infinity, collect), probe.supports(Infinity, collect)]);
+  await probe.supports(Infinity, collect);
+  assert.deepEqual(seen, [{ input: 70, output: 1, cacheRead: 20, cacheWrite: 10, total: 101 }]);
+  const failing = new VisionCapability(gateway, async () => new Response(JSON.stringify({ usage: { prompt_tokens: 1 } })));
+  assert.equal(await failing.supports(Infinity, () => { throw new Error("diagnostic failure"); }), "supported");
+  const malformed = new VisionCapability(gateway, async () => new Response("not JSON"));
+  assert.equal(await malformed.supports(Infinity, collect), "supported");
+});
+
 test("Only an explicit image rejection reports no vision", async () => {
   let calls = 0;
   const probe = new VisionCapability(gateway, async () => { calls += 1; return jsonResponse(400, "This model does not support image input"); });

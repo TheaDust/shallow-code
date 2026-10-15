@@ -272,6 +272,20 @@ test("Builder includes all seed data in implementation and both packet repair mo
   assert.doesNotMatch(compileBuilderPrompt(deliveryRequest()).taskPrompt, /## 种子数据/);
 });
 
+test("Implementation guidance reaches the Builder as guidance, never as acceptance scenarios", () => {
+  const request = implementRequest();
+  if (request.mode === "delivery_repair") throw new Error("unexpected mode");
+  request.projectContext.product.guidance = ["整体采用深色主题。"];
+  request.packet.requirements[0].guidance = ["提交按钮保持醒目。"];
+  const { taskPrompt } = compileBuilderPrompt(request);
+  assert.ok(taskPrompt.includes("整体采用深色主题。"));
+  assert.ok(taskPrompt.includes("提交按钮保持醒目。"));
+  assert.equal(taskPrompt.split("实现指引（不可独立验收；按原文融入实现）：").length, 3);
+
+  const without = compileBuilderPrompt(implementRequest()).taskPrompt;
+  assert.doesNotMatch(without, /实现指引/);
+});
+
 test("Work packet renders the aggregated verbatim seed checklist and omits it when empty", () => {
   const withSeeds = implementRequest();
   if (withSeeds.mode === "delivery_repair") throw new Error("unexpected mode");

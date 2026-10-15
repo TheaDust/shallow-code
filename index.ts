@@ -26,6 +26,7 @@ import {
 } from "./src/pipeline.js";
 import type { LogSink } from "./src/run-state.js";
 import { sanitizeDiagnosticText } from "./src/diagnostics.js";
+import { resolveModelRates, type ModelRates } from "./src/model-usage.js";
 import { PROBE_PLAN_JSON_SCHEMA } from "./src/judge/probe-schema.js";
 import {
   deriveModelTimeouts,
@@ -56,6 +57,9 @@ export interface AgentExecutionContext {
   builderGateway: GatewayConfig;
   /** Judge / Planner 侧网关（SHALLOW_JUDGE_* 覆盖，缺省公共网关）。 */
   judgeGateway: GatewayConfig;
+  /** 解析后的模型单价（USD / 百万 token）；null 表示只统计 token。 */
+  builderModelCost: ModelRates | null;
+  judgeModelCost: ModelRates | null;
   pipelineOptions: PipelineOptions;
   modelTimeouts: {
     builderTimeoutMs: number;
@@ -85,6 +89,8 @@ export async function main(
   envFile: string | null = defaultEnvFile(),
   cwd: string = process.cwd(),
 ): Promise<number> {
+  // 结果卡总耗时从命令开始计时，覆盖输入准备、工作区复制与整轮执行。
+  const startedAtMs = Date.now();
   // 需求输入缺省在当前目录子树中查找唯一的 requirements.yaml；找不到或有多个
   // 候选时要求显式 --requirements-dir。输出目录缺省为当前目录。
   const invocation = parseInvocation(argv, {
@@ -103,6 +109,12 @@ export async function main(
   const mergedEnv = await mergeGatewayEnv(env, envFile);
   const builderGateway = readGatewayConfig(mergedEnv, "SHALLOW_BUILDER");
   const judgeGateway = readGatewayConfig(mergedEnv, "SHALLOW_JUDGE");
+  // 单价来自内置模型目录，可被 MODEL_COST_* / SHALLOW_BUILDER_COST_* /
+  // SHALLOW_JUDGE_COST_* 按字段覆盖；解析失败时只统计 token。
+  const builderModelCost = resolveModelRates(builderGateway.baseUrl, builderGateway.model,
+    { component: "SHALLOW_BUILDER", env: mergedEnv });
+  const judgeModelCost = resolveModelRates(judgeGateway.baseUrl, judgeGateway.model,
+    { component: "SHALLOW_JUDGE", env: mergedEnv });
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
   try {
     await access(requirementsFile);
@@ -192,6 +204,8 @@ export async function main(
     ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
     builderGateway,
     judgeGateway,
+    builderModelCost,
+    judgeModelCost,
     pipelineOptions,
     modelTimeouts: deriveModelTimeouts(cli.budgetMs),
     builderContextWindow: parseBuilderContextWindow(mergedEnv),
@@ -206,6 +220,7 @@ export async function main(
   if (patch) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
   await writeRunReport(runDirectory, summary, patch);
   process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
+    Date.now() - startedAtMs,
     Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
   return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
 }
@@ -258,7 +273,7 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, judgeGateway, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, judgeGateway, builderModelCost, judgeModelCost, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
@@ -271,17 +286,22 @@ async function executeProduction(
   let releaseWorkspace: (() => Promise<void>) | undefined;
   let tui: BuildTui | undefined;
   try {
-    const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined), {
+    const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined, {
+      ...(builderModelCost ? { modelCost: builderModelCost } : {}),
+      onProgress: progress => { tui?.view.liveUsage(progress); },
+    }), {
       timeoutMs: modelTimeouts.builderTimeoutMs,
       requirementsDir: dirname(pipelineOptions.requirementsFile),
       contextWindow: builderContextWindow,
       referenceImages,
       visionProbe: new VisionCapability(builderGateway),
+      ...(builderModelCost ? { modelCost: builderModelCost } : {}),
     });
     const planner = new LlmProbePlanner({
       ...judgeGateway,
       browserPath: pipelineOptions.platformContract.browserPath,
       timeoutMs: modelTimeouts.plannerTimeoutMs,
+      ...(judgeModelCost ? { cost: judgeModelCost } : {}),
     });
     const runner = new PlaywrightProbeRunner();
     const lifecycle = candidate;
@@ -337,7 +357,7 @@ async function executeProduction(
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir), process.stderr,
       tui ? (rawLine, line) => tui!.record(rawLine, line) : undefined);
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
-      grouper: new LlmFeatureGrouper({ ...judgeGateway, timeoutMs: Infinity }),
+      grouper: new LlmFeatureGrouper({ ...judgeGateway, timeoutMs: Infinity, ...(judgeModelCost ? { cost: judgeModelCost } : {}) }),
       builder,
       planner,
       runner,

@@ -14,11 +14,14 @@ import { BUILDER_SKILLS_DIR } from "./skills.js";
 import { PiExecutionCollector, type ExecutionSummary } from "./pi-execution-stats.js";
 import { piProviderModel } from "./pi-model-config.js";
 import { opencodeSessionHeaders } from "../gateway-headers.js";
+import type { ModelRates } from "../model-usage.js";
 
 type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "platformContract"> & {
   gateway: GatewayConfig;
   sessionDir: string;
   sessionFile?: string;
+  /** 控制器解析出的单价（USD / 百万 token）；注册后 SDK 负责换算会话花费。 */
+  modelCost?: ModelRates;
 };
 
 export interface PiSessionSnapshot extends ExecutionSummary {
@@ -93,7 +96,7 @@ export async function createPiSession(input: PiSessionOptions,
   modelRuntime.registerProvider("shallow-gateway", {
     baseUrl: input.gateway.baseUrl, api: "openai-completions", apiKey: "SHALLOW_RUNTIME_CREDENTIAL",
     models: [piProviderModel(input.gateway.model, input.contextWindow,
-      opencodeSessionHeaders(input.gateway.baseUrl, randomUUID()))],
+      opencodeSessionHeaders(input.gateway.baseUrl, randomUUID()), input.modelCost)],
   });
   await modelRuntime.setRuntimeApiKey("shallow-gateway", input.gateway.apiKey);
   const settingsManager = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
@@ -121,13 +124,14 @@ export async function createPiSession(input: PiSessionOptions,
   let recoveryError: string | undefined;
   const collector = new PiExecutionCollector();
   const snapshot = (): PiSessionSnapshot => {
-    const tokens = session.getSessionStats().tokens;
+    const stats = session.getSessionStats();
+    const tokens = stats.tokens;
     const lastMessage = lastAssistantResponse?.stopReason === "toolUse" ? session.messages.at(-1)
       : lastAssistantResponse ?? session.messages.at(-1);
     return { sessionId: manager.getSessionId(), sessionFile: manager.getSessionFile(), engineVersion: VERSION,
       toolCalls, compactions,
       ...collector.summarize({ input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead,
-        cacheWrite: tokens.cacheWrite, total: tokens.total }),
+        cacheWrite: tokens.cacheWrite, total: tokens.total, ...(input.modelCost ? { cost: stats.cost } : {}) }),
       termination: {
         lastMessageRole: lastMessage?.role,
         lastAssistantStopReason: lastAssistantResponse?.stopReason ?? [...session.messages].reverse().find(message => message.role === "assistant")?.stopReason,

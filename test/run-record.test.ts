@@ -7,6 +7,22 @@ import { copyProjectWorkspace, writeProjectPatch } from "../src/project-workspac
 import { applyRun, lockWorkspace, readResumeCheckpoint, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "../src/run-record.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { readHistoricalRequirementIds } from "../src/evolution.js";
+import { ModelUsageTotals } from "../src/model-usage.js";
+
+test("Run reports persist separate Builder and Judge usage with partial cost clearly marked", async () => {
+  await withTempDir("shallow-usage-report-", async run => {
+    const usage = new ModelUsageTotals();
+    usage.add("builder", { input: 100, output: 20, cacheRead: 10, cacheWrite: 0, cost: 0.001 });
+    usage.add("judge", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
+    await writeRunReport(run, { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [], modelUsage: usage.summary() });
+    const result = JSON.parse(await readFile(join(run, "result.json"), "utf8"));
+    assert.deepEqual(result.modelUsage, usage.summary());
+    const report = await readFile(join(run, "report.md"), "utf8");
+    assert.match(report, /总计.*tokens 185.*已知费用.*部分未计价/);
+    assert.match(report, /Builder.*tokens 130.*费用 \$0\.001/);
+    assert.match(report, /Judge.*tokens 55.*费用未知/);
+  });
+});
 
 async function withOwnedRun(callback: (f: { source: string; work: string; run: string; record: RunRecord; patch: string; sha: string }) => Promise<void>, repository = true): Promise<void> {
   await withTempDir("shallow-run-record-", async root => {

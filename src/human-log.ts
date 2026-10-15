@@ -1,5 +1,6 @@
 import type { RunEvent } from "./types.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
+import { formatCostUsd, formatModelUsageSummary, type ModelUsageSummary, type UsageSummary } from "./model-usage.js";
 
 export class HumanRunFormatter {
   private firstAtMs: number | null = null;
@@ -116,7 +117,11 @@ function describe(type: string, event: RunEvent): string | null {
       return `开始运行时语义分组；原子需求 ${pickNumber(detail, "requirements") ?? 0}`;
     case "feature_grouping_usage": {
       const tokens = tokenUsageParts(detail);
-      return tokens.length ? `功能分组 token 用量；tokens ${tokens.join(" / ")}` : null;
+      return tokens.length ? `功能分组 token 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
+    }
+    case "builder_usage": {
+      const tokens = tokenUsageParts(detail);
+      return tokens.length ? `Builder token 用量（${packetId}）；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
     case "feature_grouping_finished": {
       const grouping = asRecord(detail?.grouping);
@@ -187,7 +192,7 @@ function describe(type: string, event: RunEvent): string | null {
         pickString(detail, "operation") ?? ""
       ] ?? "探针调用";
       const tokens = tokenUsageParts(detail);
-      return tokens.length ? `${label} token 用量（${packetId}）；tokens ${tokens.join(" / ")}` : null;
+      return tokens.length ? `${label} token 用量（${packetId}）；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
     case "application_start_failed":
       return `应用启动失败（${packetId}）${message ? `：${message}` : ""}`;
@@ -259,7 +264,9 @@ function describe(type: string, event: RunEvent): string | null {
       const categories = breakdown ? Object.entries(breakdown).map(([kind, ids]) => `${inconclusiveKindText(kind)} ${strings(ids).length}`).join("、") : "";
       const auditScope = Array.isArray(detail?.auditRequirementIds)
         ? `；本轮验收范围 ${strings(detail.auditRequirementIds).length} 条；跳过旧需求验收 ${strings(detail.skippedRequirementIds).length} 条` : "";
-      return `流水线结束${detail ? `；结果 ${pickString(detail, "status")}；已实现 ${strings(detail.implementedRequirementIds).length}，已验证 ${strings(detail.verifiedRequirementIds).length}，业务失败 ${strings(detail.failedRequirementIds).length}，无法判断 ${strings(detail.inconclusiveRequirementIds).length}，阻塞 ${strings(detail.blockedRequirementIds).length}，待处理 ${strings(detail.pendingRequirementIds).length}；阻塞 ID：${strings(detail.blockedRequirementIds).join("、") || "无"}；待处理 ID：${strings(detail.pendingRequirementIds).join("、") || "无"}${categories ? `；无法判断分类：${categories}` : ""}${strings(detail.missingPlanRequirementIds).length ? `；缺计划 ID：${strings(detail.missingPlanRequirementIds).join("、")}` : ""}${auditScope}；接受 SHA ${pickString(detail, "acceptedSha")}` : ""}`;
+      const usage = modelUsageSummary(detail?.modelUsage);
+      const usageText = usage ? `；模型用量 ${formatModelUsageSummary(usage).join("；")}` : "";
+      return `流水线结束${detail ? `；结果 ${pickString(detail, "status")}；已实现 ${strings(detail.implementedRequirementIds).length}，已验证 ${strings(detail.verifiedRequirementIds).length}，业务失败 ${strings(detail.failedRequirementIds).length}，无法判断 ${strings(detail.inconclusiveRequirementIds).length}，阻塞 ${strings(detail.blockedRequirementIds).length}，待处理 ${strings(detail.pendingRequirementIds).length}；阻塞 ID：${strings(detail.blockedRequirementIds).join("、") || "无"}；待处理 ID：${strings(detail.pendingRequirementIds).join("、") || "无"}${categories ? `；无法判断分类：${categories}` : ""}${strings(detail.missingPlanRequirementIds).length ? `；缺计划 ID：${strings(detail.missingPlanRequirementIds).join("、")}` : ""}${auditScope}；接受 SHA ${pickString(detail, "acceptedSha")}${usageText}` : ""}`;
     }
     default:
       return null;
@@ -297,6 +304,8 @@ function describeBuilderExecution(value: unknown): string {
   if (usage?.status === "available") {
     const tokens = tokenUsageParts(usage);
     if (tokens.length) parts.push(`tokens ${tokens.join(" / ")}`);
+    const cost = asNumber(usage.cost);
+    if (cost !== null) parts.push(`费用 ${formatCostUsd(cost)}`);
   }
   // Size and call counts only; assistant text and tool payloads stay out of the log.
   const outputBytes = asNumber(timing?.outputBytes);
@@ -348,6 +357,36 @@ function tokenUsageParts(usage: unknown): string[] {
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
+}
+
+/** 用量行尾的费用片段。 */
+function costSuffix(detail: Record<string, unknown> | undefined): string {
+  const cost = asNumber(detail?.cost);
+  return cost === null ? "；费用未知" : `；费用 ${formatCostUsd(cost)}`;
+}
+
+/** 从事件 detail 中恢复聚合用量，字段不完整时返回 null。 */
+function usageSummary(value: unknown): UsageSummary | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const input = asNumber(record.input);
+  const output = asNumber(record.output);
+  const cacheRead = asNumber(record.cacheRead);
+  const cacheWrite = asNumber(record.cacheWrite);
+  const total = asNumber(record.total);
+  if ([input, output, cacheRead, cacheWrite, total].some(entry => entry === null)) return null;
+  const cost = asNumber(record.cost);
+  const unpricedTokens = asNumber(record.unpricedTokens);
+  return { input: input!, output: output!, cacheRead: cacheRead!, cacheWrite: cacheWrite!, total: total!,
+    ...(cost === null ? {} : { cost }), ...(unpricedTokens === null ? {} : { unpricedTokens }) };
+}
+
+function modelUsageSummary(value: unknown): ModelUsageSummary | null {
+  const record = asRecord(value);
+  const total = usageSummary(record);
+  const builder = usageSummary(record?.builder);
+  const judge = usageSummary(record?.judge);
+  return total && builder && judge ? { ...total, builder, judge } : null;
 }
 
 function asNumber(value: unknown): number | null {

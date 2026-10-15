@@ -125,6 +125,7 @@ test("fixed system assets keep their Chinese anchors", () => {
   assert.match(loadPrompt("system", "builder-system"), /零依赖原生 http/);
   assert.match(loadPrompt("system", "builder-system"), /单个场景 GIVEN 中的初始条件/);
   assert.match(loadPrompt("system", "builder-system"), /页面入口依据已确认的身份与权限呈现，不等待无关数据/);
+  assert.match(loadPrompt("system", "builder-system"), /实现指引（guidance）属于需求原文/);
   assert.match(loadPrompt("system", "architecture-notes"), /最多 200 行且不超过 16 KiB/);
   assert.ok(
     loadPrompt("system", "receipt").includes("结果：完成 | 阻塞"),

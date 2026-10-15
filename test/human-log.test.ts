@@ -25,6 +25,7 @@ test("Compatibility samples cannot be mistaken for requirement verification", ()
 });
 
 import { HumanRunFormatter } from "../src/human-log.js";
+import { ModelUsageTotals } from "../src/model-usage.js";
 
 function eventLine(at: string, type: string, rest: Record<string, unknown> = {}): string {
   return `${JSON.stringify({ at, type, ...rest })}\n`;
@@ -563,15 +564,40 @@ test("Human logs explain semantic review outcomes", () => {
   })), /语义复核失败（p）：schema drift$/);
 });
 
+test("Human logs carry model cost on usage lines and the final totals", () => {
+  const formatter = new HumanRunFormatter();
+  const base = "2026-10-15T00:00:00.000Z";
+  const usage = new ModelUsageTotals();
+  usage.add("builder", { input: 1000, output: 200, cacheRead: 100, cacheWrite: 0, cost: 0.0021 });
+  usage.add("judge", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
+  assert.match(formatLine(formatter, eventLine(base, "builder_usage", { packetId: "p",
+    detail: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 } })),
+    /Builder token 用量（p）；tokens 入 10 \/ 出 2 \/ 总计 12；费用未知/);
+  assert.match(formatLine(formatter, eventLine(base, "builder_finished", { packetId: "p",
+    detail: { outcome: "completed", execution: { usage: {
+      status: "available", input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1200, cost: 0.00123 } } } })),
+    /tokens 入 1000 \/ 出 200 \/ 总计 1200；费用 \$0\.00123/);
+  assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", { packetId: "p",
+    detail: { operation: "plan", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0.000004 } })),
+    /tokens 入 10 \/ 出 2 \/ 总计 12；费用 \$0\.000004/);
+  assert.match(formatLine(formatter, eventLine(base, "feature_grouping_usage",
+    { detail: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 } })),
+    /功能分组 token 用量；tokens 入 100 \/ 出 20 \/ 总计 120；费用 \$0\.0001/);
+  assert.match(formatLine(formatter, eventLine(base, "pipeline_finished", { detail: { status: "delivered",
+    verifiedRequirementIds: ["A"], blockedRequirementIds: [], pendingRequirementIds: [], acceptedSha: "sha",
+    modelUsage: usage.summary() } })),
+    /模型用量 总计.*已知费用 \$0\.0021（部分未计价）；Builder.*费用 \$0\.0021；Judge.*费用未知/);
+});
+
 test("Human logs report Probe Planner token usage per operation", () => {
   const formatter = new HumanRunFormatter();
   const base = "2026-09-27T00:00:00.000Z";
   assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", {
     packetId: "p", detail: { operation: "plan", input: 700, output: 50, cacheRead: 200, cacheWrite: 100, total: 1050 },
-  })), /^\[\d{2}:\d{2}:\d{2} \+0s\] 探针规划 token 用量（p）；tokens 入 700 \/ 出 50 \/ 缓存读 200 \/ 缓存写 100 \/ 总计 1050$/);
+  })), /^\[\d{2}:\d{2}:\d{2} \+0s\] 探针规划 token 用量（p）；tokens 入 700 \/ 出 50 \/ 缓存读 200 \/ 缓存写 100 \/ 总计 1050；费用未知$/);
   assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", {
     packetId: "p", detail: { operation: "refine", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 },
-  })), /探针定位精化 token 用量（p）；tokens 入 10 \/ 出 2 \/ 总计 12$/);
+  })), /探针定位精化 token 用量（p）；tokens 入 10 \/ 出 2 \/ 总计 12；费用未知$/);
   assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", {
     packetId: "p", detail: { operation: "review", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 },
   })), /探针语义复核 token 用量（p）/);

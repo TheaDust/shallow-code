@@ -18,3 +18,9 @@ test("gateway provider model keeps the default window unless a run overrides it"
     { "x-opencode-session": "session-1" },
   );
 });
+
+test("Gateway provider model registers resolved cost rates for session accounting", () => {
+  const rates = { input: 0.15, output: 0.6, cacheRead: 0.003, cacheWrite: 0 };
+  assert.deepEqual(piProviderModel("provider/model", 256_000, undefined, rates).cost, rates);
+  assert.deepEqual(piProviderModel("provider/model").cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+});

@@ -48,6 +48,7 @@
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
 | Judge 规划、覆盖、恢复与执行 | `src/judge/llm-probe-planner.ts`、`probe-schema.ts`、`probe-coverage.ts`、`audit.ts`、`playwright-probe-runner.ts`（均在 `src/judge/`） |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
+| 模型用量与单价 | `src/model-usage.ts`、`src/builder/pi-execution-stats.ts`、`src/planner-json-client.ts` |
 | 继承数据 | `src/inherited-data.ts` |
 
 目标应用的 `ARCHITECTURE.md` 交接合同位于 `prompts/system/architecture-notes.md`；修改跨会话交接时读取该资产。

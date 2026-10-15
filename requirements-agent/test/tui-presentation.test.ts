@@ -12,8 +12,10 @@ import { diffRequirements, normalizeDraft, type RequirementNode } from "../src/d
 
 function tree(): RequirementNode {
   const result = normalizeDraft({ id: "app", name: "任务管理", type: "ROOT", description: "仅管理自己的任务。",
+    guidance: ["整体采用深色主题，界面保持简洁。"],
     data: [{ category: "tasks", items: ["现有任务归属于 Alice。"] }], children: [{ id: "create", name: "创建任务", type: "ATOMIC",
-      description: "标题必填。", visual_reference: ["references/task.png"], scenarios: [{ id: "create-success", name: "创建后持久化",
+      description: "标题必填。", guidance: ["提交按钮保持醒目。"], visual_reference: ["references/task.png"],
+      scenarios: [{ id: "create-success", name: "创建后持久化",
         steps: [{ keyword: "GIVEN", content: "Alice 的列表为空。" }, { keyword: "WHEN", content: "创建“准备会议”任务。" },
           { keyword: "THEN", content: "任务出现在列表。" }, { keyword: "AND", content: "刷新后仍然可见。" },
           { keyword: "BUT", content: "Bob 无法查看该任务。" }] }] }] });
@@ -21,12 +23,15 @@ function tree(): RequirementNode {
   return result.tree;
 }
 
-test("Readable preview retains descriptions, seed identity, references and every scenario clause", () => {
+test("Readable preview retains descriptions, guidance, seed identity, references and every scenario clause", () => {
   const value = tree();
   const preview = formatRequirementPreview(value);
   assert.match(preview, /Alice/);
   assert.match(preview, /references\/task.png/);
   assert.match(preview, /create-success/);
+  assert.match(preview, /实现指引（不单独验收）：/);
+  assert.match(preview, /整体采用深色主题，界面保持简洁。/);
+  assert.match(preview, /提交按钮保持醒目。/);
   for (const step of value.children[0].scenarios[0].steps) assert.ok(preview.includes(step.content));
   assert.match(preview, /BUT.*Bob/);
 });
@@ -52,6 +57,40 @@ test("Req status and preview keys reflect the draft and leave editing available"
   assert.match(ui.tui.render(80).join("\n"), /等待确认 · 回复“是”生成/);
   ui.present({ type: "edit" });
   assert.doesNotMatch(ui.tui.render(80).join("\n").slice(-200), /等待确认/);
+});
+
+test("Req TUI clears the console page and reports the wheel only while the preview is open", (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  assert.equal(terminal.writes[0], "\x1b[2J\x1b[H\x1b[3J", "进入 req 应先清空控制台页面");
+  const value = tree();
+  ui.present({ type: "draft", revision: 1, tree: value, questions: [], changes: diffRequirements(null, value) });
+  const on = () => terminal.writes.filter(write => write === "\x1b[?1000h\x1b[?1006h").length;
+  const off = () => terminal.writes.filter(write => write === "\x1b[?1000l\x1b[?1006l").length;
+  terminal.input("\x1bOQ");
+  assert.equal(ui.tui.hasOverlay(), true);
+  assert.equal(on(), 1, "打开草案预览后上报滚轮");
+  terminal.input("\x1b");
+  assert.equal(ui.tui.hasOverlay(), false);
+  assert.equal(off(), 1, "关闭预览后交还终端原生鼠标");
+});
+
+test("Req status area tracks live model usage from the session", (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new RequirementsTui({ onAbort() {}, onExit() {} }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  assert.doesNotMatch(ui.tui.render(80).join("\n"), /模型用量/);
+  let listener: Parameters<RequirementsTui["watchSession"]>[0] extends { subscribe(listener: infer L): unknown } ? L : never;
+  ui.watchSession({
+    subscribe(fn) { listener = fn; return () => {}; },
+    getSessionStats: () => ({ tokens: { total: 1234 }, cost: 0.0032 }),
+  });
+  listener!({ type: "turn_end" } as never);
+  const text = ui.tui.render(80).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(text, /模型用量 tokens 1\.2k · 费用 \$0\.0032/);
 });
 
 test("Draft card reports revision changes without repeating pending questions", (t) => {

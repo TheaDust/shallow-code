@@ -28,6 +28,8 @@ export interface ProductContext {
   rootName: string;
   description: string;
   seedData: SeedDataCategory[];
+  /** Root-declared implementation guidance: expectations that cannot be verified independently. */
+  guidance?: string[];
   /** The selected requirement tree is an Evolution increment over an existing application. */
   evolution?: true;
   /** Present when the selected requirement file is one increment of a progressive task. */
@@ -49,6 +51,8 @@ export interface AtomicRequirement {
   declarationIndex: number;
   name: string;
   text: string;
+  /** Implementation guidance from this requirement and its ancestors; not independently verified. */
+  guidance?: string[];
   dependencyIds: string[];
   /** Earlier-increment dependencies intentionally absent from the selected requirement tree. */
   externalDependencyIds?: string[];
@@ -84,6 +88,8 @@ export interface RequirementNode {
   name: string;
   type: "ROOT" | "FOLDER" | "ATOMIC";
   description: string;
+  /** Declared expectations that cannot be verified independently (theme, style, tone). */
+  guidance?: string[];
   dependencies: string[];
   children: RequirementNode[];
   visual_reference: string[];
@@ -192,7 +198,9 @@ interface RunEventDetails {
     starterScaffold?: { status: import("./starter-scaffold.js").StarterScaffoldStatus; reason: string; files: string[] };
     grouping?: GroupingStats; groupingSource?: "pending_llm" };
   feature_grouping_started: { requirements: number; limits: import("./scheduler.js").FeatureGroupThresholds };
-  feature_grouping_usage: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; attempt?: number };
+  feature_grouping_usage: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number; attempt?: number };
+  builder_usage: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number;
+    cost?: number; unpricedTokens?: number };
   feature_grouping_retry: { attempt: number; reason: string; category?: string; httpStatus?: number; cutOffByModel: boolean };
   feature_grouping_finished: { source: "llm" | "deterministic"; reason?: string; attempts?: number; grouping: GroupingStats; durationMs: number;
     groups: Array<{ packetId: string; requirementIds: string[]; purpose?: string }> };
@@ -212,7 +220,7 @@ interface RunEventDetails {
   probe_preplan_failed: DiagnosticDetail;
   probe_planned: { cases: number };
   probe_planner_usage: { operation: "plan" | "refine" | "review"; input: number; output: number;
-    cacheRead: number; cacheWrite: number; total: number };
+    cacheRead: number; cacheWrite: number; total: number; cost?: number };
   probe_started: { cases: number; retryCount: number; plan?: ProbePlan; planSha256?: string };
   probe_finished: { verdict: ShadowReport["verdict"]; refined?: boolean; passed?: number; failed?: number;
     durationMs?: number; categories?: ProbeFailure["category"][]; evidenceId?: string; candidate?: CandidateEvidence };
@@ -245,7 +253,9 @@ interface RunEventDetails {
   pipeline_finished: { status: "delivered" | "partial" | "failed"; verifiedRequirementIds: string[];
     blockedRequirementIds: string[]; implementedRequirementIds?: string[]; failedRequirementIds?: string[]; inconclusiveRequirementIds?: string[]; pendingRequirementIds: string[]; acceptedSha: string; memory?: Record<string, unknown>;
     missingPlanRequirementIds?: string[]; inconclusiveByKind?: Partial<Record<InconclusiveKind, string[]>>;
-    auditRequirementIds?: string[]; skippedRequirementIds?: string[] };
+    auditRequirementIds?: string[]; skippedRequirementIds?: string[];
+    modelUsage?: import("./model-usage.js").ModelUsageSummary;
+  };
   pipeline_failed: DiagnosticDetail;
   evidence_write_failed: Record<string, never>;
 }

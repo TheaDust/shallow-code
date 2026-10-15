@@ -4,10 +4,12 @@ export interface TokenCounts {
   cacheRead: number;
   cacheWrite: number;
   total: number;
+  /** USD，按注册的模型单价换算；价格未知时缺省。 */
+  cost?: number;
 }
 
 export type ExecutionUsage =
-  | { status: "available"; input: number; output: number; cacheRead: number; cacheWrite: number; total: number }
+  | { status: "available"; input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number }
   | { status: "unavailable" };
 
 export interface ToolDuration {
@@ -102,4 +104,23 @@ export class PiExecutionCollector {
       },
     };
   }
+}
+
+/**
+ * 同一会话续做时统计是累计值；上报前减去调用开始时的基线，得到本次调用增量。
+ * cost 只在两侧都有值时相减，避免把未知价格当作 0。
+ */
+export function subtractUsage(after: ExecutionUsage, before: ExecutionUsage): ExecutionUsage {
+  if (after.status !== "available" || before.status !== "available") return after;
+  const delta = (current: number, baseline: number) => Math.max(0, current - baseline);
+  const cost = after.cost !== undefined && before.cost !== undefined ? delta(after.cost, before.cost) : after.cost;
+  return {
+    status: "available",
+    input: delta(after.input, before.input),
+    output: delta(after.output, before.output),
+    cacheRead: delta(after.cacheRead, before.cacheRead),
+    cacheWrite: delta(after.cacheWrite, before.cacheWrite),
+    total: delta(after.total, before.total),
+    ...(cost === undefined ? {} : { cost }),
+  };
 }

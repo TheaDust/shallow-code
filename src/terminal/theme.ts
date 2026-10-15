@@ -16,6 +16,14 @@ export function terminalTheme(colour = process.env.NO_COLOR === undefined && pro
 
 export type TerminalTheme = ReturnType<typeof terminalTheme>;
 
+/**
+ * 清空可视区与回滚缓冲，并回到左上角。
+ * 交互界面在首次渲染前调用，使本轮从全新页面开始；与 TuiMainScreen 整体重绘使用同一序列。
+ */
+export function clearTerminalScreen(terminal: { write(data: string): void }): void {
+  terminal.write("\x1b[2J\x1b[H\x1b[3J");
+}
+
 export function fitTerminalText(text: string, width: number): string {
   const fitted = truncateToWidth(text, width, "…");
   // Pi's truncator adds a reset even to unstyled text; keep redirected text plain.

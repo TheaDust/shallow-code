@@ -12,11 +12,14 @@ import { sanitizeDiagnosticText } from "../diagnostics.js";
 import { copyInheritedData } from "../inherited-data.js";
 import { BuilderApp, type AppAction } from "./builder-app.js";
 import type { BuilderTermination } from "./port.js";
+import type { ModelRates } from "../model-usage.js";
 
 export interface PiWorkerRequest extends CodingAgentRequest {
   gateway: GatewayConfig;
   sessionDir: string;
   sessionFile?: string;
+  /** 控制器解析出的单价；注册后由 SDK 换算会话花费。 */
+  modelCost?: ModelRates;
   /** Debug-only destination for raw SSE bodies; see `SHALLOW_CAPTURE_SSE`. */
   sseCaptureDir?: string;
 }
@@ -42,12 +45,19 @@ export interface PiWorkerProgress {
   termination: BuilderTermination;
 }
 
+/** Live builder progress; presentation-only, never grants verification. */
+export interface PiWorkerLiveOptions {
+  modelCost?: ModelRates;
+  onProgress?: (progress: PiWorkerProgress) => void;
+}
+
 /** One child per prompt. Never imports the SDK in the long-lived controller. */
 export class PiWorkerClient implements CodingAgentPort {
   private sessions = new Map<string, { file: string; cwd: string }>();
   private active?: { child: ChildProcess; finished: Promise<void> };
   private closed = false;
-  constructor(private gateway: GatewayConfig, private sessionDir: string, private sseCaptureDir?: string) {}
+  constructor(private gateway: GatewayConfig, private sessionDir: string, private sseCaptureDir?: string,
+    private readonly live: PiWorkerLiveOptions = {}) {}
 
   async run(input: CodingAgentRequest): Promise<PiWorkerResult> {
     const started = Date.now();
@@ -106,7 +116,10 @@ export class PiWorkerClient implements CodingAgentPort {
         child.once("error", rej);
         child.once("exit", () => res({ ...fallback, ...progress, summary: stderr || fallback.summary }));
         child.on("message", message => {
-          if (message && typeof message === "object" && "type" in message && message.type === "builder_progress") progress = message as PiWorkerProgress;
+          if (message && typeof message === "object" && "type" in message && message.type === "builder_progress") {
+            progress = message as PiWorkerProgress;
+            this.live.onProgress?.(progress);
+          }
           if (message && typeof message === "object" && "outcome" in message) res(message as PiWorkerResult);
         });
         timer = setTimeout(() => res({ ...fallback, ...progress, outcome: "timed_out", summary: "Pi call deadline reached" }), Math.max(1, input.timeoutMs));
@@ -114,6 +127,7 @@ export class PiWorkerClient implements CodingAgentPort {
       tree = await ownProcessTree(child);
       child.send({ ...input, ...(input.platformContract ? { platformContract: { ...input.platformContract, dataDirectory } } : {}),
         gateway: this.gateway, sessionDir: this.sessionDir, sessionFile: prior?.file,
+        ...(this.live.modelCost ? { modelCost: this.live.modelCost } : {}),
         ...(this.sseCaptureDir ? { sseCaptureDir: this.sseCaptureDir } : {}) } satisfies PiWorkerRequest);
       result = await completed;
     } catch (error) {

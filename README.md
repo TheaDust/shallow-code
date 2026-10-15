@@ -2,7 +2,7 @@
 
 ShallowCode 是面向结构化需求的 Web 应用开发与交付智能体。它读取需求树，按依赖和功能分组交给 Pi Builder 实现，再由独立浏览器 Judge 验收，管理可运行检查点、修复回归和交付结果。
 
-需求输入沿用 `requirements.yaml` 的 ROOT/FOLDER/ATOMIC、祖先描述、依赖、场景、数据声明和参考图。项目运行方式由独立的 `shallowcode.config.json` 声明。
+需求输入沿用 `requirements.yaml` 的 ROOT/FOLDER/ATOMIC、祖先描述、依赖、场景、数据声明、实现指引（`guidance`）和参考图。项目运行方式由独立的 `shallowcode.config.json` 声明。
 
 **运行流程**
 
@@ -22,7 +22,7 @@ npm.cmd run setup
 
 脚本依次安装仓库根与 requirements-agent 的依赖、下载 Playwright Chromium、从 `.env.example` 初始化 `.env`（已存在则保留）并注册全局 `shallow` 命令；`--check` 只检查环境并打印计划，`--skip-browser` 跳过 Chromium 下载。手动执行时依次运行 `npm ci`、`requirements-agent` 目录内的 `npm ci`、`npx playwright install chromium`、复制 `.env.example` 为 `.env` 与 `npm link`。
 
-在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。Builder 与 Judge（规划/验收）可分别用 `SHALLOW_BUILDER_*`、`SHALLOW_JUDGE_*` 覆盖 API key、地址与模型（字段级回退公共值）；[requirements-agent](requirements-agent/README.md) 读取同一份仓库根 `.env`，用 `REQUIREMENTS_AGENT_*` 单独覆盖。网关为 opencode.ai（Zen/Go）时，控制器与 requirements-agent 会自动附带该网关要求的 `x-opencode-session` 会话头。
+在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。Builder 与 Judge（规划/验收）可分别用 `SHALLOW_BUILDER_*`、`SHALLOW_JUDGE_*` 覆盖 API key、地址与模型（字段级回退公共值）；[requirements-agent](requirements-agent/README.md) 读取同一份仓库根 `.env`，用 `REQUIREMENTS_AGENT_*` 单独覆盖。网关为 opencode.ai（Zen/Go）时，控制器与 requirements-agent 会自动附带该网关要求的 `x-opencode-session` 会话头。模型单价（USD / 百万 token）缺省按网关地址与模型 id 匹配 pi-ai 内置目录的标价，可用 `MODEL_COST_INPUT/OUTPUT/CACHE_READ/CACHE_WRITE` 或 `<组件>_COST_*` 按字段覆盖；目录与配置均无价格时只统计 token。
 
 Pi 通过 `CodingAgentPort` 在独立 Worker 中执行。[pi-sdk-adapter.ts](src/builder/pi-sdk-adapter.ts) 集中 SDK 导入、工具转换、会话恢复、压缩重试和完成判断；项目工具使用 [tool-contract.ts](src/builder/tool-contract.ts)，运行日志记录实际 SDK 版本。模型描述与上下文窗口配置位于 `pi-model-config.ts`。
 
@@ -55,7 +55,7 @@ shallow build apply --run-dir E:\runs\<运行目录>
 
 `shallow build` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。省略 `--requirements-dir` 时在当前目录及其子目录中查找唯一的 `requirements.yaml`，找不到或找到多个都报错并要求显式指定；省略 `--output-dir`/`--project` 时输出目录缺省为当前目录，当前目录已有项目文件时按增量起点处理，改动经 `apply` 写回。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
 
-真实终端中，`req` 与 `build` 使用一致的单列 TUI。`req` 在输入区上方显示草案版本、场景数与待确认问题，`F2` 打开可滚动草案，`v` 切换完整 YAML。`build` 显示当前模块、活动耗时与本轮验收状态；`d` 查看详细日志，`?` 查看帮助，`Esc` 返回状态页，`Ctrl+C` 中断。结束后保留报告、产物位置与适用的恢复或应用命令。`NO_COLOR` 关闭界面配色；管道、重定向与 `TERM=dumb` 使用纯文本构建日志。
+真实终端中，`req` 与 `build` 使用一致的单列 TUI：进入时清空控制台页面，从全新页面开始渲染。`req` 在输入区上方显示草案版本、场景数与待确认问题，`F2` 打开可滚动草案（方向键、PgUp/PgDn 或鼠标滚轮），`v` 切换完整 YAML。`build` 显示当前模块、活动耗时、本轮验收状态，并按总计、Builder、Judge 三行显示 token 总量、输入/输出、缓存读写和按标价估算的费用；当前 Builder 快照计入对应分组与总计，调用结束后结算一次。Builder 包含实现、修复、图片预检及降级重试；Judge 包含功能分组、规划、复核和定位精化。未定价调用保留 token，标注“费用未知”；混合计价显示“已知费用（部分未计价）”。`d` 查看详细日志，`?` 查看帮助，`Esc` 返回状态页，`Ctrl+C` 中断。结束后保留报告、产物位置、累计用量、总耗时与适用的恢复或应用命令。`NO_COLOR` 关闭界面配色；管道、重定向与 `TERM=dumb` 使用纯文本构建日志。
 
 **项目运行配置**
 
@@ -93,7 +93,7 @@ Builder 的 `run_tests` 使用声明的目标 ID；`all` 顺序执行全部目�
 
 Judge 保留 GIVEN/WHEN/THEN 的准备和结果语义。所有明示结果分别映射断言，定位保持严格唯一，角色和对象身份以需求为准。证据关联候选源码、构建和计划；变更后需要复验。
 
-需求分析按结构化步骤标记 GIVEN/WHEN/THEN，AND/BUT 延续所属阶段，并保留原文与场景步骤来源。分组使用按阶段合并的原文事实，Builder 与 Judge 使用阶段索引；结果覆盖共用字面值与复合结果提取，保留引号内的标点、公式和备选值。
+需求分析按结构化步骤标记 GIVEN/WHEN/THEN，AND/BUT 延续所属阶段，并保留原文与场景步骤来源。分组使用按阶段合并的原文事实，Builder 与 Judge 使用阶段索引；结果覆盖共用字面值与复合结果提取，保留引号内的标点、公式和备选值。节点 `guidance` 记录用户提出但无法独立验收的期望（页面主题、风格、美观等）：它随需求原文进入 Builder 的实现指引并按原文实现，不进入 Judge 的场景断言，也不影响需求状态。
 
 Builder 通过 Pi 显式加载 `prompts/skills/` 中的技能目录，先看到名称、description 与路径，根据当前工作按需用 `read` 读取 SKILL.md。技能涵盖 Web 控件、持久化、身份权限、关联对象、可编辑网格和运行交付，供模型选择适用指导。技能文件只读；目标项目和全局目录的技能自动发现保持关闭。其余提示词提供通用实现与验收合同，具体框架、路由和布局按现有项目及需求决定。
 
@@ -103,7 +103,7 @@ Builder 通过 Pi 显式加载 `prompts/skills/` 中的技能目录，先看到�
 
 `SHALLOW_RUN_DIR` 缺省指向系统临时目录下的 `shallowcode-runs`，每轮建立日志目录。`run-log.txt`、`run-ledger.jsonl`、Judge 计划、证据、Pi 会话和候选构建位于私有运行目录。交互终端展示运行摘要与最近进展，详细视图保留最近 500 条人类可读日志；`run-log.txt` 与 `shallow-progress/progress.log` 持续保存全部人类可读行。纯文本模式直接输出这些日志行；`run-ledger.jsonl` 等原始事件只保留在私有运行目录。
 
-已有项目的开发副本保留在该轮 `workspace` 中。`run.json` 记录需求、配置与控制器合同摘要、来源和输入基线；需求及参考文件保存在私有 `requirements/` 快照中。`changes.patch` 导出本轮改动，包含新增文件和二进制变更。`result.json` 保存交付状态、逐需求状态列表及逐场景结果，`report.md` 提供可读报告。结束时终端打印运行目录与补丁位置。`shallow-progress/progress.log` 保存可读进度，保持 untracked；当前 Judge 计划只存于私有运行目录。
+已有项目的开发副本保留在该轮 `workspace` 中。`run.json` 记录需求、配置与控制器合同摘要、来源和输入基线；需求及参考文件保存在私有 `requirements/` 快照中。`changes.patch` 导出本轮改动，包含新增文件和二进制变更。`result.json` 保存交付状态、逐需求状态列表、逐场景结果及本轮 `modelUsage`：顶层为总用量，`builder`、`judge` 为分组用量，`cost` 是已知费用，`unpricedTokens` 是未计价 token 数；`report.md` 提供可读报告。结束时终端打印运行目录、补丁位置与三组模型用量。`shallow-progress/progress.log` 保存可读进度，保持 untracked；当前 Judge 计划只存于私有运行目录。
 
 恢复和写回使用终端打印的完整运行目录：
 

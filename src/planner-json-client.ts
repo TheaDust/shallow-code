@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { httpGatewayFailure, type GatewayFailure } from "./gateway-failure.js";
 import { opencodeSessionHeaders } from "./gateway-headers.js";
+import { parseOpenAIUsage as parseUsage, usageCost, type ModelRates } from "./model-usage.js";
 
 /** Normalized planner token counts, matching the Builder's usage semantics. */
 export interface PlannerUsage {
@@ -11,6 +12,8 @@ export interface PlannerUsage {
   cacheRead: number;
   cacheWrite: number;
   total: number;
+  /** USD；价格未知时缺省。 */
+  cost?: number;
 }
 
 /** Diagnostics sink; failures must never change the planner decision path. */
@@ -20,6 +23,8 @@ export interface PlannerJsonConfig {
   apiKey: string;
   model: string;
   timeoutMs: number;
+  /** 控制器解析出的单价（USD / 百万 token）；缺省时只上报 token。 */
+  cost?: ModelRates;
 }
 
 export interface PlannerJsonOptions {
@@ -159,6 +164,7 @@ export class PlannerJsonClient {
     }
     // Token accounting is diagnostics and includes attempts that fail validation below.
     if (usage !== undefined && onUsage) {
+      if (this.config.cost) usage = { ...usage, cost: usageCost(usage, this.config.cost) };
       try { await onUsage(usage); } catch { /* Diagnostics must never change the decision path. */ }
     }
     if (cutOff) throw new PlannerRequestError("response", `${this.label} response body failed`, {
@@ -288,27 +294,4 @@ function extractContent(value: unknown): { content?: string; usage?: PlannerUsag
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") result.content = content;
   return result;
-}
-
-/** Mirrors the Pi provider's normalization: input excludes cached tokens; total is the sum. */
-function parseUsage(raw: unknown): PlannerUsage | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const usage = raw as Record<string, unknown>;
-  const details = typeof usage.prompt_tokens_details === "object" && usage.prompt_tokens_details !== null
-    ? usage.prompt_tokens_details as Record<string, unknown> : undefined;
-  const reported = [usage.prompt_tokens, usage.completion_tokens, details?.cached_tokens,
-    usage.prompt_cache_hit_tokens, details?.cache_write_tokens];
-  if (!reported.some(value => typeof value === "number" && Number.isFinite(value))) return undefined;
-  const promptTokens = finiteNumber(usage.prompt_tokens) ?? 0;
-  const reportedCached = finiteNumber(details?.cached_tokens) ?? finiteNumber(usage.prompt_cache_hit_tokens) ?? 0;
-  const cacheWrite = finiteNumber(details?.cache_write_tokens) ?? 0;
-  // Some OpenAI-compatible providers report cached_tokens as (previous hits + current writes).
-  const cacheRead = cacheWrite > 0 ? Math.max(0, reportedCached - cacheWrite) : Math.max(0, reportedCached);
-  const output = Math.max(0, finiteNumber(usage.completion_tokens) ?? 0);
-  const input = Math.max(0, promptTokens - cacheRead - cacheWrite);
-  return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
-}
-
-function finiteNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

@@ -296,6 +296,26 @@ test("visual_reference 保留、往返序列化并进入修改摘要，非法声
   assert.equal(normalizeDraft(input).ok, false);
 });
 
+test("guidance 保留不可独立验收的期望：规格化、往返序列化并进入修改摘要，非法声明被拒绝", () => {
+  const input = validTree();
+  input.guidance = [" 整体采用深色主题。 ", "整体采用深色主题。"];
+  (input.children as Record<string, unknown>[])[0].guidance = ["提交按钮保持醒目。"];
+  const tree = expectOk(normalizeDraft(input));
+  assert.deepEqual(tree.guidance, ["整体采用深色主题。"]);
+  assert.deepEqual(tree.children[0].guidance, ["提交按钮保持醒目。"]);
+  const yaml = serializeRequirementsYaml(tree);
+  assert.match(yaml, /guidance:/);
+  const reparsed = expectOk(normalizeDraft(parse(yaml)));
+  assert.deepEqual(reparsed, tree);
+  const before = expectOk(normalizeDraft(validTree()));
+  assert.deepEqual(diffRequirements(before, tree).changed.map((node) => node.id), ["task-app", "create-task"]);
+
+  input.guidance = "深色主题";
+  assert.equal(normalizeDraft(input).ok, false);
+  input.guidance = [""];
+  assert.equal(normalizeDraft(input).ok, false);
+});
+
 test("serializeRequirementsYaml 序列化后可由 YAML 解析还原（中文、引号、换行、data）", () => {
   const input = validTree();
   input.description = "第一行。\n“引号”与换行都要保留。";

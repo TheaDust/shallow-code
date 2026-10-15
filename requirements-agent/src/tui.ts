@@ -20,11 +20,19 @@ import {
   type OverlayHandle,
   type Terminal,
 } from "@earendil-works/pi-tui";
-import { terminalHeader, terminalTheme } from "../../src/terminal/theme.js";
+import { clearTerminalScreen, terminalHeader, terminalTheme } from "../../src/terminal/theme.js";
+import { setMouseTracking } from "../../src/terminal/mouse-wheel.js";
 import { TextViewer } from "../../src/terminal/text-viewer.js";
+import { formatCostUsd, formatTokenCount } from "../../src/model-usage.js";
 import type { ConversationView } from "./cli.js";
 import { serializeRequirementsYaml, summarizeTree, type RequirementNode } from "./dsl.js";
 const WORKING_MESSAGE = "正在思考…";
+
+/** 会话统计的最小结构；测试的假会话可以只提供 subscribe。 */
+export interface SessionStatsSource {
+  subscribe(listener: AgentSessionEventListener): () => void;
+  getSessionStats?(): { tokens: { total: number }; cost: number };
+}
 
 export interface RequirementsTuiOptions {
   /** 中止当前回合（Esc 或处理中的 Ctrl+C）。 */
@@ -57,6 +65,8 @@ export class RequirementsTui {
   private draft?: Extract<ConversationView, { type: "draft" }>;
   private review?: Extract<ConversationView, { type: "review" }>;
   private overlay?: OverlayHandle;
+  private session?: SessionStatsSource;
+  private usage?: { tokens: number; cost: number };
 
   constructor(private readonly options: RequirementsTuiOptions, terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal);
@@ -90,12 +100,15 @@ export class RequirementsTui {
 
   start(): void {
     this.started = true;
+    // 每次进入都是全新控制台页面：清空可视区与回滚缓冲后再渲染。
+    clearTerminalScreen(this.tui.terminal);
     this.tui.start();
     this.tui.setFocus(this.editor);
   }
 
   /** 渲染会话的助手流式回复与工具执行状态。 */
-  watchSession(session: { subscribe(listener: AgentSessionEventListener): () => void }): void {
+  watchSession(session: SessionStatsSource): void {
+    this.session = session;
     this.unsubscribe = session.subscribe((event) => { this.render(event); });
   }
 
@@ -146,7 +159,10 @@ export class RequirementsTui {
     this.unsubscribe = undefined;
     this.loader?.stop();
     this.overlay?.hide();
-    if (this.started) this.tui.stop();
+    if (this.started) {
+      setMouseTracking(this.tui.terminal, false);
+      this.tui.stop();
+    }
   }
 
   close(): void {
@@ -154,6 +170,10 @@ export class RequirementsTui {
   }
 
   private render(event: AgentSessionEvent): void {
+    if (event.type === "message_end" || event.type === "turn_end" ||
+        event.type === "compaction_end" || event.type === "agent_settled") {
+      this.refreshUsage();
+    }
     if (event.type === "message_start" && event.message.role === "assistant") {
       this.assistant = undefined;
       return;
@@ -268,10 +288,26 @@ export class RequirementsTui {
     const count = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
     const next = this.review ? "等待确认 · 回复“是”生成" : this.draft?.questions.length
       ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成需求文档”" : "描述你的想法";
-    this.context.setText(this.theme.muted(count) + "\n" + (this.review ? this.theme.warning(next) : this.theme.muted(next)));
+    const usage = this.usage ? `模型用量 tokens ${formatTokenCount(this.usage.tokens)}` +
+      (this.usage.cost > 0 ? ` · 费用 ${formatCostUsd(this.usage.cost)}` : "") : "";
+    this.context.setText(this.theme.muted(count) + "\n" + (this.review ? this.theme.warning(next) : this.theme.muted(next)) +
+      (usage ? "\n" + this.theme.muted(usage) : ""));
     this.footer.setText(this.theme.muted(this.busy ? "Esc 中止本轮   F2 草案预览" :
       "Enter 发送   Shift+Enter 换行   F2 草案预览   Ctrl+C 清空/退出"));
     if (this.started && !this.stopped) this.tui.requestRender();
+  }
+
+  /** 读取会话累计 token 与费用；统计失败不影响对话。 */
+  private refreshUsage(): void {
+    try {
+      const stats = this.session?.getSessionStats?.();
+      if (!stats) return;
+      if (this.usage?.tokens === stats.tokens.total && this.usage.cost === stats.cost) return;
+      this.usage = { tokens: stats.tokens.total, cost: stats.cost };
+      this.updateContext();
+    } catch {
+      // 用量只是展示信息。
+    }
   }
 
   private openPreview(): void {
@@ -284,11 +320,14 @@ export class RequirementsTui {
       yaml = !yaml;
       viewer.setText(title + (yaml ? " · YAML" : ""), yaml ? serializeRequirementsYaml(tree) : formatRequirementPreview(tree));
     };
+    // 审阅层显示期间上报滚轮，关闭后交还终端原生文本选择。
+    setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
   }
 
   private closePreview(): void {
     this.overlay?.hide(); this.overlay = undefined;
+    setMouseTracking(this.tui.terminal, false);
     this.tui.setFocus(this.editor);
   }
 
@@ -310,6 +349,10 @@ export function formatRequirementPreview(tree: RequirementNode): string {
     const indent = "  ".repeat(depth);
     lines.push(`${indent}${node.type === "ATOMIC" ? "◆" : "▸"} ${node.name} · ${node.id}`);
     if (node.description) lines.push(...node.description.split("\n").map(line => `${indent}  ${line}`));
+    if (node.guidance?.length) {
+      lines.push(`${indent}  实现指引（不单独验收）：`);
+      for (const item of node.guidance) lines.push(`${indent}    - ${item}`);
+    }
     if (node.dependencies.length) lines.push(`${indent}  依赖：${node.dependencies.join("、")}`);
     if (node.visual_reference?.length) lines.push(`${indent}  参考：${node.visual_reference.join("、")}`);
     for (const data of node.data ?? []) lines.push(`${indent}  初始数据 · ${data.category}`,

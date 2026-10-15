@@ -1,6 +1,7 @@
 import type { BuilderPromptInput } from "./prompt-input.js";
 import type { ExecutionTiming, ExecutionUsage } from "./pi-execution-stats.js";
 import type { GatewayFailure } from "../gateway-failure.js";
+import type { UsageSummary } from "../model-usage.js";
 
 export type BuilderRequest = BuilderPromptInput;
 
@@ -34,6 +35,8 @@ export interface BuilderTermination {
 
 export interface BuilderRunOptions {
   timeoutMs?: number;
+  /** 每个已结束调用的增量用量，包括图片预检和降级重试。 */
+  onUsage?: (usage: UsageSummary) => void | Promise<void>;
   /** Controller-owned conversation key; omitted for isolated repair calls. */
   sessionKey?: string;
   /** Concrete controller build/start failure, never hidden Judge plans. */

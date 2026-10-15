@@ -37,6 +37,12 @@ test("Incremental identity detects changed descriptions and ancestors with stabl
     assert.notEqual(requirementDigest(rootChanged), old.C);
     staged.references = ["reference.png"];
     assert.notEqual(requirementDigest(staged, { "reference.png": "new" }), requirementDigest(staged, { "reference.png": "old" }));
+    const guided = structuredClone(catalog.requirements[0]);
+    guided.guidance = ["整体采用深色主题。"];
+    assert.notEqual(requirementDigest(guided), old.A);
+    const productGuided = structuredClone(catalog.requirements[1]);
+    productGuided.product.guidance = ["全局保持简洁。"];
+    assert.notEqual(requirementDigest(productGuided), old.B);
   });
 });
 

@@ -3,6 +3,7 @@ import { compileBuilderPrompt } from "./prompt.js";
 import type { CodingAgentPort, CodingAgentRequest } from "./execution-port.js";
 import { loadPrompt } from "../prompt-assets.js";
 import type { VisionCapability } from "./vision-probe.js";
+import { usageCost, type ModelRates, type UsageSummary } from "../model-usage.js";
 
 export class PromptBuilder implements BuilderPort {
   private textOnly = false;
@@ -10,17 +11,23 @@ export class PromptBuilder implements BuilderPort {
   private visionProbed = false;
   constructor(private client: CodingAgentPort, private options: { timeoutMs: number; requirementsDir?: string; contextWindow?: number;
     /** Reference images are opt-in; without this no image is read or attached. */
-    referenceImages?: boolean; visionProbe?: VisionCapability }) {}
+    referenceImages?: boolean; visionProbe?: VisionCapability; modelCost?: ModelRates }) {}
   async run(request: BuilderRequest, options: BuilderRunOptions = {}): Promise<BuilderResult> {
     const timeoutMs = Math.min(this.options.timeoutMs, options.timeoutMs ?? this.options.timeoutMs);
     const deadline = Date.now() + timeoutMs;
     const remainingMs = () => Math.max(0, deadline - Date.now());
+    const reportUsage = async (usage: UsageSummary) => {
+      try { await options.onUsage?.(usage); } catch { /* 用量记录不改变 Builder 结果。 */ }
+    };
     const references = "packet" in request ? request.packet.requirements.flatMap(req => req.references) : [];
     // An inconclusive probe must leave images enabled for the normal Builder
     // gateway recovery and image rejection fallback. Reserve most of the call
     // for implementation when its window is short.
     if (this.options.referenceImages && !this.textOnly && !this.visionProbed && this.options.visionProbe && references.length > 0) {
-      this.visionUnsupported = (await this.options.visionProbe.supports(Math.floor(remainingMs() / 10))) === "unsupported";
+      this.visionUnsupported = (await this.options.visionProbe.supports(Math.floor(remainingMs() / 10), async usage => {
+        await reportUsage({ ...usage,
+          ...(this.options.modelCost ? { cost: usageCost(usage, this.options.modelCost) } : {}) });
+      })) === "unsupported";
       this.visionProbed = true;
     }
     const prompt = compileBuilderPrompt(request);
@@ -35,9 +42,11 @@ export class PromptBuilder implements BuilderPort {
       .replace("{{FAILURE}}", () => options.continuationFeedback!);
     if (options.resumeInterrupted) input.taskPrompt += "\n\n" + loadPrompt("system", "implementation-resume");
     let result = await this.client.run(input);
+    if (result.execution?.usage.status === "available") await reportUsage(result.execution.usage);
     if (result.imageUnsupported && !this.textOnly && remainingMs() > 0) {
       this.textOnly = true;
       result = await this.client.run({ ...input, textOnly: true, timeoutMs: remainingMs() });
+      if (result.execution?.usage.status === "available") await reportUsage(result.execution.usage);
     }
     // Session paths and SDK internals stay private to the execution adapter.
     return { sessionId: result.sessionId, outcome: result.outcome, summary: result.summary, referenceImages: result.referenceImages, execution: result.execution,

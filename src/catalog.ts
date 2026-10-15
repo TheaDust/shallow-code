@@ -19,6 +19,7 @@ interface ParsedNode extends RequirementNode {
   name: string;
   type: NodeType;
   description: string;
+  guidance: string[];
   dependencies: string[];
   children: ParsedNode[];
   scenarios: ParsedScenario[];
@@ -55,6 +56,7 @@ export async function loadRequirementCatalog(
     rootName: root.name,
     description: root.description,
     seedData: parseSeedData(record.data),
+    ...(root.guidance.length ? { guidance: root.guidance } : {}),
     ...(evolution ? { evolution: true as const } : {}),
     ...(stage ? { stage } : {}),
   };
@@ -149,7 +151,8 @@ function parseNode(value: unknown, location: string): ParsedNode {
   );
 
   const visual_reference = requireStringArray(record.visual_reference ?? [], `${location}.visual_reference`);
-  return { id, name, type, description, dependencies, children, scenarios, visual_reference };
+  const guidance = requireStringArray(record.guidance ?? [], `${location}.guidance`);
+  return { id, name, type, description, dependencies, children, scenarios, visual_reference, guidance };
 }
 
 function parseScenario(value: unknown, location: string, defaultId: string): ParsedScenario {
@@ -230,12 +233,14 @@ function collectAtomics(
     const scenarios = node.scenarios.map(formatScenario);
     const descriptions = [...ancestors.map(ancestor => ancestor.description), node.description];
     const evidenceText = [...descriptions, ...scenarios].join("\n");
+    const guidance = [...new Set([...ancestors, node].flatMap(item => item.guidance))];
     requirements.push({
       id: node.id,
       folderPath,
       declarationIndex: requirements.length,
       name: node.name,
       text: node.description,
+      ...(guidance.length ? { guidance } : {}),
       dependencyIds: [...node.dependencies],
       scenarios,
       scenarioContracts: node.scenarios,

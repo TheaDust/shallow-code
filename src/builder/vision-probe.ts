@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { parseOpenAIUsage, type UsageSummary } from "../model-usage.js";
 
 /** 1x1 PNG: the smallest payload that still exercises real image decoding. */
 export const PROBE_IMAGE_BASE64 =
@@ -30,9 +31,10 @@ export class VisionCapability {
   ) {}
 
   /** Cached: concurrent and later callers reuse the first verdict. */
-  async supports(remainingMs: number = Infinity): Promise<VisionSupport> {
+  async supports(remainingMs: number = Infinity,
+    onUsage?: (usage: UsageSummary) => void | Promise<void>): Promise<VisionSupport> {
     if (this.verdict) return this.verdict;
-    this.inFlight ??= this.probe(remainingMs);
+    this.inFlight ??= this.probe(remainingMs, onUsage);
     try {
       this.verdict = await this.inFlight;
       return this.verdict;
@@ -41,7 +43,8 @@ export class VisionCapability {
     }
   }
 
-  private async probe(remainingMs: number): Promise<VisionSupport> {
+  private async probe(remainingMs: number,
+    onUsage?: (usage: UsageSummary) => void | Promise<void>): Promise<VisionSupport> {
     const timeoutMs = Math.floor(Math.min(this.timeoutMs, remainingMs));
     if (timeoutMs <= 0) return "unknown";
     try {
@@ -68,7 +71,11 @@ export class VisionCapability {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (response.ok) {
-        await response.body?.cancel().catch(() => undefined);
+        try {
+          const body = await response.json() as { usage?: unknown };
+          const usage = parseOpenAIUsage(body?.usage);
+          if (usage) await onUsage?.(usage);
+        } catch { /* 用量读取或记录失败不改变已确认的图片能力。 */ }
         return "supported";
       }
       if ([400, 415, 422].includes(response.status)) {
