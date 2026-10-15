@@ -20,6 +20,7 @@ const EMPTY_OUTPUT_METADATA = new Set([
   ".git",
   ".gitignore",
   "requirements",
+  ".requirements-agent",
   "shallow-progress",
 ]);
 const SCAFFOLD_RUNTIME_ARTIFACTS = new Set(["node_modules", "dist", "build"]);

@@ -26,10 +26,14 @@ test("starter scaffold installs the generic platform shell into metadata-only ou
     await mkdir(join(directory, ".git"));
     await mkdir(join(directory, ".arc"));
     await writeFile(join(directory, ".gitignore"), "node_modules/\n");
+    await mkdir(join(directory, ".requirements-agent"));
+    const draft = join(directory, ".requirements-agent", "draft.json");
+    await writeFile(draft, "{}");
 
     const result = await installStarterScaffold(directory, contract());
 
     assert.equal(result.status, "installed");
+    assert.equal(await readFile(draft, "utf8"), "{}", "需求草稿不阻止安装，也不被覆盖");
     const saved = JSON.parse(await readFile(join(directory, "shallowcode.config.json"), "utf8"));
     assert.equal(saved.start.cwd, "backend");
     assert.deepEqual(saved.dataPaths, ["backend/data", "backend/.data"]);
@@ -79,6 +83,26 @@ test("starter scaffold is part of the first pipeline baseline after Git initiali
     assert.match(tree.stdout, /frontend\/src\/App\.tsx/);
     assert.match(tree.stdout, /backend\/src\/server\.mjs/);
     assert.match(tree.stdout, /backend\/src\/platform-ports\.json/);
+  });
+});
+
+test("a first run keeps requirements metadata out of the application baseline", async () => {
+  await withTempDir("shallow-starter-metadata-", async directory => {
+    await mkdir(join(directory, "requirements"));
+    await writeFile(join(directory, "requirements", "requirements.yaml"), "id: ROOT\nname: Root\ntype: FOLDER\nchildren: []\n");
+    await mkdir(join(directory, ".requirements-agent"));
+    const draft = join(directory, ".requirements-agent", "draft.json");
+    await writeFile(draft, "{}");
+
+    const git = await GitCliOps.open(directory);
+    const result = await installStarterScaffold(directory, contract([3301]));
+    const baseline = await git.captureAccepted("shallow: initial state");
+    const tree = await runGit(directory, ["ls-tree", "-r", "--name-only", baseline], false);
+
+    assert.equal(result.status, "installed");
+    assert.match(tree.stdout, /frontend\/src\/App\.tsx/);
+    assert.doesNotMatch(tree.stdout, /\.requirements-agent/, "草稿目录不进入应用历史");
+    assert.equal(await readFile(draft, "utf8"), "{}", "草稿文件保留");
   });
 });
 

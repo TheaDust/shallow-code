@@ -18,7 +18,9 @@ interface CommandResult {
 
 const GIT_TIMEOUT_MS = 30_000;
 
-const GITIGNORE_CONTENT = ["node_modules/", "dist/", "build/", ".next/", ".env", ""].join("\n");
+/** req 草稿目录：启动目录元数据，不进入应用历史。 */
+const REQUIREMENTS_AGENT_DIR = ".requirements-agent";
+const GITIGNORE_CONTENT = ["node_modules/", "dist/", "build/", ".next/", ".env", `${REQUIREMENTS_AGENT_DIR}/`, ""].join("\n");
 
 export class GitCliOps implements GitOps {
   private constructor(private readonly repositoryRoot: string) {}
@@ -214,7 +216,7 @@ async function ensureIgnoreRules(root: string, generatedPaths?: readonly string[
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   const content = generatedPaths === undefined ? GITIGNORE_CONTENT
-    : ["node_modules/", ".env", ...generatedPaths.map(path => `/${path}/`), ""].join("\n");
+    : ["node_modules/", ".env", `${REQUIREMENTS_AGENT_DIR}/`, ...generatedPaths.map(path => `/${path}/`), ""].join("\n");
   await writeFile(gitignorePath, content, "utf8");
   await requireGit(root, ["add", ".gitignore"]);
   await requireGit(root, [
@@ -229,14 +231,14 @@ async function ensureIgnoreRules(root: string, generatedPaths?: readonly string[
   ]);
 }
 
-const FIRST_RUN_ALLOWED_ENTRIES = new Set([".gitignore", ".arc", "requirements", "shallowcode.config.json"]);
+const FIRST_RUN_ALLOWED_ENTRIES = new Set([".gitignore", ".arc", "requirements", REQUIREMENTS_AGENT_DIR, "shallowcode.config.json"]);
 
 async function requireEmptyOutputDirectory(root: string): Promise<void> {
   const unexpected = (await readdir(root)).filter(name => !FIRST_RUN_ALLOWED_ENTRIES.has(name));
   if (unexpected.length) throw new Error("Output directory must be empty before the first run: " + root);
 }
 
-const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env"];
+const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env", `${REQUIREMENTS_AGENT_DIR}/`];
 
 /** Keep dependency and build output out of the base commit without rewriting
  * the template's own .gitignore, which its author still owns. */

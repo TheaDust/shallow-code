@@ -30,6 +30,7 @@ test("GitOps writes and tracks ignore rules when initializing", async () => {
     const content = await readFile(join(directory, ".gitignore"), "utf8");
     assert.match(content, /node_modules\//);
     assert.match(content, /\.env/);
+    assert.match(content, /\.requirements-agent\//, "req 草稿目录不进入应用历史");
 
     const tracked = await execFileAsync("git", ["ls-files", ".gitignore"], {
       cwd: directory,
@@ -339,6 +340,23 @@ test("GitOps open refuses a fresh directory that is not empty", async () => {
       /must be empty before the first run/,
     );
     assert.equal(await readFile(stray, "utf8"), "stray");
+  });
+});
+
+test("GitOps open accepts a fresh directory that only carries requirements metadata", async () => {
+  await withTempDir("shallow-git-", async (directory) => {
+    await mkdir(join(directory, "requirements"));
+    await writeFile(join(directory, "requirements", "requirements.yaml"), "id: ROOT\n");
+    await mkdir(join(directory, ".requirements-agent"));
+    const draft = join(directory, ".requirements-agent", "draft.json");
+    await writeFile(draft, "{}");
+
+    const git = await GitCliOps.open(directory);
+    await git.captureAccepted("shallow: baseline");
+    const tracked = await execFileAsync("git", ["ls-files"], { cwd: directory });
+
+    assert.doesNotMatch(tracked.stdout, /\.requirements-agent/, "草稿目录不进入应用历史");
+    assert.equal(await readFile(draft, "utf8"), "{}", "草稿文件保留");
   });
 });
 
