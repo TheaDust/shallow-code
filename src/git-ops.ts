@@ -1,5 +1,5 @@
 import { mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import {
   CONTROLLER_METADATA,
@@ -256,9 +256,9 @@ const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env", ...IGNORED_METADATA_RULES]
 /** Keep dependency and build output out of the base commit without rewriting
  * the template's own .gitignore, which its author still owns. */
 async function ensureLocalExclude(root: string, generatedPaths: readonly string[] = []): Promise<void> {
-  const infoDir = join(root, ".git", "info");
-  const excludeFile = join(infoDir, "exclude");
-  await mkdir(infoDir, { recursive: true });
+  const gitPath = await requireGit(root, ["rev-parse", "--git-path", "info/exclude"]);
+  const excludeFile = resolve(root, gitPath.stdout.trim());
+  await mkdir(dirname(excludeFile), { recursive: true });
   let content = "";
   try {
     content = await readFile(excludeFile, "utf8");

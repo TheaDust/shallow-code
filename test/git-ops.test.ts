@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { test } from "node:test";
 
 import { execFile } from "node:child_process";
@@ -201,6 +201,39 @@ async function initRepoWithRootCommit(
     { cwd: directory },
   );
 }
+
+test("GitOps opens a linked worktree and preserves its existing local ignore rules", async () => {
+  await withTempDir("shallow-git-worktree-", async root => {
+    const repository = join(root, "repository"), worktree = join(root, "worktree");
+    await mkdir(repository);
+    await initRepoWithRootCommit(repository, "user baseline");
+    const originalHead = (await runGit(repository, ["rev-parse", "HEAD"], false)).stdout;
+    await runGit(repository, ["worktree", "add", "--detach", worktree, "HEAD"], false);
+    assert.match(await readFile(join(worktree, ".git"), "utf8"), /^gitdir:/);
+    const originalIgnore = await readFile(join(worktree, ".gitignore"), "utf8");
+    const excludeFile = resolve(worktree, (await runGit(worktree, ["rev-parse", "--git-path", "info/exclude"], false)).stdout.trim());
+    await writeFile(excludeFile, "# user rules\ncustom/\n");
+
+    const git = await GitCliOps.open(worktree, { generatedPaths: ["dist"] });
+    const exclude = await readFile(excludeFile, "utf8");
+    assert.ok(exclude.startsWith("# user rules\ncustom/\n"));
+    await mkdir(join(worktree, ".requirements-agent"));
+    await writeFile(join(worktree, ".requirements-agent", "draft.json"), "{}\n");
+    await mkdir(join(worktree, "dist"));
+    await writeFile(join(worktree, "dist", "app.js"), "generated\n");
+    const ignored = await runGit(worktree, ["check-ignore", ".requirements-agent/draft.json", "dist/app.js"], false);
+    assert.deepEqual(ignored.stdout.trim().split(/\r?\n/), [".requirements-agent/draft.json", "dist/app.js"]);
+    await writeFile(join(worktree, "app.txt"), "implemented\n");
+    const accepted = await git.captureAccepted("worktree change");
+    assert.notEqual(accepted, originalHead.trim());
+    assert.doesNotMatch((await runGit(worktree, ["ls-files"], false)).stdout, /\.requirements-agent|dist\//);
+    await GitCliOps.open(worktree, { allowExisting: true, generatedPaths: ["dist"] });
+    assert.equal(await readFile(excludeFile, "utf8"), exclude);
+    assert.equal(await readFile(join(worktree, ".gitignore"), "utf8"), originalIgnore);
+    assert.equal((await runGit(repository, ["rev-parse", "HEAD"], false)).stdout, originalHead);
+    assert.equal(await readFile(join(repository, "app.txt"), "utf8"), "committed");
+  });
+});
 
 test("GitOps open refuses dirty inputs even when their root commit resembles controller history", async () => {
   await withTempDir("shallow-git-", async (directory) => {

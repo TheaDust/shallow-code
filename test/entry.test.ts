@@ -15,6 +15,7 @@ import {
 import { withTempDir } from "./helpers/temp-dir.js";
 import { loadRunRecord } from "../src/run-record.js";
 import { minimalWebProjectSpec, npmExecutable } from "../src/project-spec.js";
+import { GitCliOps } from "../src/git-ops.js";
 
 test("The production entry resumes an owned checkpoint with fresh artifacts and applies without gateway credentials", { timeout: 60_000 }, async () => {
   await withTempDir("shallow-entry-resume-", async root => {
@@ -78,7 +79,7 @@ test("An existing Web project without a run declaration reports the missing conf
   });
 });
 
-test("An output directory carrying only requirements metadata starts a blank template run", async () => {
+test("An output directory carrying only requirements metadata starts a blank template run and exports its delivery", async () => {
   await withTempDir("shallow-entry-metadata-", async root => {
     const output = join(root, "web2");
     const requirements = join(output, "requirements");
@@ -92,7 +93,11 @@ test("An output directory carrying only requirements metadata starts a blank tem
       { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "runs") },
       async context => {
         received = context;
-        return { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [] };
+        const git = await GitCliOps.open(context.pipelineOptions.outputDir);
+        const baseline = await git.captureAccepted("input baseline");
+        context.runRecord.inputBaseline = baseline;
+        await writeFile(join(output, "app.txt"), "implemented\n");
+        return { status: "delivered", acceptedSha: baseline, verifiedRequirementIds: [], blockedRequirementIds: [] };
       },
       null,
     );
@@ -100,6 +105,13 @@ test("An output directory carrying only requirements metadata starts a blank tem
     assert.equal(received?.runRecord.sourceProjectDir, undefined, "req 元数据目录不应被当作已有项目");
     assert.equal(received?.pipelineOptions.outputDir, output);
     assert.deepEqual(received?.runRecord.projectSpec, minimalWebProjectSpec(npmExecutable()), "空白目录使用随附模板的运行合同");
+    const run = join(root, "runs", (await readdir(join(root, "runs")))[0]);
+    const patch = await readFile(join(run, "changes.patch"), "utf8");
+    assert.match(patch, /app\.txt/);
+    assert.doesNotMatch(patch, /\.requirements-agent/);
+    assert.equal(JSON.parse(await readFile(join(run, "result.json"), "utf8")).status, "delivered");
+    await access(join(run, "report.md"));
+    await access(join(output, ".requirements-agent"));
   });
 });
 

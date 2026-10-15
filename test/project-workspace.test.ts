@@ -48,6 +48,36 @@ test("A project snapshot preserves staged and untracked inputs while keeping the
   });
 });
 
+test("Patch export preserves ignored requirements drafts and filters run metadata without changing the application index", async () => {
+  await withTempDir("shallow-patch-metadata-", async root => {
+    const project = join(root, "project"), run = join(root, "run");
+    await mkdir(project);
+    await mkdir(run);
+    await writeFile(join(project, ".gitignore"), "custom/\n");
+    await mkdir(join(project, ".requirements-agent"));
+    const draft = join(project, ".requirements-agent", "draft.json");
+    await writeFile(draft, "{}\n");
+    const git = await GitCliOps.open(project);
+    const baseline = await git.captureAccepted("input baseline");
+    const index = (await runGit(project, ["ls-files", "--stage"], false)).stdout;
+    await writeFile(join(project, "app.txt"), "implemented\n");
+    for (const name of [".arc", "shallow-progress"]) {
+      await mkdir(join(project, name));
+      await writeFile(join(project, name, "events.txt"), "run metadata\n");
+    }
+
+    const patch = await writeProjectPatch(project, baseline, run);
+
+    const content = await readFile(patch, "utf8");
+    assert.match(content, /app\.txt/);
+    assert.match(content, /\+implemented/);
+    assert.doesNotMatch(content, /\.requirements-agent|\.arc|shallow-progress/);
+    assert.equal(await readFile(draft, "utf8"), "{}\n");
+    assert.equal((await runGit(project, ["ls-files", "--stage"], false)).stdout, index);
+    assert.equal((await runGit(project, ["rev-parse", "HEAD"], false)).stdout.trim(), baseline);
+  });
+});
+
 test("Workspace preparation rejects source overlap and distinguishes configuration from application files", async () => {
   await withTempDir("shallow-workspace-", async root => {
     await writeFile(join(root, "shallowcode.config.json"), "{}");

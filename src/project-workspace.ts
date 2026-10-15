@@ -1,6 +1,6 @@
 import { copyFile, lstat, mkdir, readdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { CONTROLLER_METADATA, EXCLUDED_METADATA_NAMES, NON_APPLICATION_METADATA } from "./controller-metadata.js";
+import { CONTROLLER_METADATA, EXCLUDED_METADATA_NAMES, NON_APPLICATION_METADATA, PATH_EXCLUDED_METADATA_NAMES } from "./controller-metadata.js";
 import { runGit } from "./git-ops.js";
 
 /** A fresh output may carry configuration, requirements or run metadata before a scaffold exists. */
@@ -54,7 +54,8 @@ export async function writeProjectPatch(directory: string, baseline: string, run
     return result.stdout;
   };
   await invoke(["read-tree", "HEAD"]);
-  await invoke(["add", "-A", ...paths]);
+  // git add uses ignore rules for ignored metadata; the exported diff also excludes tracked copies.
+  await invoke(["add", "-A", "--", ".", ...PATH_EXCLUDED_METADATA_NAMES.map(name => `:(top,exclude)${name}`)]);
   const content = await invoke(["diff", "--cached", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", baseline, ...paths]);
   await writeFile(patch, content, "utf8");
   return patch;
