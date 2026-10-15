@@ -472,6 +472,12 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
         failureKind: checked.failureKind } });
     return { ...checked, status };
   };
+  const stageRequirementResults = (): Record<string, AuditResult["status"]> => Object.fromEntries(
+    packets.flatMap(packet => {
+      const result = results.get(packet.id);
+      return result ? packet.requirementIds.map(id => [id, result.status]) : [];
+    }),
+  );
   const publish = async (): Promise<void> => {
     for (const packet of packets) {
       const result = results.get(packet.id);
@@ -647,6 +653,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     await state.record({ at: now(), type: "module_boundary_audit_finished",
       detail: { moduleId, moduleName, packetIds: targetPackets.map(packet => packet.id),
         results: Object.fromEntries([...boundaryResults].map(([id, r]) => [id, r.status])),
+        requirementResults: stageRequirementResults(),
         regressionPacketIds: regressionChecks.map(item => item.packet.id) } });
     // Inline repair for module boundary failures, using per-module repair budget.
     while (boundaryRepairCount < 2 && budget.remaining("repair") > 0) {
@@ -874,7 +881,8 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
         }
       }
       await state.record({ at: now(), type: "repair_batch_finished", detail: { round, retained: true,
-        improvedCases, resolvedGaps, reason: "verified improvement with regression coverage" } });
+        improvedCases, resolvedGaps, reason: "verified improvement with regression coverage",
+        requirementResults: stageRequirementResults() } });
     }
   };
 

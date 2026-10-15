@@ -26,6 +26,7 @@ test("Run view counts independent evidence, keeps runnable checkpoints and refle
   receive(view, "checkpoint_saved", { requirementIds: ["A"], reason: "runnable" });
   receive(view, "packet_accepted");
   receive(view, "compatibility_checked", { status: "passed", requirementIds: ["A"] });
+  receive(view, "probe_finished", { verdict: "pass", passed: 1, failed: 0 });
   assert.match(view.render(80).join("\n"), /已验证 0\/3/);
   assert.match(view.render(80).join("\n"), /可运行检查点覆盖 1 条需求/);
   receive(view, "audit_result", { requirementIds: ["A"], status: "verified" });
@@ -36,9 +37,44 @@ test("Run view counts independent evidence, keeps runnable checkpoints and refle
   assert.match(view.render(80).join("\n"), /已验证 0\/3.*失败 1/);
 });
 
+test("Module audit results update requirement counts before the final audit and reflect later regressions", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "module_boundary_audit_finished", { moduleId: "first", packetIds: ["opaque-audit-packet"],
+    results: { "opaque-audit-packet": "verified" }, requirementResults: { A: "verified", B: "inconclusive" } });
+  let text = view.render(80).join("\n");
+  assert.match(text, /已验证 1\/3.*证据不足 1/);
+  assert.match(text, /未验收 1/);
+
+  receive(view, "module_boundary_audit_finished", { moduleId: "second", packetIds: ["other-audit-packet"],
+    results: { "other-audit-packet": "verified" }, requirementResults: { A: "failed", B: "verified", C: "verified" } });
+  text = view.render(80).join("\n");
+  assert.match(text, /已验证 2\/3.*失败 1/);
+  assert.match(text, /未验收 0/);
+});
+
+test("Only retained repairs update live audit counts and the final summary replaces stage results", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "module_boundary_audit_finished", { moduleId: "first", packetIds: ["audit-packet"],
+    results: { "audit-packet": "failed" }, requirementResults: { A: "failed" } });
+  receive(view, "repair_batch_finished", { round: 1, retained: false, reason: "restored", requirementResults: { A: "verified" } });
+  assert.match(view.render(80).join("\n"), /已验证 0\/3.*失败 1/);
+  receive(view, "repair_batch_finished", { round: 2, retained: true, reason: "confirmed",
+    requirementResults: { A: "verified", B: "inconclusive", C: "verified" } });
+  assert.match(view.render(80).join("\n"), /已验证 2\/3.*失败 0.*证据不足 1/);
+
+  receive(view, "pipeline_finished", { status: "partial", verifiedRequirementIds: ["A"], failedRequirementIds: ["B"],
+    blockedRequirementIds: [], pendingRequirementIds: ["C"] });
+  const text = view.render(80).join("\n");
+  assert.match(text, /已验证 1\/3.*失败 1.*证据不足 0/);
+  assert.match(text, /未验收 1/);
+});
+
 test("Evolution skips stay outside the current numerator and denominator", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "evolution_scope_selected", { auditRequirementIds: ["B", "C"], skippedRequirementIds: ["A"] });
+  receive(view, "module_boundary_audit_finished", { moduleId: "first", packetIds: ["audit-packet"],
+    results: { "audit-packet": "verified" }, requirementResults: { A: "verified", B: "verified", C: "inconclusive" } });
+  assert.match(view.render(80).join("\n"), /已验证 1\/2.*证据不足 1/);
   receive(view, "audit_result", { requirementIds: ["A", "B"], status: "verified" });
   const text = view.render(80).join("\n");
   assert.match(text, /已验证 1\/2/);

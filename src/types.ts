@@ -184,7 +184,8 @@ interface RunEventDetails {
   compatibility_checked: { requirementIds: string[]; contract: "derived_web_contracts";
     status: "passed" | "failed" | "unresolved"; failureKind?: InconclusiveKind };
   repair_batch_started: { round: number; requirementIds: string[] };
-  repair_batch_finished: { round: number; retained: boolean; reason: string; improvedCases?: number; resolvedGaps?: number };
+  repair_batch_finished: { round: number; retained: boolean; reason: string; improvedCases?: number; resolvedGaps?: number;
+    requirementResults?: Record<string, "verified" | "failed" | "inconclusive"> };
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
 
   pipeline_started: { requirements?: number; totalBudgetMs?: number; port?: number; model?: string;
@@ -247,7 +248,9 @@ interface RunEventDetails {
   delivery_finished: { ok: boolean; stage: string; message: string };
   module_boundary_audit_finished: { moduleId: string; moduleName?: string; packetIds: string[];
     regressionPacketIds?: string[];
-    results: Record<string, "verified" | "failed" | "inconclusive"> };
+    results: Record<string, "verified" | "failed" | "inconclusive">;
+    /** Latest independent audit results by requirement, for live presentation before the final audit. */
+    requirementResults: Record<string, "verified" | "failed" | "inconclusive"> };
   verification_started: { retryCount: number };
   verification_finished: { ok: boolean; stage: string; message: string; durationMs: number; retryCount: number; candidate?: CandidateEvidence };
   pipeline_finished: { status: "delivered" | "partial" | "failed"; verifiedRequirementIds: string[];

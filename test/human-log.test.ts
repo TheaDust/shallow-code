@@ -71,6 +71,14 @@ test("Module boundary logs distinguish sampled seed entries from full atomic ver
   assert.match(line, /通过 1，失败 0，无法判断 0；跨模块种子入口抽查 1 条/);
 });
 
+test("Module boundary logs use the cumulative requirement snapshot when available", () => {
+  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-01T00:00:00Z", "module_boundary_audit_finished", {
+    detail: { moduleId: "SECOND", packetIds: ["opaque-audit-packet"], results: { "opaque-audit-packet": "verified" },
+      requirementResults: { A: "verified", B: "verified", C: "inconclusive" }, regressionPacketIds: ["sampled-packet"] },
+  }));
+  assert.match(line, /累计需求通过 2，失败 0，无法判断 1；跨模块种子入口抽查 1 条/);
+});
+
 test("Audit and guard logs expose coverage and uncertainty without declaring a regression", () => {
   const formatter = new HumanRunFormatter();
   const audit = formatLine(formatter, eventLine("2026-10-02T00:00:00Z", "audit_result", {

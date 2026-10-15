@@ -62,6 +62,11 @@ export class BuildView implements Component {
     if (event.type === "audit_result") {
       for (const id of ids("requirementIds")) this.statuses.set(id, detail!.status as RequirementStatus);
     }
+    if (event.type === "module_boundary_audit_finished" ||
+      (event.type === "repair_batch_finished" && detail?.retained === true)) {
+      const results = detail?.requirementResults as Record<string, RequirementStatus> | undefined;
+      for (const [id, status] of Object.entries(results ?? {})) this.statuses.set(id, status);
+    }
     if (event.type === "dependency_gate_blocked" || event.type === "module_failed") {
       for (const id of ids("requirementIds")) this.statuses.set(id, "blocked");
     }
@@ -123,7 +128,7 @@ export class BuildView implements Component {
       t.strong(t.success(`已验证 ${counts.verified}/${this.scope.size}`)),
       counts.failed ? t.strong(t.error(`失败 ${counts.failed}`)) : t.muted(`失败 ${counts.failed}`),
       counts.inconclusive ? t.strong(t.warning(`证据不足 ${counts.inconclusive}`)) : t.muted(`证据不足 ${counts.inconclusive}`),
-      t.muted(`阻塞 ${counts.blocked} · 待处理 ${counts.todo}`),
+      t.muted(`阻塞 ${counts.blocked} · 未验收 ${counts.todo}`),
     ].join("  ");
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
     const activity = ` ${t.accent(frame)} ${this.activity}`;
@@ -252,7 +257,7 @@ export class BuildTui {
   private showHelp(): void {
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
       "d  查看详细日志，包含安装、构建与模型用量\n↑↓ / 滚轮 / PgUp / PgDn  滚动日志\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
-      "已验证：当前候选获得独立浏览器验收证据\n证据不足：本轮验收无法确定行为结果\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
+      "已验证：最近一次独立验收通过，交付前仍会复验\n证据不足：本轮验收无法确定行为结果\n未验收：尚未产出完整验收结果，可能正在实现或验收\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });

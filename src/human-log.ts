@@ -250,14 +250,14 @@ function describe(type: string, event: RunEvent): string | null {
         : `交付失败${stageSuffix}${message ? `：${message}` : ""}`;
     }
     case "module_boundary_audit_finished": {
-      const results = typeof detail?.results === "object" && detail.results !== null
-        ? detail.results as Record<string, string> : {};
+      const requirementResults = asRecord(detail?.requirementResults);
+      const results = requirementResults ?? asRecord(detail?.results) ?? {};
       const counts = { verified: 0, failed: 0, inconclusive: 0 };
       for (const status of Object.values(results)) {
         if (status === "verified" || status === "failed" || status === "inconclusive") counts[status]++;
       }
       const checks = strings(detail?.regressionPacketIds).length;
-      return `模块边界验收完成（${pickString(detail, "moduleId") ?? ""}）；通过 ${counts.verified}，失败 ${counts.failed}，无法判断 ${counts.inconclusive}${checks ? `；跨模块种子入口抽查 ${checks} 条` : ""}`;
+      return `模块边界验收完成（${pickString(detail, "moduleId") ?? ""}）；${requirementResults ? "累计需求" : ""}通过 ${counts.verified}，失败 ${counts.failed}，无法判断 ${counts.inconclusive}${checks ? `；跨模块种子入口抽查 ${checks} 条` : ""}`;
     }
     case "pipeline_finished": {
       const breakdown = asRecord(detail?.inconclusiveByKind);

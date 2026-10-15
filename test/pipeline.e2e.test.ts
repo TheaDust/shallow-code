@@ -39,6 +39,8 @@ test("Partial case improvements are confirmed and retained across the existing t
     const retained = (await f.events()).filter(event => event.type === "repair_batch_finished");
     assert.ok(retained.every(event => event.detail?.retained));
     assert.equal(retained[0].detail?.improvedCases, 1);
+    assert.deepEqual(retained.map(event => event.detail?.requirementResults?.A), ["failed", "verified"],
+      "retained repairs publish their independently checked requirement status for live presentation");
     assert.equal(summary.status, "delivered");
     assert.equal(f.git.restoredShas.length, 0);
   });
@@ -556,7 +558,11 @@ test("Pipeline checks module paths before the full atomic audit and keeps verifi
     assert.equal(events.filter(item => item.type === "checkpoint_saved").length, 2);
     // 3 consolidated audit_result events (module boundary audit updates results internally, no separate events).
     assert.equal(events.filter(item => item.type === "audit_result").length, 3);
-    assert.ok(events.some(item => item.type === "module_boundary_audit_finished"));
+    const firstBoundary = events.find(item => item.type === "module_boundary_audit_finished");
+    assert.ok(firstBoundary?.type === "module_boundary_audit_finished");
+    assert.deepEqual(firstBoundary.detail?.requirementResults, { A: "verified", B: "verified" });
+    const nextImplementation = events.findIndex(item => item.type === "packet_selected" && item.detail?.requirementIds?.includes("C"));
+    assert.ok(events.indexOf(firstBoundary) < nextImplementation, "stage counts must reach the UI before the next module starts");
   });
 });
 
