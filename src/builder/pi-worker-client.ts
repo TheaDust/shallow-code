@@ -49,6 +49,8 @@ export interface PiWorkerProgress {
 export interface PiWorkerLiveOptions {
   modelCost?: ModelRates;
   onProgress?: (progress: PiWorkerProgress) => void;
+  /** Emit stderr keepalives unless an interactive presentation owns terminal output. Defaults to true. */
+  heartbeat?: boolean;
 }
 
 /** One child per prompt. Never imports the SDK in the long-lived controller. */
@@ -108,7 +110,9 @@ export class PiWorkerClient implements CodingAgentPort {
     // The evaluation runner kills silent processes: keep a heartbeat on stderr
     // for the whole call (worker output stays buffered for diagnostics only).
     const heartbeat = setInterval(() => {
-      process.stderr.write(`[ShallowCode] builder call still running (${Math.floor((Date.now() - started) / 1000)}s elapsed)\n`);
+      if (this.live.heartbeat !== false) {
+        process.stderr.write(`[ShallowCode] builder call still running (${Math.floor((Date.now() - started) / 1000)}s elapsed)\n`);
+      }
     }, 30_000);
     heartbeat.unref();
     try {

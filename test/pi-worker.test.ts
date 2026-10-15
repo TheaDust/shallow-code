@@ -7,6 +7,49 @@ import { PiWorkerClient } from "../src/builder/pi-worker-client.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { readEnvFile, readGatewayConfig } from "../src/runtime-config.js";
 
+for (const heartbeat of [true, false]) {
+  test(`Pi worker ${heartbeat ? "keeps non-interactive heartbeats" : "leaves TUI output to the renderer"} and stops the heartbeat after completion`, { timeout: 30_000 }, async t => {
+    t.mock.timers.enable({ apis: ["setInterval"] });
+    await withTempDir("shallow-pi-heartbeat-", async root => {
+      const app = join(root, "app"); await mkdir(app);
+      let requested!: () => void;
+      const received = new Promise<void>(resolve => { requested = resolve; });
+      let respond!: () => void;
+      const released = new Promise<void>(resolve => { respond = resolve; });
+      const server = createServer(async (req, res) => {
+        for await (const _chunk of req) { /* consume the request before holding the response */ }
+        requested();
+        await released;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: "stop" }] })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      });
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const client = new PiWorkerClient({ apiKey: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        model: "fixture" }, join(root, "sessions"), undefined, heartbeat ? {} : { heartbeat: false });
+      const stderr = t.mock.method(process.stderr, "write", () => true);
+      const heartbeats = () => stderr.mock.calls.filter(call => String(call.arguments[0]).includes("builder call still running")).length;
+      try {
+        const pending = client.run({ outputDir: app, systemPrompt: "Finish immediately.", taskPrompt: "finish", timeoutMs: 20_000 });
+        await Promise.race([received, pending.then(result => { throw new Error(`Worker finished before the held request: ${result.summary}`); })]);
+
+        t.mock.timers.tick(30_000);
+        assert.equal(heartbeats(), heartbeat ? 1 : 0);
+        respond();
+        const result = await pending;
+        assert.equal(result.outcome, "completed", result.summary);
+        t.mock.timers.tick(30_000);
+        assert.equal(heartbeats(), heartbeat ? 1 : 0, "completed calls must release their heartbeat timer");
+      } finally {
+        respond();
+        await client.close();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    });
+  });
+}
+
 test("Pi SDK executes tools and resumes persisted history in a new worker", { timeout: 60_000 }, async () => {
   await withTempDir("shallow-pi-", async root => {
     const app = join(root, "app"); await mkdir(app);

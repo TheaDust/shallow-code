@@ -149,6 +149,59 @@ test("Interactive details and interrupt keys leave the terminal restored", async
   assert.equal(terminal.stops, 1);
 });
 
+test("Returning from build help and logs clears their full-screen content before repainting the status", (t) => {
+  const terminal = new MemoryTerminal();
+  terminal.rows = 30;
+  const ui = new BuildTui(options, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  ui.tui.renderNow();
+  for (const [key, title] of [["?", "运行帮助"], ["d", "详细日志"]]) {
+    terminal.input(key);
+    ui.tui.renderNow();
+    assert.ok(terminal.writes.at(-1)?.includes(title));
+    const before = terminal.writes.length;
+
+    terminal.input("\x1b");
+    ui.tui.renderNow();
+
+    const output = terminal.writes.slice(before).join("");
+    assert.ok(output.includes("\x1b[2J\x1b[H\x1b[3J"), `${title} should be cleared before returning`);
+    assert.match(output, /Shallow Code.*Build Agent/);
+    assert.doesNotMatch(output, /运行帮助|详细日志 · 最近/);
+    assert.equal(ui.tui.hasOverlay(), false);
+  }
+});
+
+test("Long-running build updates keep one status frame and redraw within resized terminal bounds", (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  t.mock.timers.setTime(0);
+  const terminal = new MemoryTerminal();
+  const ui = new BuildTui(options, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  ui.record(JSON.stringify({ at: "2026-10-13T00:00:00Z", type: "builder_started" }), "Builder 开始编写代码");
+  ui.tui.renderNow();
+  const before = terminal.writes.length;
+  for (let seconds = 30; seconds <= 600; seconds += 30) {
+    t.mock.timers.setTime(seconds * 1_000);
+    ui.tui.renderNow();
+  }
+  const updates = terminal.writes.slice(before).join("");
+  assert.match(updates, /10:00/);
+  assert.doesNotMatch(updates, /Shallow Code/, "timer updates should update existing rows");
+
+  for (const [columns, rows] of [[40, 12], [120, 30], [24, 8], [80, 24]]) {
+    terminal.resize(columns, rows);
+    ui.tui.renderNow();
+    assert.ok(terminal.writes.at(-1)?.includes("\x1b[2J\x1b[H\x1b[3J"));
+    const frame = (ui.tui as TuiMainScreen).captureRenderState().previousLines;
+    assert.ok(frame.length <= rows, `${columns}×${rows}: ${frame.length} rows`);
+    assert.ok(frame.every(line => visibleWidth(line) <= columns));
+    assert.match(frame.join("\n"), /Shallow Code/);
+  }
+});
+
 test("Interactive presentation clears the console page and reports the wheel only while a viewer is open", (t) => {
   const terminal = new MemoryTerminal();
   const ui = new BuildTui({ ...options, onInterrupt() {} }, terminal);

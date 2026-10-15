@@ -283,11 +283,13 @@ async function executeProduction(
   process.stderr.write(`[ShallowCode] 最终验收补生成 plan：${pipelineOptions.generateFinalAuditPlans ? "已开启" : "已关闭（仅复用已有 plan）"}\n`);
   const candidate = new CandidateRuntime(pipelineOptions.outputDir,
     join(dirname(runLogFile), "candidate"), pipelineOptions.platformContract);
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
   let releaseWorkspace: (() => Promise<void>) | undefined;
   let tui: BuildTui | undefined;
   try {
     const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined, {
       ...(builderModelCost ? { modelCost: builderModelCost } : {}),
+      heartbeat: !interactive,
       onProgress: progress => { tui?.view.liveUsage(progress); },
     }), {
       timeoutMs: modelTimeouts.builderTimeoutMs,
@@ -347,7 +349,7 @@ async function executeProduction(
       const path = name.replaceAll("\\", "/");
       promptHash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
     }
-    if (process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb") {
+    if (interactive) {
       tui = new BuildTui({
         requirementIds: Object.keys(context.runRecord.requirementDigests!),
         models: { builder: builderGateway.model, judge: judgeGateway.model },

@@ -201,6 +201,7 @@ export class BuildTui {
 
   constructor(private readonly options: BuildTuiOptions, terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal);
+    this.tui.setClearOnShrink(true);
     this.view = new BuildView(options, () => terminal.rows, this.theme);
     this.tui.addChild(this.view);
     this.tui.addInputListener(data => {
