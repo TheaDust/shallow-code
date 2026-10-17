@@ -133,14 +133,32 @@ const PRELUDE = String.raw`
     goto: (path, checkpointId) => call('goto', {actor, window, frame, path, checkpointId}),
     reload: checkpointId => call('reload', {actor, window, frame, checkpointId}),
     inspect: () => call('inspect', {actor, window, frame}),
+    url: () => call('url', {actor, window, frame}),
     read: (locator, kind = 'text') => call('read', {actor, window, frame, locator, kind}),
+    attribute: (locator, name) => call('attribute', {actor, window, frame, locator, name}),
+    style: (locator, name) => call('style', {actor, window, frame, locator, name}),
+    count: locator => call('count', {actor, window, frame, locator}),
+    waitFor: (locator, state = 'visible', timeoutMs) => call('waitFor', {actor, window, frame, locator, state, timeoutMs}),
     click: (locator, checkpointId) => call('click', {actor, window, frame, locator, checkpointId}),
     fill: (locator, value, checkpointId) => call('fill', {actor, window, frame, locator, value, checkpointId}),
     press: (locator, value, checkpointId) => call('press', {actor, window, frame, locator, value, checkpointId}),
     check: (locator, checkpointId) => call('check', {actor, window, frame, locator, checkpointId}),
+    setChecked: (locator, checked, checkpointId) => call('setChecked', {actor, window, frame, locator, checked, checkpointId}),
     select: (locator, value, checkpointId) => call('select', {actor, window, frame, locator, value, checkpointId}),
+    hover: (locator, checkpointId) => call('hover', {actor, window, frame, locator, checkpointId}),
+    doubleClick: (locator, checkpointId) => call('doubleClick', {actor, window, frame, locator, checkpointId}),
+    rightClick: (locator, checkpointId) => call('rightClick', {actor, window, frame, locator, checkpointId}),
+    dragTo: (from, to, checkpointId) => call('dragTo', {actor, window, frame, from, to, checkpointId}),
+    upload: (locator, files, checkpointId) => call('upload', {actor, window, frame, locator, files, checkpointId}),
+    focus: (locator, checkpointId) => call('focus', {actor, window, frame, locator, checkpointId}),
+    blur: (locator, checkpointId) => call('blur', {actor, window, frame, locator, checkpointId}),
+    scroll: (deltaX = 0, deltaY = 0, checkpointId) => call('scroll', {actor, window, frame, deltaX, deltaY, checkpointId}),
     dialog: (accept = true, promptText) => call('dialog', {actor, window, accept, promptText}),
-    download: (locator, checkpointId) => call('download', {actor, window, frame, locator, checkpointId}),
+    clipboard: Object.freeze({
+      writeText: (value, checkpointId) => call('clipboardWrite', {actor, window, value, checkpointId}),
+      readText: () => call('clipboardRead', {actor, window}),
+    }),
+    download: (locator, checkpointId, encoding = 'text') => call('download', {actor, window, frame, locator, checkpointId, encoding}),
     popup: async (locator, checkpointId) => {const opened = await call('popup', {actor, window, frame, locator, checkpointId}); return page(actor, opened.window);},
     frame: name => page(actor, window, name),
   });
@@ -149,6 +167,7 @@ const PRELUDE = String.raw`
 })();`;
 
 export interface WebLocator { role?: string; name?: string; label?: string; text?: string; testId?: string; within?: WebLocator }
+export type WebFile = { name: string; mimeType?: string; text?: string; base64?: string };
 export interface WebExpectation {
   clauseId: string;
   checkpointId: string;
@@ -163,6 +182,8 @@ export interface WebRuntimeEvent {
   payload: Record<string, unknown>;
 }
 interface Actor { context: BrowserContext; windows: Map<string, Page> }
+const MAX_FILE_BYTES = 4 * 1024 * 1024;
+const DOWNLOAD_TEXT_EXTENSIONS = /\.(?:txt|csv|tsv|json|xml|html|md)$/i;
 
 /** Enforces browser ownership and records actual observations before the guest can consume them. */
 export class WebProgramRuntime {
@@ -226,6 +247,7 @@ export class WebProgramRuntime {
         this.openingActors.add(name);
         const context = await this.browser.newContext({ acceptDownloads: true, serviceWorkers: "block" });
         if (!this.active) { await context.close(); throw new Error("Web case closed during actor creation"); }
+        await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(this.baseUrl).origin });
         this.actors.set(name, { context, windows: new Map() });
         this.openingActors.delete(name);
         await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
@@ -265,20 +287,49 @@ export class WebProgramRuntime {
     if (method === "inspect") return this.observation({ actor: actorName, window: windowName, value: {
       url: target.url(), text: (await target.locator("body").innerText()).slice(0, 32_000), accessibility: (await target.locator("body").ariaSnapshot()).slice(0, 32_000),
     } });
-    if (method === "goto") {
-      if (input.frame !== undefined) throw new Error("Navigate frames through application controls");
-      await page.goto(this.safeUrl(string(input.path, "path")), { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
-    } else if (method === "reload") {
-      if (input.frame !== undefined) throw new Error("Reload the owning window");
-      await page.reload({ waitUntil: "domcontentloaded", timeout: this.timeoutMs });
-    } else if (method === "dialog") {
-      if (input.checkpointId !== undefined) throw new Error("Arming a dialog handler is not an executed requirement action");
-      page.once("dialog", (dialog) => { void (input.accept === false ? dialog.dismiss() : dialog.accept(typeof input.promptText === "string" ? input.promptText : undefined)).catch(() => {}); });
-    } else {
-      const locator = this.locate(target, input.locator, method !== "read");
+    if (method === "url") return this.observation({ actor: actorName, window: windowName, frame: input.frame, kind: "url", value: target.url() });
+    if (method === "clipboardWrite" || method === "clipboardRead") {
+      if (input.frame !== undefined) throw new Error("Clipboard belongs to the owning window, not a frame");
+      if (method === "clipboardWrite") await page.evaluate(async (value) => navigator.clipboard.writeText(value as string), string(input.value, "value"));
+      else return this.observation({ actor: actorName, window: windowName, kind: "clipboard", value: await page.evaluate(() => navigator.clipboard.readText()) });
+    } else if (method === "scroll") {
+      if (input.frame !== undefined) throw new Error("Scroll the owning window, not a frame");
+      const deltaX = finiteNumber(input.deltaX, "deltaX", 1_000_000);
+      const deltaY = finiteNumber(input.deltaY, "deltaY", 1_000_000);
+      if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires a nonzero delta");
+      await page.mouse.wheel(deltaX, deltaY);
+    } else if (method === "dragTo") {
+      const from = this.locate(target, input.from, true);
+      const to = this.locate(target, input.to, true);
+      if (await from.count() !== 1 || await to.count() !== 1) throw new Error("Drag locators must identify exactly one element");
+      await from.dragTo(to, { timeout: this.timeoutMs });
+    } else if (method === "count") {
+      const locator = this.locate(target, input.locator, false);
+      return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "count", value: await locator.count() });
+    } else if (method === "waitFor") {
+      const locator = this.locate(target, input.locator, false);
+      const state = input.state === undefined ? "visible" : string(input.state, "state");
+      if (!["attached", "detached", "visible", "hidden"].includes(state)) throw new Error("Unsupported wait state");
+      const count = await locator.count();
+      if (count > 1 || (count === 0 && state !== "detached" && state !== "hidden")) throw new Error("Wait locator must identify exactly one element");
+      const timeoutMs = Math.min(this.timeoutMs, Math.max(1, input.timeoutMs === undefined ? this.timeoutMs : finiteNumber(input.timeoutMs, "timeoutMs", this.timeoutMs)));
+      await locator.waitFor({ state: state as "attached" | "detached" | "visible" | "hidden", timeout: timeoutMs });
+    } else if (method === "attribute" || method === "style" || method === "read" || method === "click" || method === "fill" ||
+      method === "press" || method === "check" || method === "setChecked" || method === "select" || method === "hover" ||
+      method === "doubleClick" || method === "rightClick" || method === "upload" || method === "focus" || method === "blur" ||
+      method === "download" || method === "popup") {
+      const locator = this.locate(target, input.locator, !["read", "attribute", "style"].includes(method));
       if (await locator.count() !== 1) throw new Error("Locator must identify exactly one element");
+      if (method === "attribute") {
+        const name = string(input.name, "name");
+        return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "attribute", name, value: await locator.getAttribute(name) });
+      }
+      if (method === "style") {
+        const name = string(input.name, "name");
+        return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "style", name, value: await locator.evaluate((element, property) => getComputedStyle(element).getPropertyValue(property as string), name) });
+      }
       if (method === "read") {
-        const kind = input.kind ?? "text";
+        const kind = input.kind === undefined ? "text" : string(input.kind, "kind");
         let value: unknown;
         if (kind === "text") value = (await locator.innerText()).slice(0, 64_000);
         else if (kind === "value") value = await locator.inputValue();
@@ -292,7 +343,17 @@ export class WebProgramRuntime {
       else if (method === "fill") await locator.fill(string(input.value, "value"));
       else if (method === "press") await locator.press(string(input.value, "value"));
       else if (method === "check") await locator.check();
-      else if (method === "select") await locator.selectOption(string(input.value, "value"));
+      else if (method === "setChecked") await locator.setChecked(boolean(input.checked, "checked"));
+      else if (method === "select") {
+        const value = input.value;
+        if (!(typeof value === "string" || Array.isArray(value) || (value && typeof value === "object"))) throw new Error("Select value must be a string, array or option object");
+        await locator.selectOption(value as string | string[] | { value?: string; label?: string; index?: number } | Array<{ value?: string; label?: string; index?: number }>);
+      } else if (method === "hover") await locator.hover();
+      else if (method === "doubleClick") await locator.dblclick();
+      else if (method === "rightClick") await locator.click({ button: "right" });
+      else if (method === "upload") await locator.setInputFiles(await filePayload(input.files));
+      else if (method === "focus") await locator.focus();
+      else if (method === "blur") await locator.blur();
       else if (method === "popup") {
         const [opened] = await Promise.all([page.waitForEvent("popup", { timeout: this.timeoutMs }), locator.click()]);
         await opened.waitForLoadState("domcontentloaded", { timeout: this.timeoutMs });
@@ -302,8 +363,10 @@ export class WebProgramRuntime {
         await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, locator: input.locator, openedWindow: window } });
         return { window };
       } else if (method === "download") {
+        const encoding = input.encoding === undefined ? "text" : string(input.encoding, "encoding");
+        if (encoding !== "text" && encoding !== "base64") throw new Error("Download encoding must be text or base64");
         const [download] = await Promise.all([page.waitForEvent("download", { timeout: this.timeoutMs }), locator.click()]);
-        if (!/\.(?:txt|csv|tsv|json|xml|html|md)$/i.test(download.suggestedFilename())) { await download.delete(); throw new Error("Download format is not an authorized UTF-8 business file"); }
+        if (encoding === "text" && !DOWNLOAD_TEXT_EXTENSIONS.test(download.suggestedFilename())) { await download.delete(); throw new Error("Download format is not an authorized UTF-8 business file"); }
         const downloadUrl = new URL(download.url());
         if (!(downloadUrl.protocol === "blob:" && downloadUrl.origin === new URL(this.baseUrl).origin)) this.safeUrl(download.url());
         const stream = await download.createReadStream();
@@ -312,17 +375,32 @@ export class WebProgramRuntime {
         for await (const chunk of stream) {
           const bytes = Buffer.from(chunk);
           size += bytes.length;
-          if (size > 1_048_576) { stream.destroy(); await download.delete(); throw new Error("Download exceeds read limit"); }
+          if (size > MAX_FILE_BYTES) { stream.destroy(); await download.delete(); throw new Error("Download exceeds read limit"); }
           chunks.push(bytes);
         }
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+        const bytes = Buffer.concat(chunks);
+        const value = encoding === "text" ? new TextDecoder("utf-8", { fatal: true }).decode(bytes) : bytes.toString("base64");
         await download.delete();
-        await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, locator: input.locator } });
-        return this.observation({ actor: actorName, kind: "download", filename: download.suggestedFilename(), value: text });
-      } else throw new Error(`Unknown browser method: ${method}`);
+        await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, locator: input.locator, encoding, filename: download.suggestedFilename(), bytes: size } });
+        return this.observation({ actor: actorName, kind: "download", filename: download.suggestedFilename(), encoding, value });
+      }
+    } else if (method === "goto") {
+      if (input.frame !== undefined) throw new Error("Navigate frames through application controls");
+      await page.goto(this.safeUrl(string(input.path, "path")), { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
+    } else if (method === "reload") {
+      if (input.frame !== undefined) throw new Error("Reload the owning window");
+      await page.reload({ waitUntil: "domcontentloaded", timeout: this.timeoutMs });
+    } else if (method === "dialog") {
+      if (input.checkpointId !== undefined) throw new Error("Arming a dialog handler is not an executed requirement action");
+      page.once("dialog", (dialog) => { void (input.accept === false ? dialog.dismiss() : dialog.accept(typeof input.promptText === "string" ? input.promptText : undefined)).catch(() => {}); });
+    } else {
+      throw new Error(`Unknown browser method: ${method}`);
     }
     this.safeUrl(page.url());
-    return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, frame: input.frame, locator: input.locator, value: input.value } }) };
+    return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: {
+      method, actor: actorName, window: windowName, frame: input.frame, locator: input.locator,
+      ...(method === "upload" ? { files: fileSummary(input.files) } : { value: input.value }),
+    } }) };
   }
   private safeUrl(path: string): string {
     const url = new URL(path, this.baseUrl);
@@ -373,5 +451,52 @@ export class WebProgramRuntime {
 
 function string(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 64_000) throw new Error(`${field} must be a nonempty bounded string`);
+  return value;
+}
+
+function boolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${field} must be boolean`);
+  return value;
+}
+
+function finiteNumber(value: unknown, field: string, maximum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > maximum) throw new Error(`${field} must be a bounded number`);
+  return value;
+}
+
+function fileSummary(value: unknown): Array<{ name: string; bytes: number; mimeType?: string }> {
+  return filePayload(value).map(file => ({ name: file.name, bytes: file.buffer.length, ...(file.mimeType ? { mimeType: file.mimeType } : {}) }));
+}
+
+function filePayload(value: unknown): Array<{ name: string; mimeType: string; buffer: Buffer }> {
+  const files = Array.isArray(value) ? value : [value];
+  if (!files.length || files.length > 20) throw new Error("Upload requires between one and twenty files");
+  let total = 0;
+  return files.map((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Upload file ${index + 1} must be an object`);
+    const item = raw as Record<string, unknown>;
+    const name = string(item.name, `files[${index}].name`);
+    if (name.includes("\\") || name.includes("/") || name === "." || name === "..") throw new Error("Upload file names must be plain names");
+    if ((item.text === undefined) === (item.base64 === undefined)) throw new Error("Each upload file must provide exactly one of text or base64");
+    const mimeType = item.mimeType === undefined ? undefined : string(item.mimeType, `files[${index}].mimeType`);
+    let buffer: Buffer;
+    if (item.text !== undefined) {
+      if (typeof item.text !== "string" || Buffer.byteLength(item.text, "utf8") > MAX_FILE_BYTES) throw new Error(`files[${index}].text must be a bounded string`);
+      buffer = Buffer.from(item.text, "utf8");
+    }
+    else {
+      const encoded = boundedBase64(item.base64, `files[${index}].base64`);
+      if (encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("Upload base64 is invalid");
+      buffer = Buffer.from(encoded, "base64");
+      if (buffer.toString("base64") !== encoded) throw new Error("Upload base64 is not canonical");
+    }
+    total += buffer.length;
+    if (buffer.length > MAX_FILE_BYTES || total > MAX_FILE_BYTES) throw new Error("Upload exceeds read limit");
+    return { name, mimeType: mimeType ?? "application/octet-stream", buffer };
+  });
+}
+
+function boundedBase64(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > Math.ceil(MAX_FILE_BYTES / 3) * 4) throw new Error(`${field} must be a bounded base64 string`);
   return value;
 }

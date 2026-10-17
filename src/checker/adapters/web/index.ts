@@ -75,7 +75,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
       { id: "reset_case", version: "1", description: "Rebuild an independent case from declared initial state; expire all browser handles.", inputSchema: resetSchema, outputSchema: objectSchema },
     ],
     programFormat: { id: "shallow.web.javascript", version: "1", mediaType: "text/javascript", schema: programSchema },
-    observations: [{ schema: objectSchema, mediaType: "application/json", maxBytes: 1_048_576, visibility: "checker" }],
+    observations: [{ schema: objectSchema, mediaType: "application/json", maxBytes: 8_388_608, visibility: "checker" }],
     attachments: [{ schema: objectSchema, mediaType: "application/zip", maxBytes: 16_777_216, visibility: "checker" }, { schema: objectSchema, mediaType: "image/png", maxBytes: 4_194_304, visibility: "checker" }],
     prompts: promptFragments,
   };

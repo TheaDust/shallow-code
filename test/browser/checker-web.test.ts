@@ -94,3 +94,72 @@ test("Checker proxy reads named frames, new windows and actual download content"
     } finally { await runtime.close(); await browser.close(); }
   });
 });
+
+test("Checker Web runtime covers common input, pointer and observation operations", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/binary") {
+      response.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="blob.bin"' });
+      response.end(Buffer.from([0, 1, 2, 255]));
+      return;
+    }
+    response.setHeader("content-type", "text/html");
+    response.end(`<!doctype html><style>#status { color: rgb(1, 2, 3); }</style>
+      <main><output id="status" role="status" aria-label="status" data-state="ready">ready</output>
+      <label>Name<input aria-label="Name"></label>
+      <label>Enabled<input type="checkbox" aria-label="Enabled" checked></label>
+      <label>Tags<select aria-label="Tags" multiple><option value="a">A</option><option value="b">B</option></select></label>
+      <label>Import file<input type="file" aria-label="Import file"></label>
+      <button id="hover">Hover target</button><button id="double">Double target</button><button id="context">Context target</button>
+      <ul><li role="listitem" aria-label="A" draggable="true">A</li><li role="listitem" aria-label="B" draggable="true">B</li></ul>
+      <a href="/binary" download>Binary</a></main>
+      <script>
+        const status=document.querySelector('#status');
+        document.querySelector('#hover').addEventListener('mouseenter',()=>status.textContent='hovered');
+        document.querySelector('#double').addEventListener('dblclick',()=>status.textContent='double');
+        document.querySelector('#context').addEventListener('contextmenu',event=>{event.preventDefault();status.textContent='context';});
+        document.querySelector('[aria-label="Name"]').addEventListener('blur',()=>status.textContent='blurred');
+        document.querySelector('[aria-label="Import file"]').addEventListener('change',event=>event.target.files[0]?.text().then(text=>status.textContent=text));
+        for (const item of document.querySelectorAll('[role="listitem"]')) item.addEventListener('dragend',()=>status.textContent='dragged');
+      </script>`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const browser = await chromium.launch({ headless: true });
+  const events: WebRuntimeEvent[] = [];
+  const runtime = new WebProgramRuntime(browser, `http://127.0.0.1:${address.port}`, async (event) => { events.push(event); return `host-${events.length}`; });
+  try {
+    const result = await runtime.run(`
+      const page = await browser.actor('alice');
+      await page.goto('/workspace?run=1');
+      const url = await page.url();
+      const count = await page.count({role:'listitem'});
+      const state = await page.attribute({role:'status',name:'status'}, 'data-state');
+      const color = await page.style({role:'status',name:'status'}, 'color');
+      await page.clipboard.writeText('North\\t800');
+      const clipboard = await page.clipboard.readText();
+      await page.focus({label:'Name'}); await page.fill({label:'Name'}, 'Ada'); await page.blur({label:'Name'});
+      await page.setChecked({label:'Enabled'}, false); await page.setChecked({label:'Enabled'}, true);
+      await page.select({label:'Tags'}, ['a','b']);
+      await page.upload({label:'Import file'}, [{name:'notes.txt',mimeType:'text/plain',text:'uploaded'}]);
+      await page.hover({role:'button',name:'Hover target'});
+      await page.doubleClick({role:'button',name:'Double target'});
+      await page.rightClick({role:'button',name:'Context target'});
+      await page.dragTo({role:'listitem',name:'A'}, {role:'listitem',name:'B'});
+      await page.scroll(0, 200);
+      await page.waitFor({role:'status',name:'status'}, 'visible');
+      const binary = await page.download({role:'link',name:'Binary'}, undefined, 'base64');
+      return {url:url.value, count:count.value, state:state.value, color:color.value, clipboard:clipboard.value, binary:binary.value};
+    `, { signal: new AbortController().signal, timeoutMs: 15_000 });
+    assert.deepEqual(result, { url: `http://127.0.0.1:${address.port}/workspace?run=1`, count: 2, state: "ready", color: "rgb(1, 2, 3)", clipboard: "North\t800", binary: "AAEC/w==" });
+    const methods = events.filter((event) => event.kind === "action").map((event) => event.payload.method);
+    for (const method of ["goto", "clipboardWrite", "focus", "fill", "blur", "setChecked", "select", "upload", "hover", "doubleClick", "rightClick", "dragTo", "scroll", "waitFor", "download"]) assert.ok(methods.includes(method), method);
+    const upload = events.find((event) => event.kind === "action" && event.payload.method === "upload");
+    assert.deepEqual(upload?.payload.files, [{ name: "notes.txt", bytes: 8, mimeType: "text/plain" }]);
+    assert.equal(JSON.stringify(upload?.payload).includes("uploaded"), false);
+  } finally {
+    await runtime.close(); await browser.close();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});

@@ -7,13 +7,24 @@
 - `click(locator, checkpointId?)`、`fill(locator, value, checkpointId?)`、
   `press(locator, key, checkpointId?)`、`check(locator, checkpointId?)`、
   `select(locator, value, checkpointId?)`。
+- `setChecked(locator, checked, checkpointId?)`、`hover(locator, checkpointId?)`、
+  `doubleClick(locator, checkpointId?)`、`rightClick(locator, checkpointId?)`、
+  `dragTo(from, to, checkpointId?)`、`focus(locator, checkpointId?)`、
+  `blur(locator, checkpointId?)`。
+- `upload(locator, files, checkpointId?)` 接受内联 `{name,mimeType?,text?}` 或
+  `{name,mimeType?,base64?}` 文件描述；文件名不能包含路径，单个 case 的总大小有界。
+- `scroll(deltaX, deltaY, checkpointId?)`、`waitFor(locator, state?, timeoutMs?)`，用于
+  受限滚动和 `attached`/`detached`/`visible`/`hidden` 等待。
+- `clipboard.writeText(value, checkpointId?)` 与 `clipboard.readText()` 只访问当前应用
+  origin 的文本剪贴板，并分别产生动作或观察收据。
 - `read(locator, kind)`，kind 为 `text`、`value`、`checked`、`visible` 或
-  `enabled`。返回宿主观察 `{id,value}`。
+  `enabled`。另有 `attribute(locator,name)`、`style(locator,name)`、
+  `count(locator)` 和 `url()`，均返回宿主观察 `{id,value}`。
 - `inspect()` 返回 `{id,value:{url,text,accessibility}}`。
 - `frame(name)` 选择唯一的命名 iframe；方法保持不变。
 - `popup(locator, checkpointId?)` 点击并返回打开的新页面代理。
-- `download(locator, checkpointId?)` 点击并以 `{id,value}` 读取有界的 UTF-8
-  下载内容。二进制格式属于能力缺口，需要额外声明。
+- `download(locator, checkpointId?, encoding?)` 点击并以 `{id,value}` 读取有界下载内容；
+  `encoding` 默认为 `text`，也可为 `base64` 读取受限二进制文件。
 - `dialog(accept = true, promptText?)` 武装下一个浏览器对话框处理器。
 
 Locator 只能是 `{role,name?}`、`{label}`、`{text}` 或 `{testId}` 之一，可用 `within: locator` 限定范围。每个 locator 必须恰好标识一个元素。交互必须依据需求给出的 role 或 label 语义。不存在 first-match 选择。通过应用 UI 与授权的应用 URL 导航。源码文件、外部来源与调试入口被排除。
