@@ -12,7 +12,7 @@ import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../sr
 import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef, TypedRef } from "../src/checker/port.js";
 import type { AtomicRequirement } from "../src/types.js";
 
-async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; failPrecondition?: boolean } = {}) {
+async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "checker-agent-"));
   const store = new ArtifactStore(directory, "run-1");
   const schema = await store.putJson(Type.Unknown());
@@ -24,16 +24,17 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     programFormat: { id: "fake.javascript", version: "1", schema, mediaType: "text/javascript" }, observations: [], attachments: [], prompts: [] };
   const bindingContent: ExecutionBinding = { schemaVersion: 1, declaration: await store.putJson(declaration), executor, schemas: [schema], dependencies: {}, promptDigest: "test-prompts" };
   const binding: ExecutionBindingRef = { ...await store.putJson(bindingContent), executor };
-  const requirement: AtomicRequirement = { id: "r1", folderPath: [], declarationIndex: 0, name: "Cancel order", text: "Cancellation persists.", dependencyIds: config.dependencies ?? [],
+  const requirement: AtomicRequirement = { id: "r1", folderPath: [], declarationIndex: 0, name: "Cancel order", text: "Cancellation persists.", guidance: ["Implementation-only guidance"], dependencyIds: config.dependencies ?? [],
     scenarios: [], scenarioContracts: [{ id: "cancel", name: "Cancellation", steps: [{ keyword: "GIVEN", content: "Order is unpaid" },
       { keyword: "WHEN", content: "Cancel the order" }, { keyword: "THEN", content: "Order is cancelled and seats are restored" }] }], references: [], exactUiStrings: [], seedDeclarations: [], ancestors: [],
-    product: { kind: "generic_web", rootId: "root", rootName: "root", description: "", seedData: [] } };
+    product: { kind: "generic_web", rootId: "root", rootName: "root", description: "", guidance: ["Root implementation guidance"], seedData: [] } };
   const input: CheckerRequirements = { requirements: [requirement], implementedRequirementIds: [] };
   const job: CheckJob = { jobId: "job-1", runId: store.runId, moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
     snapshot: await store.putJson({ sha: "source-1" }), requirements: await store.putJson(input), binding, initialState,
     requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 30_000, maxModelTokens: 100_000 } };
   let environments = 0, closed = 0, replays = 0;
   const roles: string[] = [];
+  const reviewPrompts: string[] = [];
   const adapter: ExecutionAdapter = { binding, async prepare(currentJob) {
     const environment = await typed({ instance: ++environments });
     const jobRef = await store.putJson(currentJob);
@@ -64,6 +65,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   } };
   const model: CheckerModel = { async run(request) {
     roles.push(request.role);
+    if (request.role === "semantic_review") reviewPrompts.push(request.prompt);
     const tool = (name: string, args: unknown) => request.tools.find(item => item.name === name)!.execute(args);
     const promptInput = JSON.parse(request.prompt) as { sourceClauses: SourceClause[]; contract?: AcceptanceContract };
     const clauses = (request.role === "semantic_review" ? promptInput.contract!.clauses : promptInput.sourceClauses).slice(0, config.omitSecond ? 1 : undefined);
@@ -77,7 +79,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
       const contract: AcceptanceContract = { requirements: job.requirements,
         checkpoints: [{ id: "given", kind: "precondition", requirementId: "r1", scenarioId: "cancel", dependsOn: [], basis: "Order is unpaid", expected: { operator: "equal", value: "unpaid" } },
           { id: "when", kind: "action", requirementId: "r1", scenarioId: "cancel", dependsOn: ["given"], basis: "Cancel the order" },
-          ...clauses.map((clause, index) => ({ id: `result-${index}`, kind: "assertion" as const, clauseId: clause.id, requirementId: clause.requirementId, scenarioId: clause.scenarioId, dependsOn: ["when"], basis: clause.basis }))],
+          ...clauses.map((clause, index) => ({ id: `result-${index}`, kind: "assertion" as const, clauseId: clause.id, requirementId: clause.requirementId, scenarioId: clause.scenarioId, dependsOn: config.omitDependency ? [] : ["when"], basis: clause.basis }))],
         clauses: clauses.map((clause, index) => ({ ...clause, checkpointId: `result-${index}`, expected: { operator: "equal", value: 5 } })) };
       if (config.omitSetup) {
         contract.checkpoints = contract.checkpoints.filter(item => item.kind === "assertion");
@@ -90,7 +92,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     }
     return { totalTokens: 100 };
   } };
-  return { directory, store, job, adapter, model, roles, get environments() { return environments; }, get closed() { return closed; },
+  return { directory, store, job, adapter, model, roles, reviewPrompts, get environments() { return environments; }, get closed() { return closed; },
     checker: createCheckerAgent({ artifacts: store, adapter, model }), cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 
@@ -134,6 +136,34 @@ test("Checker rejects fabricated observations and independent semantic rejection
       assert(report.outcomes.some(item => /outside the replay|Semantic review rejected/.test(item.reason!)));
     } finally { await f.cleanup(); }
   });
+});
+
+test("Checker rejects an incomplete dependency closure before replay and review", async () => {
+  const f = await fixture({ omitDependency: true });
+  try {
+    const report = await f.checker.check(f.job, new AbortController().signal);
+    const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
+    assert.equal(f.environments, 1, "exploration readiness is the only environment needed to reject the contract");
+    assert.deepEqual(f.roles, ["exploration"]);
+    assert.equal(f.reviewPrompts.length, 0);
+    assert(report.outcomes.every(item => item.status === "inconclusive"));
+    assert.match(manifest.diagnostics.join(" "), /dependency closure/);
+  } finally { await f.cleanup(); }
+});
+
+test("Checker semantic review payload is scoped and stably ordered", async () => {
+  const f = await fixture();
+  try {
+    await f.checker.check(f.job, new AbortController().signal);
+    const payload = JSON.parse(f.reviewPrompts[0]!);
+    assert.deepEqual(Object.keys(payload), ["requirements", "sourceClauses", "capabilities", "contract", "descriptor", "source", "receipts"]);
+    assert.equal(payload.requirements.length, 1);
+    assert.equal(payload.requirements[0].guidance, undefined);
+    assert.equal(payload.requirements[0].product.guidance, undefined);
+    assert.equal(payload.receipts[0].receipt.job, undefined);
+    assert.equal(payload.receipts[0].receipt.attachments, undefined);
+    assert.equal(payload.receipts[0].receipt.recordedAt, undefined);
+  } finally { await f.cleanup(); }
 });
 
 test("Checker rediscovers only missing clauses on replay and replaces incompatible requirement contracts", async () => {

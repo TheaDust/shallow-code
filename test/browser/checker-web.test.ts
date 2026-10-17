@@ -64,6 +64,8 @@ for (const mutant of [false, true]) test(`Checker executes two actors, linked re
       assert.equal(events.find((event) => event.kind === "precondition")?.payload.result, "satisfied");
       assert.equal(browser.contexts().length, 2);
       await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.click({role:'status'});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /exactly one/);
+      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.read({role:'status',name:'Order O-17',exact:true});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /Locator field is not allowed/);
+      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.read({label:'Order O-17',name:'ignored'});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /Locator field is not allowed/);
       await assert.rejects(runtime.run(`await check.expect('status',['forged-id']);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /unknown observations/);
       await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.goto('file:///C:/private');`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /authorized/);
       await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.goto('/source.js');`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /authorized/);

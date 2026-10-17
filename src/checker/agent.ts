@@ -7,6 +7,7 @@ import type { AdapterDeclaration, CheckJob, CheckOutcome, CheckReport, CheckerPo
 import { checkerSourceClauses, evaluateProgramEvidence, sameRef, validateAcceptanceContract,
   type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview } from "./evidence.js";
 import type { CheckerModel, CheckerTool } from "./model.js";
+import type { AtomicRequirement } from "../types.js";
 
 export { createPiCheckerModel } from "./model.js";
 export type { CheckerModel, CheckerModelUsage } from "./model.js";
@@ -25,6 +26,71 @@ const programSchema = Type.Object({ descriptor: Type.Object({ id: Type.String(),
 export class CheckerCleanupError extends Error {
   readonly code = "CHECKER_CLEANUP_FAILED";
   constructor(cause: unknown) { super(`Checker execution cleanup failed: ${String(cause)}`, { cause }); this.name = "CheckerCleanupError"; }
+}
+
+function compareId(left: { id: string }, right: { id: string }): number { return left.id < right.id ? -1 : left.id > right.id ? 1 : 0; }
+function compareClauseId(left: { clauseId: string }, right: { clauseId: string }): number { return left.clauseId < right.clauseId ? -1 : left.clauseId > right.clauseId ? 1 : 0; }
+
+/** Keep the review prompt scoped to the program while preserving source-grounded context. */
+function semanticReviewRequirements(input: CheckerRequirements, contract: AcceptanceContract): Array<Partial<AtomicRequirement> & Pick<AtomicRequirement, "id" | "name" | "text">> {
+  const ids = new Set(contract.clauses.map(clause => clause.requirementId));
+  return input.requirements.filter(requirement => ids.has(requirement.id)).sort(compareId).map(requirement => ({
+    id: requirement.id,
+    name: requirement.name,
+    text: requirement.text,
+    scenarios: requirement.scenarios,
+    ...(requirement.scenarioContracts ? { scenarioContracts: requirement.scenarioContracts } : {}),
+    references: requirement.references,
+    exactUiStrings: requirement.exactUiStrings,
+    seedDeclarations: requirement.seedDeclarations,
+    product: {
+      kind: requirement.product.kind,
+      rootId: requirement.product.rootId,
+      rootName: requirement.product.rootName,
+      description: requirement.product.description,
+      seedData: requirement.product.seedData,
+      ...(requirement.product.evolution ? { evolution: true as const } : {}),
+      ...(requirement.product.stage ? { stage: requirement.product.stage } : {}),
+    },
+    ancestors: requirement.ancestors.map(ancestor => ({ id: ancestor.id, name: ancestor.name, description: ancestor.description })),
+  }));
+}
+
+function semanticReviewPayload(input: CheckerRequirements, sources: ReturnType<typeof checkerSourceClauses>, contract: AcceptanceContract,
+  descriptor: CheckerProgramDescriptor, source: string, capabilities: ReadonlyArray<{ id: string }>, receipts: unknown[]): Record<string, unknown> {
+  const clauseIds = new Set(contract.clauses.map(clause => clause.id));
+  return {
+    // Stable, program-independent context comes first so equivalent reviews share a prefix.
+    requirements: semanticReviewRequirements(input, contract),
+    sourceClauses: sources.filter(clause => clauseIds.has(clause.id)).sort(compareId),
+    capabilities: [...capabilities].sort(compareId),
+    contract: {
+      requirements: contract.requirements,
+      checkpoints: [...contract.checkpoints].sort(compareId),
+      clauses: [...contract.clauses].sort(compareId),
+    },
+    descriptor: { ...descriptor, clauses: [...descriptor.clauses].sort(compareClauseId) },
+    source,
+    // Receipts are execution-specific and intentionally remain the final prompt field.
+    receipts,
+  };
+}
+
+function reviewReceipt(receipt: EvidenceReceipt, payload: unknown, environment: unknown): Record<string, unknown> {
+  return {
+    receipt: {
+      id: receipt.id,
+      kind: receipt.kind,
+      sequence: receipt.sequence,
+      checkpointId: receipt.checkpointId,
+      readiness: receipt.readiness,
+      assertion: receipt.assertion,
+      inputs: receipt.inputs,
+      ...(receipt.program ? { program: { descriptor: receipt.program.descriptor, contract: receipt.program.contract } } : {}),
+    },
+    payload,
+    environment,
+  };
 }
 
 /** Exploration, semantic review and replay share one immutable task, with separate model sessions. */
@@ -192,12 +258,12 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           } catch { reviewRef = undefined; review = undefined; }
           if (!review) {
             let proposal: { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
-            await runModel("semantic_review", [genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({ requirements: input,
-              sourceClauses: eligibleSources, contract, descriptor, source, capabilities,
-              receipts: await Promise.all(replayRefs.map(async ref => {
+            const receipts = await Promise.all(replayRefs.map(async ref => {
                 const receipt = await store.getJson<EvidenceReceipt>(ref);
-                return { receipt, payload: await store.readTypedJson(receipt.payload), environment: await store.readTypedJson(receipt.environment) };
-              })) }), [{ name: "finish", description: "Return an independent source and program semantic review.",
+                return reviewReceipt(receipt, await store.readTypedJson(receipt.payload), await store.readTypedJson(receipt.environment));
+              }));
+            await runModel("semantic_review", [genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify(
+              semanticReviewPayload(input, eligibleSources, contract, descriptor, source, capabilities, receipts)), [{ name: "finish", description: "Return an independent source and program semantic review.",
               parameters: Type.Object({ approved: Type.Boolean(), reasons: Type.Array(Type.String()), clauseIds: Type.Array(Type.String()) }), async execute(raw) {
                 if (proposal) throw new Error("Semantic review already finished");
                 proposal = raw as typeof proposal; return { accepted: true };

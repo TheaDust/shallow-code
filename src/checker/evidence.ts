@@ -105,6 +105,24 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
     };
     visit(checkpoint.id, new Set());
   }
+  // Reject an incomplete assertion graph before any browser replay or semantic review.
+  // Every source GIVEN/WHEN checkpoint in the scenario must be an ancestor of each
+  // result assertion; otherwise the program can never establish the required state.
+  for (const clause of contract.clauses) {
+    const assertion = checkpoints.get(clause.checkpointId)!;
+    const ancestors = new Set<string>();
+    const collect = (id: string): void => {
+      if (ancestors.has(id)) return;
+      ancestors.add(id);
+      checkpoints.get(id)?.dependsOn.forEach(collect);
+    };
+    assertion.dependsOn.forEach(collect);
+    const setup = contract.checkpoints.filter(item => item.requirementId === clause.requirementId
+      && item.scenarioId === clause.scenarioId && item.kind !== "assertion");
+    if (setup.some(item => !ancestors.has(item.id))) {
+      throw new Error(`Assertion checkpoint dependency closure omits source setup or action for ${clause.id}`);
+    }
+  }
 }
 
 /** Evaluate only host receipts returned by execution, from a single fresh environment. */

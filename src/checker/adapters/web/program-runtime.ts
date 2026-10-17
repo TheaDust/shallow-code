@@ -410,9 +410,12 @@ export class WebProgramRuntime {
   private locate(target: Page | Frame | Locator, raw: unknown, interaction: boolean): Locator {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Locator must be an object");
     const locator = raw as WebLocator;
-    if (locator.within) target = this.locate(target, locator.within, false);
     const strategies = [locator.role, locator.label, locator.text, locator.testId].filter((value) => value !== undefined);
     if (strategies.length !== 1) throw new Error("Choose exactly one role, label, text or testId locator");
+    const strategy = locator.role !== undefined ? "role" : locator.label !== undefined ? "label" : locator.text !== undefined ? "text" : "testId";
+    const allowed = strategy === "role" ? ["role", "name", "within"] : [strategy, "within"];
+    for (const key of Object.keys(locator)) if (!allowed.includes(key)) throw new Error(`Locator field is not allowed for ${strategy}: ${key}`);
+    if (locator.within) target = this.locate(target, locator.within, false);
     if (interaction && !locator.role && !locator.label) throw new Error("Interactions require role or label semantics");
     if (locator.role) return target.getByRole(locator.role as Parameters<Page["getByRole"]>[0], { ...(locator.name === undefined ? {} : { name: locator.name, exact: true }) });
     if (locator.label) return target.getByLabel(locator.label, { exact: true });
