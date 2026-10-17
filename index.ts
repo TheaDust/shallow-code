@@ -11,6 +11,12 @@ import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
 import { discoverRequirementsDir, parseInvocation, type CliOptions } from "./src/cli.js";
 import { FinalVerifier } from "./src/final-verifier.js";
 import { CandidateRuntime } from "./src/candidate-runtime.js";
+import { SnapshotStore } from "./src/snapshot-store.js";
+import { ArtifactStore, atomicWrite } from "./src/checker/artifacts.js";
+import type { ContentRef } from "./src/checker/port.js";
+import { createCheckerAgent, createPiCheckerModel, type CheckerModelUsage } from "./src/checker/agent.js";
+import { createWebExecutionAdapter } from "./src/checker/adapters/web/index.js";
+import type { CheckerRuntime } from "./src/checker-pipeline.js";
 import { GitCliOps } from "./src/git-ops.js";
 import { HumanRunFormatter } from "./src/human-log.js";
 import { BuildTui, buildResult } from "./src/terminal/build-tui.js";
@@ -31,6 +37,7 @@ import { PROBE_PLAN_JSON_SCHEMA } from "./src/judge/probe-schema.js";
 import {
   deriveModelTimeouts,
   parseBuilderContextWindow,
+  parseCheckerConfig,
   parseEvaluationPort,
   parseEvolutionAuditInherited,
   parseFinalAuditGeneratePlan,
@@ -107,6 +114,12 @@ export async function main(
     requirementsDir: prior!.requirementsDir, outputDir: prior!.outputDir, budgetMs: invocation.budgetMs,
   };
   const mergedEnv = await mergeGatewayEnv(env, envFile);
+  const requestedChecker = parseCheckerConfig(mergedEnv);
+  if (prior?.checker && ((mergedEnv.SHALLOW_CHECKER_MODE && requestedChecker.mode !== prior.checker.mode) ||
+    (mergedEnv.SHALLOW_CHECKER_CONCURRENCY && requestedChecker.concurrency !== prior.checker.concurrency))) {
+    throw new Error("Resume Checker settings changed; start a new run for the updated settings");
+  }
+  const checker = prior?.checker ?? requestedChecker;
   const builderGateway = readGatewayConfig(mergedEnv, "SHALLOW_BUILDER");
   const judgeGateway = readGatewayConfig(mergedEnv, "SHALLOW_JUDGE");
   // 单价来自内置模型目录，可被 MODEL_COST_* / SHALLOW_BUILDER_COST_* /
@@ -158,13 +171,15 @@ export async function main(
   if (digest(JSON.stringify(await snapshotFiles(requirementSnapshot))) !== requirementsDigest) throw new Error("Requirements changed while copying the run inputs");
   const inheritedProject = prior ? prior.sourceProjectDir !== undefined || prior.stageStartingPoint === "inherited_application" : cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
   const workingDirectory = inheritedProject && !prior
-    ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), spec.generatedPaths)
+    ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), spec.generatedPaths,
+      checker.mode === "legacy" ? [] : spec.dataPaths)
     : cli.outputDir;
   const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
   const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
   const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME)) : undefined;
   const historicalRequirements = prior?.historicalRequirements ?? (sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined);
   const pipelineOptions: PipelineOptions = {
+    checker,
     requirementDigests,
     historicalRequirements,
     requirementsFile: join(requirementSnapshot, "requirements.yaml"),
@@ -183,7 +198,9 @@ export async function main(
     ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
   };
   const runRecord: RunRecord = {
-    version: 1, requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
+    version: checker.mode === "legacy" ? 1 : 2, checker,
+    checkerRunId: prior?.checkerRunId ?? runId,
+    requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
     outputDir: workingDirectory,
     ...(prior?.sourceProjectDir ? { sourceProjectDir: prior.sourceProjectDir } : inheritedProject && !prior ? { sourceProjectDir: cli.outputDir } : {}),
     inputFiles: prior?.inputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
@@ -197,6 +214,10 @@ export async function main(
   if (invocation.command === "resume") {
     try { await cp(join(invocation.runDirectory, "plans"), join(runDirectory, "plans"), { recursive: true }); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    if (checker.mode !== "legacy") {
+      await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
+        filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
+    }
   }
   process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
   const summary = await execute({
@@ -359,7 +380,36 @@ async function executeProduction(
     }
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir), process.stderr,
       tui ? (rawLine, line) => tui!.record(rawLine, line) : undefined);
+    let checkerRuntime: CheckerRuntime | undefined;
+    if (pipelineOptions.checker?.mode !== "legacy" && pipelineOptions.checker) {
+      const directory = join(dirname(runLogFile), "checker");
+      const artifacts = new ArtifactStore(directory, context.runRecord.checkerRunId!);
+      const snapshots = new SnapshotStore(join(directory, "snapshots"));
+      let initialDataSnapshot: ContentRef;
+      try { initialDataSnapshot = JSON.parse(await readFile(join(directory, "baseline.json"), "utf8")) as ContentRef; await snapshots.open(initialDataSnapshot); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || context.runRecord.resumedFrom) throw error;
+        initialDataSnapshot = (await snapshots.seal({ sourceDirectory: pipelineOptions.outputDir,
+          sourceSha: await git.captureAccepted("shallow: Checker input baseline"), packetId: "input-baseline",
+          generatedPaths: pipelineOptions.platformContract.generatedPaths, dataPaths: pipelineOptions.platformContract.dataPaths })).ref;
+        await atomicWrite(join(directory, "baseline.json"), JSON.stringify(initialDataSnapshot) + "\n");
+      }
+      const web = await createWebExecutionAdapter({ artifacts, snapshots, spec: context.runRecord.projectSpec,
+        workspace: join(directory, "workers"), initialDataSnapshot,
+        reservedPorts: [pipelineOptions.platformContract.port, ...(pipelineOptions.platformContract.evaluationPort ? [pipelineOptions.platformContract.evaluationPort] : [])] });
+      let recordUsage: (item: CheckerModelUsage) => void = () => {};
+      const model = createPiCheckerModel({ gateway: judgeGateway, sessionDir: join(directory, "sessions"),
+        ...(judgeModelCost ? { modelCost: judgeModelCost } : {}), onUsage: item => recordUsage(item) });
+      checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: web.adapter, model }),
+        binding: web.adapter.binding, initialStates: web.declaration.initialStates, resourceKeys: web.declaration.resourceKeys,
+        setUsageRecorder: recorder => { recordUsage = recorder; },
+        async verifyDelivery(job, signal) {
+          try { await web.adapter.verifyDelivery(job, signal); return { ok: true, stage: "complete", message: "Frozen candidate satisfies the Web execution binding and delivery checks" }; }
+          catch (error) { return { ok: false, stage: "readiness", message: error instanceof Error ? error.message : String(error) }; }
+        } };
+    }
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
+      checker: checkerRuntime,
       grouper: new LlmFeatureGrouper({ ...judgeGateway, timeoutMs: Infinity, ...(judgeModelCost ? { cost: judgeModelCost } : {}) }),
       builder,
       planner,

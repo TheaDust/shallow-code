@@ -1,4 +1,6 @@
 import { dirname, join } from "node:path";
+import { runCheckerPipeline, CheckerCoordinator, type CheckerRuntime } from "./checker-pipeline.js";
+import type { CheckerConfig } from "./runtime-config.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -83,6 +85,7 @@ export interface Clock {
 }
 
 export interface PipelineDeps {
+  checker?: CheckerRuntime;
   grouper?: FeatureGrouper;
   builder: BuilderPort;
   planner: ProbePlanner;
@@ -99,6 +102,7 @@ export interface PipelineDeps {
 }
 
 export interface PipelineOptions {
+  checker?: CheckerConfig;
   requirementsFile: string;
   outputDir: string;
   ledgerFile: string;
@@ -122,6 +126,8 @@ export interface PipelineOptions {
 }
 
 export interface RunSummary {
+  checker?: { mode: "active" | "observe"; producedHead?: import("./checker/checkpoints.js").ProducedSnapshot;
+    verifiedSnapshotId?: string; outcomes?: import("./checker/port.js").CheckOutcome[] };
   status: "delivered" | "partial" | "failed";
   verifiedRequirementIds: string[];
   blockedRequirementIds: string[];
@@ -141,6 +147,10 @@ export interface RunSummary {
 }
 
 export async function runPipeline(options: PipelineOptions, deps: PipelineDeps): Promise<RunSummary> {
+  if (options.checker?.mode === "active") {
+    if (!deps.checker) throw new Error("Active Checker requires its execution runtime");
+    return runCheckerPipeline(options, deps, deps.checker);
+  }
   const makePacket = (...args: Parameters<typeof makeCatalogPacket>): WorkPacket => ({
     ...makeCatalogPacket(...args), browserEntry: options.platformContract.browserPath ?? "/",
   });
@@ -161,6 +171,13 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
   const state = new RunStateStore({ statusByRequirementId: catalog.statusById,
     acceptedSha: await deps.git.captureAccepted("shallow: initial state"), startedAtMs: startedAt,
     totalBudgetMs: options.totalBudgetMs }, options.ledgerFile, deps.logSink ?? null, deps.diagnosticSecrets);
+  const observer = options.checker?.mode === "observe"
+    ? await CheckerCoordinator.open(deps.checker ?? (() => { throw new Error("Observe Checker requires its execution runtime"); })(),
+      options, deps, state.snapshot.acceptedSha, event => state.record(event)) : undefined;
+  deps.checker?.setUsageRecorder?.(item => {
+    modelUsage.add("checker", item);
+    void state.record({ at: now(), type: "checker_usage", detail: item });
+  });
   const implemented = new Set<string>();
   const inherited = new Set<string>();
   const skipped = new Set<string>();
@@ -1209,6 +1226,12 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       for (const id of packet.requirementIds) {
         implemented.add(id);
       }
+      if (observer) {
+        const head = await observer.seal(packet, implemented);
+        await observer.submit(head, packet, "discover", Date.now() + Math.min(720_000, budget.remaining("audit")));
+        // Fixed external services are shared with Builder self-tests and the legacy Judge.
+        if (deps.checker!.resourceKeys.length) await observer.drain();
+      }
       previousModuleId = currentModuleId;
     }
     // Final module boundary audit for the last module.
@@ -1271,6 +1294,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     await deps.candidate?.assertAcceptedInput();
     if (finalReport.ok && finalReport.candidate) await deps.candidate?.assertCurrent(finalReport.candidate);
     await state.record({ at: now(), type: "delivery_finished", detail: finalReport });
+    await observer?.cancelOutstanding();
     const statuses = state.snapshot.statusByRequirementId;
     const auditedRequirements = catalog.requirements.filter(item => !skipped.has(item.id));
     const ids = (status: typeof statuses[string]) => auditedRequirements.filter(item => statuses[item.id] === status).map(item => item.id);
@@ -1304,6 +1328,7 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
       });
     });
     const summary: RunSummary = { status: !finalReport.ok ? "failed" : verifiedRequirementIds.length === auditedRequirements.length ? "delivered" : "partial",
+      ...(observer ? { checker: { mode: "observe" as const, producedHead: observer.checkpoints.snapshot.producedHead } } : {}),
       acceptedSha: state.snapshot.acceptedSha, delivery: finalReport,
       implementedRequirementIds: [...implemented].filter(id => !skipped.has(id)), verifiedRequirementIds,
       blockedRequirementIds: ids("blocked"), failedRequirementIds: ids("failed"), inconclusiveRequirementIds: ids("inconclusive"), pendingRequirementIds: ids("todo"),
@@ -1319,8 +1344,12 @@ export async function runPipeline(options: PipelineOptions, deps: PipelineDeps):
     throw error;
   } finally {
     preplanAbort.abort();
-    try { await deps.builder.close(); }
-    finally { await Promise.allSettled([...pendingPlans.values()].map(item => item.promise)); }
+    try { await observer?.cancelOutstanding(); }
+    finally {
+      deps.checker?.setUsageRecorder?.(() => {});
+      try { await deps.builder.close(); }
+      finally { await Promise.allSettled([...pendingPlans.values()].map(item => item.promise)); }
+    }
   }
 }
 

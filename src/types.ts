@@ -158,6 +158,16 @@ type DiagnosticDetail = { message?: string; source?: string; category?: string; 
   httpStatus?: number; attempt?: number; retryCount?: number; retry?: boolean };
 
 interface RunEventDetails {
+  snapshot_sealed: { snapshotId: string; sourceSha: string; parentSnapshotId?: string; requirementIds: string[]; sequence: number; authoritative?: boolean };
+  check_queued: CheckEventDetail;
+  check_started: CheckEventDetail;
+  check_completed: CheckEventDetail;
+  check_cancelled: CheckEventDetail;
+  module_check_started: { moduleId: string; moduleEpoch: number; snapshotId: string; requirementIds: string[] };
+  module_check_finished: { moduleId: string; moduleEpoch: number; snapshotId: string;
+    requirementResults: Record<string, RequirementStatus>; published: boolean };
+  checker_usage: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
+    total: number; cost?: number; reasoning?: number };
   evolution_scope_selected: { historicalPlans: number; ignoredPlans: number;
     historicalPlanRequirementCount: number; historicalCheckpointRequirementCount: number;
     historicalCheckpointSupplementCount: number; historicalRequirementCount: number; addedRequirementIds: string[];
@@ -261,6 +271,20 @@ interface RunEventDetails {
   };
   pipeline_failed: DiagnosticDetail;
   evidence_write_failed: Record<string, never>;
+}
+
+type CheckEventDetail = {
+  jobId: string;
+  snapshotId: string;
+  checkedSourceSha: string;
+  moduleEpoch: number;
+  attempt: number;
+  mode: string;
+  requirementIds: string[];
+  status?: string;
+  reason?: string;
+  archived?: boolean;
+  durationMs?: number;
 }
 
 export type RunEvent = RunEventEnvelope & {

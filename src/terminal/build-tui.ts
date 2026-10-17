@@ -52,6 +52,9 @@ export class BuildView implements Component {
   receive(event: RunEvent, line: string): void {
     const detail = event.detail as Record<string, unknown> | undefined;
     const ids = (key: string) => Array.isArray(detail?.[key]) ? detail![key] as string[] : [];
+    if (event.type === "snapshot_sealed" && detail?.authoritative !== false) {
+      for (const [id, status] of this.statuses) if (status === "verified") this.statuses.set(id, "inconclusive");
+    }
     if (event.type === "evolution_scope_selected") {
       if (Array.isArray(detail?.auditRequirementIds)) this.scope = new Set(ids("auditRequirementIds"));
       this.skipped = ids("skippedRequirementIds").length;
@@ -62,7 +65,7 @@ export class BuildView implements Component {
     if (event.type === "audit_result") {
       for (const id of ids("requirementIds")) this.statuses.set(id, detail!.status as RequirementStatus);
     }
-    if (event.type === "module_boundary_audit_finished" ||
+    if ((event.type === "module_check_finished" && detail?.published === true) || event.type === "module_boundary_audit_finished" ||
       (event.type === "repair_batch_finished" && detail?.retained === true)) {
       const results = detail?.requirementResults as Record<string, RequirementStatus> | undefined;
       for (const [id, status] of Object.entries(results ?? {})) this.statuses.set(id, status);
@@ -81,6 +84,10 @@ export class BuildView implements Component {
     }
     if (event.type === "feature_grouping_usage" || event.type === "probe_planner_usage") {
       this.addUsage("judge", detail);
+      return;
+    }
+    if (event.type === "checker_usage") {
+      this.addUsage("checker", detail);
       return;
     }
     if (event.type === "builder_usage") {
@@ -162,7 +169,7 @@ export class BuildView implements Component {
     return lines.map(line => fitTerminalText(line, width));
   }
 
-  private addUsage(source: "builder" | "judge", usage: Record<string, unknown> | undefined): void {
+  private addUsage(source: "builder" | "judge" | "checker", usage: Record<string, unknown> | undefined): void {
     if (!usage || typeof usage.input !== "number" || typeof usage.output !== "number") return;
     const number = (key: string) => typeof usage[key] === "number" ? usage[key] as number : 0;
     const cost = typeof usage.cost === "number" ? usage.cost : undefined;
@@ -173,6 +180,9 @@ export class BuildView implements Component {
 
   private describeActivity(event: RunEvent, detail: Record<string, unknown> | undefined): string | undefined {
     switch (event.type) {
+      case "snapshot_sealed": return "源码已封存，Builder 继续下一功能组";
+      case "module_check_started": return "Checker · 模块集中重放与确认";
+      case "module_check_finished": return "模块当前版本检查完成";
       case "feature_grouping_started": return "Planner · 整理功能分组";
       case "feature_grouping_finished": return "功能分组完成，准备实现";
       case "phase_started": this.phase = PHASES[String(detail?.phase)] ?? "运行中"; return this.phase;

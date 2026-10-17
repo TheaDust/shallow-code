@@ -37,6 +37,8 @@ export class CandidateRuntime {
     private readonly contract: PlatformContract,
     private readonly lifecycle: AppLifecycle = new CommandAppLifecycle(),
     private readonly memoryGate: MemoryGate = sharedMemoryGate(),
+    /** An immutable case baseline, independent of generated build output. */
+    private readonly inheritedDataSource?: string,
   ) {
     this.directory = join(resolve(workspace), "app");
     if (inside(resolve(outputDir), resolve(workspace)) || inside(resolve(workspace), resolve(outputDir))) {
@@ -207,7 +209,7 @@ export class CandidateRuntime {
     this.dataDirectory = dataDirectory;
     let application: RunningApp;
     try {
-      await copyInheritedData(this.directory, dataDirectory, this.contract.dataPaths);
+      await copyInheritedData(this.inheritedDataSource ?? this.directory, dataDirectory, this.contract.dataPaths);
       application = await this.lifecycle.start(this.directory, { ...this.contract, dataDirectory });
     }
     catch (error) { await this.stop(); throw error; }

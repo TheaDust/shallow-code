@@ -59,6 +59,24 @@ function describe(type: string, event: RunEvent): string | null {
   const message = pickString(detail, "message");
   const reason = pickString(detail, "reason");
   switch (type) {
+    case "snapshot_sealed":
+      return `源码已封存；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
+    case "check_queued":
+      return `Checker 已排队（${packetId}）；版本 ${pickString(detail, "snapshotId")}`;
+    case "check_started":
+      return `Checker 开始检查（${packetId}）；版本 ${pickString(detail, "snapshotId")}`;
+    case "check_completed":
+      return `Checker 检查完成（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
+    case "check_cancelled":
+      return `Checker 任务已结束（${packetId}）；${reason ?? "检查范围由模块收口接续"}`;
+    case "module_check_started":
+      return `开始模块集中检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
+    case "module_check_finished":
+      return `模块集中检查完成；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}`;
+    case "checker_usage": {
+      const tokens = tokenUsageParts(detail);
+      return tokens.length ? `Checker ${pickString(detail, "role")} 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
+    }
     case "run_resumed":
       return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
     case "phase_started":
@@ -386,7 +404,8 @@ function modelUsageSummary(value: unknown): ModelUsageSummary | null {
   const total = usageSummary(record);
   const builder = usageSummary(record?.builder);
   const judge = usageSummary(record?.judge);
-  return total && builder && judge ? { ...total, builder, judge } : null;
+  const checker = usageSummary(record?.checker);
+  return total && builder && judge ? { ...total, builder, judge, ...(checker ? { checker } : {}) } : null;
 }
 
 function asNumber(value: unknown): number | null {

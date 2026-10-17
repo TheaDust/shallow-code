@@ -10,6 +10,23 @@ export interface GatewayConfig {
   model: string;
 }
 
+export interface CheckerConfig {
+  mode: "legacy" | "observe" | "active";
+  concurrency: number;
+}
+
+export function parseCheckerConfig(env: Record<string, string | undefined>): CheckerConfig {
+  const mode = env.SHALLOW_CHECKER_MODE?.trim() || "legacy";
+  if (mode !== "legacy" && mode !== "observe" && mode !== "active") {
+    throw new Error("SHALLOW_CHECKER_MODE must be legacy, observe or active");
+  }
+  const concurrency = Number(env.SHALLOW_CHECKER_CONCURRENCY?.trim() || "2");
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 2) {
+    throw new Error("SHALLOW_CHECKER_CONCURRENCY must be 1 or 2");
+  }
+  return { mode, concurrency };
+}
+
 export const MIN_BUILDER_CONTEXT_WINDOW = 131_072;
 export const MAX_BUILDER_CONTEXT_WINDOW = 1_000_000;
 

@@ -21,7 +21,9 @@
 ### 验收与修复
 
 - 还原完整 GIVEN / WHEN / THEN。全部 THEN、结果段 AND / BUT 及其显式复合子句都须映射实际结果断言；需求 ID 覆盖不能代替场景覆盖。
-- 探针使用 `probe-schema.ts` 的白名单 DSL，保持原文依据、操作、输入、预期、控件角色和完整对象身份。定位严格唯一；`firstMatch` 只由需求原文明示授权，交互控件保持 role / label 语义。
+- `legacy` Judge 使用 `probe-schema.ts` 的白名单 DSL；`active` Checker 使用独立进程中的 QuickJS 程序和声明的 Web 能力。两者均保持原文依据、操作、输入、预期、控件角色和完整对象身份。定位严格唯一；`firstMatch` 只由需求原文明示授权，交互控件保持 role / label 语义。
+- Checker 内核消费领域无关的任务、引用和收据；Web 的命令、地址、数据、浏览器和端口由 `checker/adapters/web/` 解释。新能力同步声明、schema、执行绑定与提示词。
+- 每个功能组完成后封存独立副本，后台结果只归属原任务、快照和 epoch。模块收口重放最新版本后发布；`producedHead` 与可运行 `acceptedSha` 分开持久化。回滚以集中修复开始时的完整模块为基线，恢复被忽略的输入数据，并保留后续功能组源码。
 - 准备前缀须建立并断言初始状态。修改种子或持久化行为时检查空数据与继承数据；同名对象依据归属、父对象与名称区分。
 - `acceptedSha` 是可运行检查点，`verified` 是当前候选的独立行为证据。Judge 的规划、定位、执行等故障记 `inconclusive` 并保留可运行实现。
 - 保持候选副本、case 数据隔离和源码/构建一致性检查。修复接受前复验既有通过路径；未接受改动恢复检查点，并保留失败尝试历史。
@@ -47,6 +49,8 @@
 | 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/controller-metadata.ts`、`src/run-record.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
 | Judge 规划、覆盖、恢复与执行 | `src/judge/llm-probe-planner.ts`、`probe-schema.ts`、`probe-coverage.ts`、`audit.ts`、`playwright-probe-runner.ts`（均在 `src/judge/`） |
+| Checker 调度、产物、证据与恢复 | `src/checker-pipeline.ts`、`src/snapshot-store.ts`、`src/checker/port.ts`、`queue.ts`、`checkpoints.ts`、`artifacts.ts`、`agent.ts`、`evidence.ts`（后六项在 `src/checker/`） |
+| Checker 模型、Web 能力与程序 | `src/checker/model.ts`、`src/checker/adapters/web/`、`prompts/checker/` |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
 | 模型用量与单价 | `src/model-usage.ts`、`src/builder/pi-execution-stats.ts`、`src/planner-json-client.ts` |
 | 继承数据 | `src/inherited-data.ts` |
@@ -66,6 +70,7 @@ npm run test:all
 
 - 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/evolution.test.ts`。
 - Judge 合同与恢复：`test/probe-contract.test.ts`、`test/semantic-review.test.ts`、`test/locator-recovery.test.ts`、`test/browser/`。
+- Checker：`test/checker-core.test.ts`、`test/checker-agent.test.ts`、`test/checker-pipeline.test.ts`、`test/checker-web-runtime.test.ts`、`test/snapshot-store.test.ts` 及 `test/browser/checker-*.test.ts`。
 - 管线、工作区与交付：`test/pipeline.e2e.test.ts`、`test/project-workspace.test.ts`、`test/run-record.test.ts`、`test/resume-pipeline.test.ts`、`test/entry.test.ts`、`test/candidate-runtime.test.ts`、`test/final-verifier.test.ts`、`test/inherited-data.test.ts`。
 - 提示词与共享执行：`test/builder-prompt.test.ts`、`test/prompt-assets.test.ts`、`test/pi-worker.test.ts`、`test/project-spec.test.ts`。
 - 观测：`test/observability.test.ts`、`test/human-log.test.ts`。

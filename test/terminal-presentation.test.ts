@@ -314,6 +314,15 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   assert.match(text, /Judge\s+tokens 240/);
 });
 
+test("Run view attributes Checker usage to its own line instead of Judge", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "checker_usage", { jobId: "j1", role: "semantic_review", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  const text = view.render(80).join("\n");
+  assert.match(text, /Checker\s+tokens 120（入 100 \/ 出 20） · 费用 \$0\.0001/);
+  assert.match(text, /Judge\s+tokens 0/);
+  assert.match(text, /总计\s+tokens 120/);
+});
+
 test("Run view keeps grouped cache counts and partial cost visible in an 80-column terminal", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "builder_usage", { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,

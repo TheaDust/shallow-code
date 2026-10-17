@@ -578,6 +578,7 @@ test("Human logs carry model cost on usage lines and the final totals", () => {
   const usage = new ModelUsageTotals();
   usage.add("builder", { input: 1000, output: 200, cacheRead: 100, cacheWrite: 0, cost: 0.0021 });
   usage.add("judge", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
+  usage.add("checker", { input: 30, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.0001 });
   assert.match(formatLine(formatter, eventLine(base, "builder_usage", { packetId: "p",
     detail: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 } })),
     /Builder token 用量（p）；tokens 入 10 \/ 出 2 \/ 总计 12；费用未知/);
@@ -594,7 +595,44 @@ test("Human logs carry model cost on usage lines and the final totals", () => {
   assert.match(formatLine(formatter, eventLine(base, "pipeline_finished", { detail: { status: "delivered",
     verifiedRequirementIds: ["A"], blockedRequirementIds: [], pendingRequirementIds: [], acceptedSha: "sha",
     modelUsage: usage.summary() } })),
-    /模型用量 总计.*已知费用 \$0\.0021（部分未计价）；Builder.*费用 \$0\.0021；Judge.*费用未知/);
+    /模型用量 总计.*已知费用 \$0\.0022（部分未计价）；Builder.*费用 \$0\.0021；Judge.*费用未知；Checker.*费用 \$0\.0001/);
+  assert.match(formatLine(formatter, eventLine(base, "checker_usage", { packetId: "p",
+    detail: { jobId: "j1", role: "exploration", input: 300, output: 40, cacheRead: 0, cacheWrite: 0, total: 340, cost: 0.0003 } })),
+    /Checker exploration 用量；tokens 入 300 \/ 出 40 \/ 总计 340；费用 \$0\.0003/);
+});
+
+test("Human logs cover Checker queue, module checks and cancellation", () => {
+  const formatter = new HumanRunFormatter();
+  const base = "2026-10-16T00:00:00.000Z";
+  const job = { jobId: "j1", snapshotId: "snap-1", checkedSourceSha: "sha", moduleEpoch: 1, attempt: 1, mode: "discover", requirementIds: ["A"] };
+  assert.match(formatLine(formatter, eventLine(base, "snapshot_sealed", { packetId: "g1",
+    detail: { snapshotId: "snap-1", sourceSha: "sha", requirementIds: ["A", "B"], sequence: 2 } })),
+    /源码已封存；版本 snap-1；需求 A、B$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_queued", { packetId: "g1", detail: job })),
+    /Checker 已排队（g1）；版本 snap-1$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_started", { packetId: "g1", detail: job })),
+    /Checker 开始检查（g1）；版本 snap-1$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
+    detail: { ...job, status: "completed" } })),
+    /Checker 检查完成（g1）；版本 snap-1；等待当前版本汇总$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
+    detail: { ...job, status: "completed", archived: true, reason: "版本已收口" } })),
+    /历史结果已归档；版本已收口$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
+    detail: { ...job, status: "cancelled" } })),
+    /Checker 任务已结束（g1）；检查范围由模块收口接续$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
+    detail: { ...job, status: "cancelled", reason: "Budget exhausted" } })),
+    /Checker 任务已结束（g1）；Budget exhausted$/);
+  assert.match(formatLine(formatter, eventLine(base, "module_check_started",
+    { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", requirementIds: ["A"] } })),
+    /开始模块集中检查；版本 snap-2；需求 A$/);
+  assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
+    { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: true, requirementResults: { A: "verified" } } })),
+    /模块集中检查完成；版本 snap-2；当前结果已发布$/);
+  assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
+    { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: false, requirementResults: {} } })),
+    /模块集中检查完成；版本 snap-2；结果已归档$/);
 });
 
 test("Human logs report Probe Planner token usage per operation", () => {

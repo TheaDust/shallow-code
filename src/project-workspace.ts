@@ -10,7 +10,7 @@ export async function hasProjectFiles(directory: string): Promise<boolean> {
 
 /** Snapshot current files, including staged and untracked source, without changing the input repository. */
 export async function copyProjectWorkspace(sourceDirectory: string, workspaceDirectory: string,
-  generatedPaths: readonly string[] = []): Promise<string> {
+  generatedPaths: readonly string[] = [], dataPaths: readonly string[] = []): Promise<string> {
   const source = await realpath(sourceDirectory);
   const workspace = resolve(workspaceDirectory);
   const inside = (parent: string, child: string) => {
@@ -26,7 +26,8 @@ export async function copyProjectWorkspace(sourceDirectory: string, workspaceDir
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const rel = prefix ? prefix + "/" + entry.name : entry.name;
       if (entry.name === "node_modules" || (!prefix && NON_APPLICATION_METADATA.has(entry.name)) ||
-        generatedPaths.some(p => rel === p || rel.startsWith(p + "/"))) continue;
+        (generatedPaths.some(p => rel === p || rel.startsWith(p + "/")) &&
+          !dataPaths.some(p => rel === p || rel.startsWith(p + "/") || p.startsWith(rel + "/")))) continue;
       const from = join(directory, entry.name), to = join(workspace, rel);
       if (entry.isSymbolicLink()) throw new Error("Project links are not supported: " + rel);
       if (entry.isDirectory()) { await mkdir(to); await copy(from, rel); }

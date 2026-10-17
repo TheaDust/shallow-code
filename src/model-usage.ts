@@ -34,6 +34,8 @@ export interface UsageSummary extends TokenUsage {
 export interface ModelUsageSummary extends UsageSummary {
   builder: UsageSummary;
   judge: UsageSummary;
+  /** Checker 用量单独成组；旧事件记录可能没有该分组。 */
+  checker?: UsageSummary;
 }
 
 const COST_FIELDS = [
@@ -113,12 +115,13 @@ export class UsageTotals {
   }
 }
 
-/** 按实际调用来源分组；总计由两个分组汇总，避免独立累计产生偏差。 */
+/** 按实际调用来源分组；总计由各分组汇总，避免独立累计产生偏差。 */
 export class ModelUsageTotals {
   private readonly builder = new UsageTotals();
   private readonly judge = new UsageTotals();
+  private readonly checker = new UsageTotals();
 
-  add(source: "builder" | "judge", usage: TokenUsage): void {
+  add(source: "builder" | "judge" | "checker", usage: TokenUsage): void {
     this[source].add(usage);
   }
 
@@ -129,10 +132,12 @@ export class ModelUsageTotals {
     if (builderProgress) builder.add(builderProgress);
     const builderSummary = builder.summary();
     const judge = this.judge.summary();
+    const checker = this.checker.summary();
     const total = new UsageTotals();
     total.add(builderSummary);
     total.add(judge);
-    return { ...total.summary(), builder: builderSummary, judge };
+    total.add(checker);
+    return { ...total.summary(), builder: builderSummary, judge, checker };
   }
 }
 
@@ -165,8 +170,10 @@ export function formatUsageSummary(usage: UsageSummary): string {
 }
 
 export function formatModelUsageSummary(usage: ModelUsageSummary): string[] {
-  return ([["总计", usage], ["Builder", usage.builder], ["Judge", usage.judge]] as const)
-    .map(([label, summary]) => `${label}  ${formatUsageSummary(summary)}`);
+  const rows: Array<[string, UsageSummary]> = [["总计", usage], ["Builder", usage.builder], ["Judge", usage.judge]];
+  // Checker 无实际用量时省略该行，legacy 运行与窄终端保持原有版式。
+  if (usage.checker && usage.checker.total > 0) rows.push(["Checker", usage.checker]);
+  return rows.map(([label, summary]) => `${label}  ${formatUsageSummary(summary)}`);
 }
 
 /** OpenAI 兼容网关的用量：输入不含缓存 token，总量为各分项之和。 */

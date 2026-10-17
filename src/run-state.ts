@@ -37,6 +37,7 @@ export class RunStateStore {
   private firstEventAtMs?: number;
   private evidenceCount = 0;
   private readonly semanticCorrections = new Map<string, number>();
+  private ledgerWrites: Promise<void> = Promise.resolve();
 
   constructor(
     initial: InitialRunState,
@@ -150,12 +151,16 @@ export class RunStateStore {
       // Diagnostic sink failures must never change the decision path.
     }
     if (!this.ledgerFile) return;
-    try {
-      await mkdir(dirname(this.ledgerFile), { recursive: true });
-      await appendFile(this.ledgerFile, `${JSON.stringify(safeEvent)}\n`, { encoding: "utf8", mode: 0o600 });
-    } catch {
-      // Ledger file failures must never change the decision path.
-    }
+    // Reserve ordering before yielding: concurrent workers keep sequence and disk order aligned.
+    this.ledgerWrites = this.ledgerWrites.then(async () => {
+      try {
+        await mkdir(dirname(this.ledgerFile!), { recursive: true });
+        await appendFile(this.ledgerFile!, `${JSON.stringify(safeEvent)}\n`, { encoding: "utf8", mode: 0o600 });
+      } catch {
+        // Durable Checker transitions use their own store; this ledger is diagnostic.
+      }
+    });
+    await this.ledgerWrites;
   }
 }
 
@@ -179,6 +184,7 @@ function sanitizeEvidenceLocator(locator: ProbeLocator, secrets: readonly string
 }
 
 function eventPhase(event: RunEvent): RunEvent["phase"] {
+  if (event.type.startsWith("check_") || event.type.startsWith("module_check") || event.type === "checker_usage") return "probe";
   if (event.type.startsWith("evidence_")) return "evidence";
   if (event.type.startsWith("builder_")) return "builder";
   if (event.type.startsWith("application_")) return "application";

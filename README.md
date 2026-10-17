@@ -87,6 +87,22 @@ shallow build apply --run-dir E:\runs\<运行目录>
 
 **开发工具与独立验收**
 
+通过 `SHALLOW_CHECKER_MODE` 选择验收引擎，`SHALLOW_CHECKER_CONCURRENCY` 设置 1 或 2 个运行槽：
+
+| 模式 | 执行方式 |
+| --- | --- |
+| `legacy`（缺省） | 现有 Judge 规划与浏览器探针 |
+| `observe` | 现有 Judge 决定正式结果，同时在冻结副本上采集 Checker 证据 |
+| `active` | Checker Agent 探索、保存 JavaScript 程序、独立语义复核、全新环境重放；模块边界集中修复 |
+
+`active` 中，Builder 完成每个功能组后只等待源码封存，随后继续实现。检查任务绑定快照、需求、初态与执行器摘要；两个检查槽拥有各自的应用、数据和浏览器。模块边界在最新完整源码上重放必要场景，已确认的问题才进入修复，修复接受前复验已通过路径。声明固定额外端口的项目在共享资源处串行运行。
+
+Checker 内核管理内容引用、任务、证据、期限和队列。Web 执行配置、能力 schema、初态、程序格式和提示词通过数据声明绑定可信 Web 执行器。生成的 JavaScript 在独立进程中的 QuickJS 运行，通过受控 Playwright 能力访问应用；循环、条件和数值关系可以组合为完整检查程序。每个 GIVEN、WHEN 和结果子句对应宿主产生的观察与收据。业务失败须在另一个新环境复现；执行或解释不足记为未确认。Checker 的模型用量与 Judge 分开统计；有实际调用时在运行汇总中单列 `Checker` 一行。
+
+Checker 运行目录包含 `checker/controller.json`（源码产出与可运行检查点）、`checker/state.json`（任务索引）、`checker/snapshots/`（完整输入副本）及 `checker/objects/`（按内容保存的合同、程序、复核和收据）。`result.json` 保存当前逐子句结果，`checker-report.md` 展示原文依据、实际观察、断言与证据链接。`producedHead` 可以领先于 `acceptedSha`；恢复先重建已封存源码并确认运行条件，历史证据用于程序复用。
+
+当前交付 Web 适配和迁移模式。缺省引擎的切换以固定正确/缺陷样本及真实模型同条件对照为准；本地确定性测试、模拟网关与真实 Chromium 用例分别验证工程合同，模型误报率、耗时和成本需要实测。
+
 Builder 的 `run_tests` 使用声明的目标 ID；`all` 顺序执行全部目标，`filter` 作为一个额外参数传给目标命令。模板目标保留单 worker。默认实际运行，仅在确定性测试与输入未改变时可显式 `reuse=true`。
 
 `app` 按相同合同启动、观察和停止开发应用，返回浏览器地址。重建前停止，构建后重新启动。候选验收每个 case 使用隔离数据，同一 case 的刷新和新浏览器会话保留该 case 的服务端状态。
