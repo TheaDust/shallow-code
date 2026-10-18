@@ -144,6 +144,18 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
       const binding = await store.validateBinding(job.binding);
       const declaration = await store.getJson<AdapterDeclaration>(binding.declaration);
       const genericPrompts = await Promise.all(["exploration", "review", "tools"].map(promptAsset));
+      const promptDigest = hashBytes(genericPrompts.join("\n\n"));
+      const cachedReview = async (program: ProgramRef) => {
+        const key = store.reviewKey({ requirements: job.requirements, contract: program.contract, program: program.descriptor,
+          binding: job.binding, promptDigest });
+        const path = join(store.directory, "reviews", key + ".json");
+        try {
+          const ref = JSON.parse(await readFile(path, "utf8")) as ContentRef;
+          const review = await store.getJson<SemanticReview>(ref);
+          if (review.key !== key || canonicalJson(review.program) !== canonicalJson(program)) throw new Error("Semantic review cache changed");
+          return { key, path, ref, review };
+        } catch { return { key, path, ref: undefined, review: undefined }; }
+      };
       const adapterPrompts = await Promise.all(declaration.prompts.map(ref => store.getBytes(ref).then(bytes => bytes.toString("utf8"))));
       const capabilities = await Promise.all(declaration.capabilities.map(async capability => ({ ...capability,
         inputSchema: await store.getJson(capability.inputSchema), outputSchema: await store.getJson(capability.outputSchema) })));
@@ -159,6 +171,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
         const eligibleSources = sources.filter(source => outcomeMap.get(source.id)?.status !== "blocked");
         const submitted: ProgramRef[] = [];
         const coveredSources = new Set<string>();
+        const rejectedPrograms: Array<{ program: ProgramRef; source: string; clauseIds: string[]; reasons: string[] }> = [];
         for (const program of job.programs) {
           try {
             if (!sameRef(program.binding, job.binding) || program.format !== `${declaration.programFormat.id}@${declaration.programFormat.version}`) continue;
@@ -166,6 +179,15 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
             if (!sameRef(descriptor.initialState, job.initialState)) continue;
             const contract = await store.getJson<AcceptanceContract>(program.contract);
             validateAcceptanceContract(contract, job, eligibleSources, input);
+            const cached = await cachedReview(program);
+            if (cached.review && !cached.review.approved) {
+              manifest.reviews.push(cached.ref!);
+              // Retain the rejected attempt for history and feedback, without claiming coverage.
+              programs.push(program);
+              rejectedPrograms.push({ program, source: (await store.getBytes(descriptor.source)).toString("utf8"),
+                clauseIds: cached.review.clauseIds, reasons: cached.review.reasons });
+              continue;
+            }
             if (descriptor.clauses.some(mapping => coveredSources.has(mapping.clauseId))) continue;
             descriptor.clauses.forEach(mapping => coveredSources.add(mapping.clauseId));
             submitted.push(program);
@@ -212,6 +234,8 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 const descriptor: CheckerProgramDescriptor = { source: await store.putBytes(args.source), initialState: job.initialState, clauses: args.clauses };
                 const program: ProgramRef = { descriptor: await store.putTypedJson(descriptor, declaration.programFormat.schema),
                   format: `${declaration.programFormat.id}@${declaration.programFormat.version}`, contract: { id: args.contract.id, digest: args.contract.digest }, binding: job.binding };
+                const cached = await cachedReview(program);
+                if (cached.review && !cached.review.approved) throw new Error(`Program was rejected by semantic review; revise its source or contract: ${cached.review.reasons.join("; ")}`);
                 savedPrograms.push(program);
                 return program;
               } },
@@ -223,10 +247,13 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 submitted.push(...args.programs); finished = true; return { accepted: true };
               } },
           ];
-          await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({ requirements: input,
-            sourceClauses: discoverySources, capabilities, programFormat: declaration.programFormat, initialState: await store.readTypedJson(job.initialState) }), tools);
-          await close(exploration);
-          if (!finished) throw new Error("Checker exploration did not finish with saved programs");
+          try {
+            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({ requirements: input,
+              sourceClauses: discoverySources, capabilities, programFormat: declaration.programFormat, initialState: await store.readTypedJson(job.initialState),
+              ...(rejectedPrograms.length ? { rejectedPrograms } : {}) }), tools);
+            if (!finished) throw new Error("Checker exploration did not finish with saved programs");
+          } catch (error) { manifest.diagnostics.push(error instanceof Error ? error.message : String(error)); }
+          finally { await close(exploration); }
         }
         for (const program of submitted) {
           signal.throwIfAborted();
@@ -241,21 +268,20 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           const source = (await store.getBytes(descriptor.source)).toString("utf8");
           if (!source.trim()) throw new Error("Cannot replay an empty program");
           programs.push(program); manifest.contracts.push(program.contract);
+          const cached = await cachedReview(program);
+          let reviewRef = cached.ref;
+          let review = cached.review;
+          if (review && !review.approved) {
+            manifest.reviews.push(reviewRef!);
+            for (const clause of contract.clauses) outcomeMap.set(clause.id, { requirementId: clause.requirementId, scenarioId: clause.scenarioId,
+              clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
+            continue;
+          }
           const replay = await prepare();
           let replayRefs = [...replay.readinessEvidence];
           if (await ready(replay)) replayRefs.push(...await replay.replay(program, signal));
           manifest.receipts.push(...replayRefs);
           await close(replay);
-          const key = store.reviewKey({ requirements: job.requirements, contract: program.contract, program: program.descriptor, binding: job.binding,
-            promptDigest: await checkerPromptDigest() });
-          const reviewPath = join(store.directory, "reviews", key + ".json");
-          let reviewRef: ContentRef | undefined;
-          let review: SemanticReview | undefined;
-          try {
-            reviewRef = JSON.parse(await readFile(reviewPath, "utf8")) as ContentRef;
-            review = await store.getJson<SemanticReview>(reviewRef);
-            if (review.key !== key || !review.approved || canonicalJson(review.program) !== canonicalJson(program)) throw new Error("Semantic review cache changed");
-          } catch { reviewRef = undefined; review = undefined; }
           if (!review) {
             let proposal: { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
             const receipts = await Promise.all(replayRefs.map(async ref => {
@@ -270,9 +296,9 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               } }]);
             const decision = proposal as { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
             if (!decision || decision.clauseIds.length !== contract.clauses.length || contract.clauses.some(clause => !decision.clauseIds.includes(clause.id))) throw new Error("Independent review omitted contract clauses");
-            review = { key, requirements: job.requirements, contract: program.contract, program, binding: job.binding, ...decision };
+            review = { key: cached.key, requirements: job.requirements, contract: program.contract, program, binding: job.binding, ...decision };
             reviewRef = await store.putJson(review);
-            if (review.approved) await atomicWrite(reviewPath, canonicalJson(reviewRef));
+            await atomicWrite(cached.path, canonicalJson(reviewRef));
           }
           manifest.reviews.push(reviewRef!);
           if (!review.approved) {

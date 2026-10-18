@@ -12,7 +12,7 @@ import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../sr
 import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef, TypedRef } from "../src/checker/port.js";
 import type { AtomicRequirement } from "../src/types.js";
 
-async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean } = {}) {
+async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "checker-agent-"));
   const store = new ArtifactStore(directory, "run-1");
   const schema = await store.putJson(Type.Unknown());
@@ -35,6 +35,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   let environments = 0, closed = 0, replays = 0;
   const roles: string[] = [];
   const reviewPrompts: string[] = [];
+  const explorationPrompts: string[] = [];
   const adapter: ExecutionAdapter = { binding, async prepare(currentJob) {
     const environment = await typed({ instance: ++environments });
     const jobRef = await store.putJson(currentJob);
@@ -46,7 +47,8 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     return { execution: environment, readinessEvidence: [readiness],
       async invoke() { return { output: await typed({ text: "Unpaid" }), receipts: [] }; },
       async replay(program) {
-        const fail = config.failures?.includes(replays++);
+        const fail = config.failures?.includes(replays);
+        replays++;
         const contract = await store.getJson<AcceptanceContract>(program.contract);
         const refs: ContentRef[] = [];
         const initialObservation = await receipt("observation", { value: "unpaid" }, { program });
@@ -66,6 +68,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   const model: CheckerModel = { async run(request) {
     roles.push(request.role);
     if (request.role === "semantic_review") reviewPrompts.push(request.prompt);
+    else explorationPrompts.push(request.prompt);
     const tool = (name: string, args: unknown) => request.tools.find(item => item.name === name)!.execute(args);
     const promptInput = JSON.parse(request.prompt) as { sourceClauses: SourceClause[]; contract?: AcceptanceContract };
     const clauses = (request.role === "semantic_review" ? promptInput.contract!.clauses : promptInput.sourceClauses).slice(0, config.omitSecond ? 1 : undefined);
@@ -86,13 +89,13 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
         contract.checkpoints.forEach(item => { item.dependsOn = []; });
       }
       const contractRef = await tool("save_artifact", { kind: "contract", contract });
-      const program = await tool("save_artifact", { kind: "program", contract: contractRef, source: "await check.expect('source-result', [observation.id]);",
+      const program = await tool("save_artifact", { kind: "program", contract: contractRef, source: config.source ?? "await check.expect('source-result', [observation.id]);",
         clauses: contract.clauses.map(clause => ({ clauseId: clause.id, checkpointId: clause.checkpointId })) });
       await tool("finish", { programs: [program] });
     }
     return { totalTokens: 100 };
   } };
-  return { directory, store, job, adapter, model, roles, reviewPrompts, get environments() { return environments; }, get closed() { return closed; },
+  return { directory, store, job, adapter, model, roles, reviewPrompts, explorationPrompts, get environments() { return environments; }, get closed() { return closed; }, get replays() { return replays; },
     checker: createCheckerAgent({ artifacts: store, adapter, model }), cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 
@@ -240,12 +243,79 @@ test("source GIVEN/WHEN omissions cannot claim an initial state and failed setup
   });
 });
 
-test("rejected semantic reviews are rechecked on later replay", async () => {
+test("rejected programs survive restart as feedback and cannot be replayed or resubmitted unchanged", async () => {
   const f = await fixture({ rejectReview: true });
   try {
     const first = await f.checker.check(f.job, new AbortController().signal);
-    await f.checker.check({ ...f.job, jobId: "job-retry", mode: "replay", programs: first.programs }, new AbortController().signal);
-    assert.deepEqual(f.roles, ["exploration", "semantic_review", "semantic_review"]);
+    const checker = createCheckerAgent({ artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model: f.model });
+    const second = await checker.check({ ...f.job, jobId: "job-retry", mode: "replay", programs: first.programs }, new AbortController().signal);
+    assert.deepEqual(f.roles, ["exploration", "semantic_review", "exploration"]);
+    assert.equal(f.replays, 1, "the rejected program is not replayed again");
+    assert.equal(f.environments, 3, "retry prepares only an exploration environment");
+    assert.equal(f.closed, f.environments);
+    assert(second.outcomes.every(item => item.status === "inconclusive"));
+    assert.match(second.outcomes[0]!.reason!, /Program was rejected.*Constant predicate/);
+    const feedback = JSON.parse(f.explorationPrompts[1]!).rejectedPrograms;
+    assert.deepEqual(feedback.map((item: { program: ProgramRef }) => item.program), first.programs);
+    assert.deepEqual(feedback[0].reasons, ["Constant predicate does not test source result"]);
+    assert.deepEqual(feedback[0].clauseIds, first.outcomes.map(item => item.clauseId));
+    assert.equal(feedback[0].source, "await check.expect('source-result', [observation.id]);");
+    const firstManifest = await f.store.getJson<CheckerManifest>(first.manifest);
+    const secondManifest = await f.store.getJson<CheckerManifest>(second.manifest);
+    assert.deepEqual(secondManifest.reviews, firstManifest.reviews);
+  } finally { await f.cleanup(); }
+});
+
+test("rejected coverage is rediscovered, revised programs are reviewed, and approved replacements are reused", async () => {
+  const config = { rejectReview: true, omitSecond: true, source: "// rejected test" };
+  const f = await fixture(config);
+  try {
+    const first = await f.checker.check(f.job, new AbortController().signal);
+    config.rejectReview = false; config.omitSecond = false; config.source = "// revised test";
+    const second = await f.checker.check({ ...f.job, jobId: "module-boundary", mode: "replay", programs: first.programs,
+      snapshot: await f.store.putJson({ sha: "source-2" }) }, new AbortController().signal);
+    assert(second.outcomes.every(item => item.status === "pass"));
+    assert.deepEqual(JSON.parse(f.explorationPrompts[1]!).sourceClauses.map((item: SourceClause) => item.id), first.outcomes.map(item => item.clauseId));
+    assert.equal(second.programs.length, 2, "history retains the rejected attempt alongside its replacement");
+    assert.deepEqual(f.roles, ["exploration", "semantic_review", "exploration", "semantic_review"]);
+    assert.equal(f.replays, 2, "only the replacement is replayed during rediscovery");
+    const third = await f.checker.check({ ...f.job, jobId: "final", mode: "replay", programs: second.programs }, new AbortController().signal);
+    assert(third.outcomes.every(item => item.status === "pass"));
+    assert.equal(f.roles.length, 4, "final replay reuses the replacement review");
+    assert.equal(f.replays, 3);
+  } finally { await f.cleanup(); }
+});
+
+test("changed requirement context invalidates a cached rejection", async () => {
+  const config = { rejectReview: true };
+  const f = await fixture(config);
+  try {
+    const first = await f.checker.check(f.job, new AbortController().signal);
+    config.rejectReview = false;
+    const input = await f.store.getJson<CheckerRequirements>(f.job.requirements);
+    const second = await f.checker.check({ ...f.job, jobId: "changed-context", mode: "replay", programs: first.programs,
+      requirements: await f.store.putJson({ ...input, browserEntry: "/new-entry" }) }, new AbortController().signal);
+    assert(second.outcomes.every(item => item.status === "pass"));
+    assert.equal(f.replays, 2);
+    assert.deepEqual(f.roles, ["exploration", "semantic_review", "exploration", "semantic_review"]);
+    assert.equal(JSON.parse(f.explorationPrompts[1]!).rejectedPrograms, undefined);
+  } finally { await f.cleanup(); }
+});
+
+test("failed rediscovery leaves approved sibling programs eligible for current replay", async () => {
+  const config = { omitSecond: true, rejectReview: false };
+  const f = await fixture(config);
+  try {
+    const first = await f.checker.check(f.job, new AbortController().signal);
+    config.rejectReview = true;
+    const second = await f.checker.check({ ...f.job, jobId: "partial", mode: "replay", programs: first.programs }, new AbortController().signal);
+    assert.deepEqual(second.outcomes.map(item => item.status), ["pass", "inconclusive"]);
+    const third = await f.checker.check({ ...f.job, jobId: "retry", mode: "replay", programs: second.programs }, new AbortController().signal);
+    assert.deepEqual(third.outcomes.map(item => item.status), ["pass", "inconclusive"]);
+    assert.match(third.outcomes[1]!.reason!, /Program was rejected/);
+    assert.equal(f.replays, 4, "approved sibling still replays while the rejected program is skipped");
+    assert.equal(f.reviewPrompts.length, 2, "neither program needs another semantic review");
+    assert.equal(f.closed, f.environments);
   } finally { await f.cleanup(); }
 });
 
