@@ -358,11 +358,13 @@ test("Result card offers applicable commands, quotes paths and separates skips f
   assert.doesNotMatch(delivered, /\x1b\[/);
   const usage = new ModelUsageTotals();
   usage.add("builder", { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
+  usage.add("planner", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.0001 });
   const withUsage = buildResult({ ...summary, modelUsage: usage.summary() },
     "run", "changes.patch", "demo", 5_000, false);
-  assert.match(withUsage, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 200） · 费用 \$0\.01/);
+  assert.match(withUsage, /总计\s+tokens 1\.3k（入 1\.1k \/ 出 220） · 费用 \$0\.0101/);
   assert.match(withUsage, /Builder\s+tokens 1\.2k/);
   assert.match(withUsage, /Checker\s+tokens 0/);
+  assert.doesNotMatch(withUsage, /Planner/);
 });
 
 test("Run view accumulates model tokens and cost and shows in-flight progress until the call settles", () => {
@@ -370,7 +372,8 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   receive(view, "feature_grouping_usage", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   receive(view, "feature_grouping_usage", { operation: "plan", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   assert.match(view.render(80).join("\n"), /总计\s+tokens 240（入 200 \/ 出 40） · 费用 \$0\.0002/);
-  assert.match(view.render(80).join("\n"), /Checker\s+tokens 240/);
+  assert.match(view.render(80).join("\n"), /Checker\s+tokens 0/);
+  assert.doesNotMatch(view.render(80).join("\n"), /Planner/);
   view.liveUsage({ usage: { status: "available", input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } });
   assert.match(view.render(80).join("\n"), /Builder\s+tokens 1\.0k（入 800 \/ 出 200） · 费用 \$0\.0012/);
   assert.match(view.render(80).join("\n"), /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
@@ -380,7 +383,8 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   const text = view.render(80).join("\n");
   assert.match(text, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
   assert.match(text, /Builder\s+tokens 1\.0k/);
-  assert.match(text, /Checker\s+tokens 240/);
+  assert.match(text, /Checker\s+tokens 0/);
+  assert.doesNotMatch(text, /Planner/);
 });
 
 test("Run view attributes verification usage to the Checker group", () => {

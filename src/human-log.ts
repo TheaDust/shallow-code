@@ -336,7 +336,9 @@ function modelUsageSummary(value: unknown): ModelUsageSummary | null {
   const total = usageSummary(record);
   const builder = usageSummary(record?.builder);
   const checker = usageSummary(record?.checker);
-  return total && builder && checker ? { ...total, builder, checker } : null;
+  // 旧运行记录没有 Planner 分组；缺失时按零处理，总计保持不变。
+  const planner = usageSummary(record?.planner) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  return total && builder && checker ? { ...total, builder, checker, planner } : null;
 }
 
 function asNumber(value: unknown): number | null {

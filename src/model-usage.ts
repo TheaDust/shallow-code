@@ -34,6 +34,8 @@ export interface UsageSummary extends TokenUsage {
 export interface ModelUsageSummary extends UsageSummary {
   builder: UsageSummary;
   checker: UsageSummary;
+  /** 控制器规划（如功能分组）；独立于 Builder 实现与 Checker 验收。 */
+  planner: UsageSummary;
 }
 
 const COST_FIELDS = [
@@ -117,8 +119,9 @@ export class UsageTotals {
 export class ModelUsageTotals {
   private readonly builder = new UsageTotals();
   private readonly checker = new UsageTotals();
+  private readonly planner = new UsageTotals();
 
-  add(source: "builder" | "checker", usage: TokenUsage): void {
+  add(source: "builder" | "checker" | "planner", usage: TokenUsage): void {
     this[source].add(usage);
   }
 
@@ -129,10 +132,12 @@ export class ModelUsageTotals {
     if (builderProgress) builder.add(builderProgress);
     const builderSummary = builder.summary();
     const checker = this.checker.summary();
+    const planner = this.planner.summary();
     const total = new UsageTotals();
     total.add(builderSummary);
     total.add(checker);
-    return { ...total.summary(), builder: builderSummary, checker };
+    total.add(planner);
+    return { ...total.summary(), builder: builderSummary, checker, planner };
   }
 }
 
@@ -164,8 +169,10 @@ export function formatUsageSummary(usage: UsageSummary): string {
   return `tokens ${formatTokenCount(usage.total)}（${parts.join(" / ")}）${cost}`;
 }
 
-export function formatModelUsageSummary(usage: ModelUsageSummary): string[] {
+export function formatModelUsageSummary(usage: ModelUsageSummary, options: { includePlanner?: boolean } = {}): string[] {
   const rows: Array<[string, UsageSummary]> = [["总计", usage], ["Builder", usage.builder], ["Checker", usage.checker]];
+  // 终端空间有限时可省略规划明细；总计始终来自全部分组。
+  if (options.includePlanner !== false) rows.push(["Planner", usage.planner]);
   return rows.map(([label, summary]) => `${label}  ${formatUsageSummary(summary)}`);
 }
 

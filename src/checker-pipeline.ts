@@ -365,7 +365,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         limits: { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20_000 } } });
       const at = Date.now(); let reason: string | undefined; let source: "llm" | "deterministic" = "deterministic";
       try { grouping = parseFeatureGrouping(await deps.grouper.group(implementationCatalog, { timeoutMs: Math.min(720_000, budget.remaining("implementation")),
-        onUsage: async item => { usage.add("checker", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } }), implementationCatalog); source = "llm"; }
+        onUsage: async item => { usage.add("planner", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } }), implementationCatalog); source = "llm"; }
       catch (error) { reason = message(error); }
       await state.record({ at: now(), type: "feature_grouping_finished", detail: { source, reason, grouping: grouping.stats,
         durationMs: Date.now() - at, groups: grouping.packets.map(item => ({ packetId: item.id, requirementIds: item.requirementIds })) } });

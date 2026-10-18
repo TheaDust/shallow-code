@@ -83,7 +83,7 @@ export class BuildView implements Component {
       }
     }
     if (event.type === "feature_grouping_usage") {
-      this.addUsage("checker", detail);
+      this.addUsage("planner", detail);
       return;
     }
     if (event.type === "checker_usage") {
@@ -169,7 +169,7 @@ export class BuildView implements Component {
     const checkerLines = checker ? [` ${t.muted("后台")} ${checker}`] : [];
     const models = ` ${t.muted("模型")}  Builder ${this.options.models.builder} ${t.muted("·")} Checker ${this.options.models.checker}`;
     const footer = t.muted(" d 详细日志   ? 帮助   Ctrl+C 中断");
-    const usage = formatModelUsageSummary(this.usage.summary(this.live));
+    const usage = formatModelUsageSummary(this.usage.summary(this.live), { includePlanner: false });
     const compact = () => {
       const head = [terminalHeader("Build Agent", width, t)[0], models, activity, ...checkerLines];
       const tail = [" " + status, footer];
@@ -201,7 +201,7 @@ export class BuildView implements Component {
     return lines.map(line => fitTerminalText(line, width));
   }
 
-  private addUsage(source: "builder" | "checker", usage: Record<string, unknown> | undefined): void {
+  private addUsage(source: "builder" | "checker" | "planner", usage: Record<string, unknown> | undefined): void {
     if (!usage || typeof usage.input !== "number" || typeof usage.output !== "number") return;
     const number = (key: string) => typeof usage[key] === "number" ? usage[key] as number : 0;
     const cost = typeof usage.cost === "number" ? usage.cost : undefined;
@@ -330,7 +330,7 @@ export function buildResult(summary: RunSummary, runDirectory: string, patch: st
       `证据不足 ${summary.inconclusiveRequirementIds?.length ?? 0}`,
     ` 阻塞 ${summary.blockedRequirementIds.length} · 待处理 ${summary.pendingRequirementIds?.length ?? 0} · 沿用跳过 ${summary.skippedRequirementIds?.length ?? 0}`,
     ` 总耗时  ${elapsedTime(elapsedMs)}`,
-    ...(summary.modelUsage ? formatModelUsageSummary(summary.modelUsage).map(line => ` ${line}`) : []),
+    ...(summary.modelUsage ? formatModelUsageSummary(summary.modelUsage, { includePlanner: false }).map(line => ` ${line}`) : []),
     "", ` 报告  ${join(runDirectory, "report.md")}`, ` 日志  ${join(runDirectory, "run-log.txt")}`,
     ...(patch ? [` 补丁  ${patch}`] : []), "", t.muted(" 下一步")];
   if (patch && summary.status === "delivered") lines.push(` shallow build apply --run-dir ${shellArgument(runDirectory)}`);

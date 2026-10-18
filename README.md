@@ -175,7 +175,7 @@ Windows 上把 `npm` 换成 `npm.cmd`。`start` 必填；`install`、`build`、`
 
 ## 运行结果与恢复
 
-默认运行目录在 `%TMP%/shallowcode-runs/<run-id>`，可用 `SHALLOW_RUN_DIR` 覆盖。结束时会打印运行目录、补丁位置，以及总计、Builder、Checker 三组模型用量。
+默认运行目录在 `%TMP%/shallowcode-runs/<run-id>`，可用 `SHALLOW_RUN_DIR` 覆盖。结束时会打印运行目录、补丁位置，以及总计、Builder、Checker 三组模型用量。功能分组归入 Planner，只计入总计，不单独占用终端行；完整明细见 `report.md`。
 
 | 产物 | 内容 |
 | --- | --- |
