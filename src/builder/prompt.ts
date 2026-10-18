@@ -1,6 +1,6 @@
 import type {
   AtomicRequirement,
-  PlatformContract,
+  ApplicationContract,
   ProcessCommand,
   ProductContext,
   WorkPacket,
@@ -48,7 +48,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
           PRODUCT_CONTEXT: productContextSection(request.projectContext.product),
           PROJECT_CONTEXT: projectContextSection(request.projectContext),
           WORK_PACKET: workPacketSection(request.packet),
-          PLATFORM_CONTRACT: platformContractSection(request.platformContract),
+          PLATFORM_CONTRACT: applicationContractSection(request.applicationContract),
           RECEIPT: receipt,
         },
       );
@@ -69,7 +69,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
         PRODUCT_CONTEXT: productContextSection(request.projectContext.product),
         PROJECT_CONTEXT: projectContextSection(request.projectContext),
         WORK_PACKET: workPacketSection(request.packet),
-        PLATFORM_CONTRACT: platformContractSection(request.platformContract),
+        PLATFORM_CONTRACT: applicationContractSection(request.applicationContract),
         RECEIPT: receipt,
       });
       return task.trim();
@@ -80,7 +80,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
         {
           OUTPUT_DIR: request.outputDir,
           ACTION: deliveryRepairAction(request.deliveryFailure),
-          PLATFORM_CONTRACT: platformContractSection(request.platformContract),
+          PLATFORM_CONTRACT: applicationContractSection(request.applicationContract),
           RECEIPT: receipt,
         },
       );
@@ -267,30 +267,14 @@ function renderFailures(observation: BuilderShadowObservation): string {
     .join("\n");
 }
 
-function platformContractSection(contract: PlatformContract): string {
-  const extraPorts = contract.extraPorts ?? [];
-  const extraPortsSection = extraPorts.length === 0 ? "" : fillTemplate(loadPrompt("system", "platform-extra-ports"), {
-    EXTRA_PORTS: extraPorts.join("、"),
-    PROBE_PORT: String(contract.port),
-  });
-  // Only a reserved delivery port needs an explicit "do not bind during generation"
-  // rule; a project that reserves none gets no such sentence.
-  const reservedPortClause = contract.evaluationPort === undefined
-    ? "" : `不要在生成期监听或以任何方式占用正式评测端口 ${contract.evaluationPort}；`;
-  return fillTemplate(loadPrompt("system", "platform-contract"), {
-    PROBE_PORT: String(contract.port),
-    RESERVED_PORT_CLAUSE: reservedPortClause,
-    EXTRA_PORTS_SECTION: extraPortsSection,
-    INSTALL_COMMANDS: contract.installCommands.map(renderCommand).join("\n") || "无",
-    BUILD_COMMANDS: contract.buildCommands.map(renderCommand).join("\n") || "无",
-    START_COMMAND: renderCommand(contract.startCommand),
-    HEALTH_PATH: contract.healthPath,
-    BROWSER_PATH: contract.browserPath ?? "/",
-    BASE_URL: contract.baseUrl,
-    TEST_TARGETS: (contract.testTargets ?? []).map(target => `${target.id}: ${renderCommand(target)}`).join("\n") || "本轮未登记开发测试目标",
-    DATA_ENV_VAR: contract.dataEnvVar ?? "SHALLOW_DATA_DIR",
-    DATA_PATHS: contract.dataPaths?.join("、") || "未声明继承数据目录",
-  });
+function applicationContractSection(contract: ApplicationContract): string {
+  if (contract.builderInstructions) return contract.builderInstructions;
+  const commands = (name: string, values: ProcessCommand[]) => `${name}：\n${values.map(renderCommand).join("\n") || "无"}`;
+  return ["## 项目运行合同", `适配器：${contract.adapterId}。shallowcode.config.json 与本轮冻结合同保持一致。`,
+    commands("安装命令", contract.installCommands), commands("构建命令", contract.buildCommands), commands("启动命令", [contract.startCommand]),
+    `开发测试目标：${(contract.testTargets ?? []).map(target => `${target.id}: ${renderCommand(target)}`).join("\n") || "无"}`,
+    `数据目录变量：${contract.dataEnvVar ?? "SHALLOW_DATA_DIR"}；继承路径：${contract.dataPaths?.join("、") || "未声明"}`,
+    contract.builderInstructions ?? ""].filter(Boolean).join("\n\n");
 }
 
 function receiptSection(): string {

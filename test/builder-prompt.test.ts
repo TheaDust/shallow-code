@@ -1,3 +1,4 @@
+import { minimalWebContract } from "../src/adapters/web/project-spec.js";
 import assert from "node:assert/strict";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ import type {
 import type { BuilderRequest } from "../src/builder/port.js";
 import type {
   AtomicRequirement,
-  PlatformContract,
+  ApplicationContract,
   WorkPacket,
 } from "../src/types.js";
 import { FakeBuilder } from "./fakes/fake-builder.js";
@@ -30,7 +31,7 @@ test("Builder contracts follow requirements and project choices across products 
       const compiled = compileBuilderPrompt(request);
       systems.add(compiled.systemPrompt);
       assert.ok(compiled.taskPrompt.includes(request.packet.requirements[0].text));
-      assert.match(compiled.systemPrompt, /用 read 读取其 SKILL.md/);
+      assert.match(compiled.systemPrompt + compiled.taskPrompt, /用 read 读取其 SKILL.md/);
       assert.doesNotMatch(compiled.systemPrompt, /必须使用 HashRouter|全局页头使用顶层/);
       assert.doesNotMatch(compiled.taskPrompt, /【仓库协作业务】|【电子表格业务】/);
     }
@@ -41,37 +42,37 @@ test("Builder contracts follow requirements and project choices across products 
 test("Builder prompt compiles a Chinese system contract and dynamic task prompt", () => {
   const compiled = compileBuilderPrompt(implementRequest());
 
-  assert.match(compiled.systemPrompt, /唯一代码实现者/);
-  assert.match(compiled.systemPrompt, /Builder 开发检查/);
-  assert.match(compiled.systemPrompt, /传统测试/);
-  assert.match(compiled.systemPrompt, /保留种子数据/);
-  assert.match(compiled.systemPrompt, /释放进程/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /唯一代码实现者/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /Builder 开发检查/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /传统测试/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /保留种子数据/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /释放进程/);
   assert.doesNotMatch(compiled.systemPrompt, /MCP/);
-  assert.match(compiled.systemPrompt, /SHALLOW_DATA_DIR/);
-  assert.match(compiled.systemPrompt, /持续增量扩展/);
-  assert.match(compiled.systemPrompt, /必要的开发检查/);
-  assert.match(compiled.systemPrompt, /全新的独立会话/);
-  assert.match(compiled.systemPrompt, /唯一交接面/);
-  assert.match(compiled.systemPrompt, /复杂或边界逻辑必须编写传统测试并用 run_tests 运行/);
-  assert.match(compiled.systemPrompt, /browser 是昂贵工具/);
-  assert.match(compiled.systemPrompt, /清晰稳定的模块与接口边界/);
-  assert.match(compiled.systemPrompt, /延续既有栈，不得换栈重写/);
-  assert.match(compiled.systemPrompt, /通用最小脚手架提供运行配置/);
-  assert.match(compiled.systemPrompt, /不代表任何业务需求已经实现/);
-  assert.match(compiled.systemPrompt, /frontend\/src\/ui/);
-  assert.match(compiled.systemPrompt, /list_capabilities/);
-  assert.match(compiled.systemPrompt, /install_capability/);
-  assert.match(compiled.systemPrompt, /React \+ Vite \+ TypeScript/);
-  assert.match(compiled.systemPrompt, /路由方案按页面直达、刷新/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /SHALLOW_DATA_DIR/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /持续增量扩展/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /必要的开发检查/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /全新的独立会话/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /唯一交接面/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /复杂或边界逻辑必须编写传统测试并用 run_tests 运行/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /browser 是昂贵工具/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /清晰稳定的模块与接口边界/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /延续既有栈，不得换栈重写/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /通用最小脚手架提供运行配置/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /不代表任何业务需求已经实现/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /frontend\/src\/ui/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /list_capabilities/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /install_capability/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /React \+ Vite \+ TypeScript/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /路由方案按页面直达、刷新/);
   assert.doesNotMatch(compiled.systemPrompt, /必须使用 HashRouter/);
-  assert.match(compiled.systemPrompt, /@testing-library\/react/);
-  assert.match(compiled.systemPrompt, /按其所属控件或文本逐字实现/);
-  assert.match(compiled.systemPrompt, /不得缩写、加长、同义替换或翻译/);
-  assert.match(compiled.systemPrompt, /共享种子及按场景区分的初始条件/);
-  assert.match(compiled.systemPrompt, /明确列为预置或既有的实体/);
-  assert.match(compiled.systemPrompt, /logo 等返回首页入口的角色和可访问名以需求明示为准/);
-  assert.match(compiled.systemPrompt, /等待期间给出忙碌状态并防止重复操作/);
-  assert.match(compiled.taskPrompt, /浏览器未执行/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /@testing-library\/react/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /按其所属控件或文本逐字实现/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /不得缩写、加长、同义替换或翻译/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /共享种子及按场景区分的初始条件/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /明确列为预置或既有的实体/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /logo 等返回首页入口的角色和可访问名以需求明示为准/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /等待期间给出忙碌状态并防止重复操作/);
+  assert.match(compiled.taskPrompt, /应用交互检查未执行/);
   assert.match(compiled.taskPrompt, /未执行/);
   assert.match(compiled.taskPrompt, /需求核对/);
   assert.doesNotMatch(compiled.systemPrompt, /REQ-PROFILE/);
@@ -84,7 +85,7 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.taskPrompt, /实施前用相关既有测试或最小公开交互逐项检查现状/);
   assert.match(compiled.taskPrompt, /尚未实现或尚未验证的场景约束/);
   assert.match(compiled.taskPrompt, /完整业务链路/);
-  assert.match(compiled.systemPrompt, /不能为示例输入、账号或断言硬编码结果/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /不能为示例输入、账号或断言硬编码结果/);
   assert.match(compiled.taskPrompt, /ARCHITECTURE\.md/);
   assert.match(compiled.taskPrompt, /REQ-PROFILE/);
   assert.match(compiled.taskPrompt, /Root description/);
@@ -116,8 +117,8 @@ test("Builder shares its product and platform prefix across packets and repair m
     request.packet.attempt = (index + 1) as 1 | 2 | 3;
     request.packet.requirements[0].text += ` Packet evidence ${index}.`;
     const compiled = compileBuilderPrompt(request);
-    assert.match(compiled.systemPrompt, /逐场景还原 GIVEN/);
-    assert.match(compiled.systemPrompt, /逐场景核对 GIVEN、准备、WHEN 操作和全部 THEN 结果/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /逐场景还原 GIVEN/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /逐场景核对 GIVEN、准备、WHEN 操作和全部 THEN 结果/);
     assert.ok(compiled.taskPrompt.includes(`Path ${index}`));
     assert.ok(compiled.taskPrompt.includes(`Contract ${index}`));
     assert.ok(compiled.taskPrompt.includes(`Packet evidence ${index}.`));
@@ -237,11 +238,11 @@ test("Every Builder mode includes shared handoff and public-entry contracts", ()
   for (const request of [implementRequest(), repairRequest("repair"), repairRequest("root_cause_repair"), deliveryRequest()]) {
     const compiled = compileBuilderPrompt(request);
     assert.equal(compiled.systemPrompt.split(architectureNotes).length, 2);
-    assert.match(compiled.systemPrompt, /需求声明全局页头时/);
-    assert.match(compiled.systemPrompt, /按需求核对全局控件的作用域/);
-    assert.match(compiled.systemPrompt, /选定本包实现入口、调用方和测试/);
-    assert.match(compiled.systemPrompt, /已读且未变化的内容沿用上下文/);
-    assert.match(compiled.systemPrompt, /修改后按需要重读受影响片段/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /需求声明全局页头时/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /按需求核对全局控件的作用域/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /选定本包实现入口、调用方和测试/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /已读且未变化的内容沿用上下文/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /修改后按需要重读受影响片段/);
     assert.match(compiled.taskPrompt, /按 ARCHITECTURE\.md 交接约定/);
   }
 });
@@ -249,7 +250,7 @@ test("Every Builder mode includes shared handoff and public-entry contracts", ()
 test("Module and consolidated repair prompts bound self-test and maintain architecture handoff notes", () => {
   for (const request of [implementRequest(), repairRequest("repair")]) {
     const compiled = compileBuilderPrompt(request);
-    assert.match(compiled.systemPrompt, /传统测试/);
+    assert.match(compiled.systemPrompt + compiled.taskPrompt, /传统测试/);
     assert.match(compiled.taskPrompt, /ARCHITECTURE\.md/);
     assert.match(compiled.taskPrompt, /不超过十行/);
     assert.doesNotMatch(compiled.taskPrompt, /再重新 `prepare` 并完成关键路径检查/);
@@ -298,7 +299,7 @@ test("Work packet renders the aggregated verbatim seed checklist and omits it wh
   assert.match(seeded, /### 本包初始数据原文摘录/);
   assert.match(seeded, /预置记录须完整播种/);
   assert.match(seeded, /同名对象的互斥初始值分别保留/);
-  assert.match(compiled.systemPrompt, /不把它们拼成单一默认记录/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /不把它们拼成单一默认记录/);
   assert.ok(seeded.includes('- REQ-PROFILE：Seed data: shelf "Shelf 4.3.1"'));
   assert.ok(seeded.includes('- REQ-PROFILE：The evaluation seed contains workbook "Q3 Sales" with cell A1 value "Region"'));
 
@@ -361,9 +362,9 @@ test("Both boundary repair rounds and root-cause repair share diagnostic safegua
       if (request.mode === "delivery_repair") throw new Error("unexpected mode");
       request.packet.attempt = attempt;
       const compiled = compileBuilderPrompt(request);
-      assert.match(compiled.systemPrompt, /precondition 表示准备未完成/);
-      assert.match(compiled.systemPrompt, /locator 表示定位尚需诊断，不能据此认定目标业务失败/);
-      assert.match(compiled.systemPrompt, /重复控件不得为消除定位歧义而随意重命名、隐藏或删除/);
+      assert.match(compiled.systemPrompt + compiled.taskPrompt, /precondition 表示准备未完成/);
+      assert.match(compiled.systemPrompt + compiled.taskPrompt, /locator 表示定位尚需诊断，不能据此认定目标业务失败/);
+      assert.match(compiled.systemPrompt + compiled.taskPrompt, /重复控件不得为消除定位歧义而随意重命名、隐藏或删除/);
       if (mode === "repair") {
         assert.match(compiled.taskPrompt, /任务模式：需求修复/);
         assert.doesNotMatch(compiled.taskPrompt, /任务模式：第一次修复/);
@@ -380,8 +381,8 @@ test("Delivery repair renders the failure without any work packet context", () =
   assert.match(compiled.taskPrompt, /失败命令：\n未提供/);
   assert.match(compiled.taskPrompt, /平台构建命令成功退出并生成生产构建产物/);
   assert.match(compiled.taskPrompt, /实际观察：\nproduction build failed/);
-  assert.match(compiled.systemPrompt, /用 read 读取其 SKILL.md/);
-  assert.match(compiled.taskPrompt, /依次补齐安装、构建、探针端口启动、健康检查和根页面访问/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /用 read 读取其 SKILL.md/);
+  assert.match(compiled.taskPrompt, /依次补齐安装、构建、启动、就绪和公开入口检查/);
   assert.match(compiled.taskPrompt, /沿用本轮已成功且输入未变的安装、构建结果/);
   assert.doesNotMatch(compiled.taskPrompt, /当前工作包|delivery-repair/);
   assert.doesNotMatch(compiled.taskPrompt, /REQ-PROFILE/);
@@ -409,14 +410,13 @@ test("Startup repairs retain the runtime contract and observed failure", () => {
     }),
   );
 
-  assert.match(compiled.systemPrompt, /用 read 读取其 SKILL.md/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /用 read 读取其 SKILL.md/);
   assert.match(compiled.taskPrompt, /Application exited before readiness/);
 });
 
 test("Builder distinguishes the evaluation default from the probe port", () => {
   const request = implementRequest();
-  request.platformContract.port = 3210;
-  request.platformContract.baseUrl = "http://127.0.0.1:3210";
+  request.applicationContract = minimalWebContract({ port: 3210 });
   const compiled = compileBuilderPrompt(request);
   assert.match(compiled.taskPrompt, /应用读取 PORT 环境变量/);
   assert.match(compiled.taskPrompt, /PORT=3210/);
@@ -428,7 +428,7 @@ test("Builder receives every discovered extra port and omits the clause when the
   assert.doesNotMatch(withoutExtra.taskPrompt, /为各端口建立独立的服务实例/);
 
   const request = implementRequest();
-  request.platformContract.extraPorts = [3301, 4400];
+  request.applicationContract = minimalWebContract({ port: 3000, extraPorts: [3301, 4400] });
   const compiled = compileBuilderPrompt(request);
   assert.match(compiled.taskPrompt, /3301/);
   assert.match(compiled.taskPrompt, /4400/);
@@ -463,7 +463,7 @@ function implementRequest(): BuilderPromptInput {
     packet: packetFixture(),
     projectContext: projectContextFixture(),
     outputDir: "C:\\candidate-app",
-    platformContract: contractFixture(),
+    applicationContract: contractFixture(),
   };
 }
 
@@ -490,7 +490,7 @@ function repairRequest(
       ...overrides,
     },
     outputDir: "C:\\candidate-app",
-    platformContract: contractFixture(),
+    applicationContract: contractFixture(),
   };
 }
 
@@ -503,7 +503,7 @@ function deliveryRequest(): BuilderPromptInput {
       actual: "production build failed",
     },
     outputDir: "C:\\candidate-app",
-    platformContract: contractFixture(),
+    applicationContract: contractFixture(),
   };
 }
 
@@ -563,35 +563,17 @@ function requirementFixture(): AtomicRequirement {
   };
 }
 
-function contractFixture(): PlatformContract {
-  return {
-    baseUrl: "http://127.0.0.1:3000",
-    port: 3000,
-    evaluationPort: 3000,
-    installCommands: [
-      { executable: "npm", args: ["install"], cwd: "frontend" },
-    ],
-    buildCommands: [
-      { executable: "npm", args: ["run", "build"], cwd: "frontend" },
-    ],
-    startCommand: {
-      executable: "npm",
-      args: ["run", "start"],
-      cwd: "backend",
-    },
-    healthPath: "/health",
-    buildTimeoutMs: 120_000,
-    startTimeoutMs: 30_000,
-  };
+function contractFixture(): ApplicationContract {
+  return minimalWebContract({ port: 3000, evaluationPort: 3000 }, "linux");
 }
 
 function builderRequest(attempt: 1 | 2 | 3): BuilderRequest {
   const packet = { ...packetFixture(), attempt };
   const projectContext = projectContextFixture();
   const outputDir = "C:\\candidate-app";
-  const platformContract = contractFixture();
+  const applicationContract = contractFixture();
   if (attempt === 1) {
-    return { mode: "implement", packet, projectContext, outputDir, platformContract };
+    return { mode: "implement", packet, projectContext, outputDir, applicationContract };
   }
   return {
     mode: attempt === 2 ? "repair" : "root_cause_repair",
@@ -611,6 +593,6 @@ function builderRequest(attempt: 1 | 2 | 3): BuilderRequest {
       applicationStartupFailed: false,
     },
     outputDir,
-    platformContract,
+    applicationContract,
   };
 }

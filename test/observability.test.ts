@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, readdir, symlink } from "node:fs/promises";
+import { mkdir, readFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { assertPrivateRunDirectory } from "../index.js";
 import { sanitizeDiagnosticText } from "../src/diagnostics.js";
 import { RunStateStore } from "../src/run-state.js";
 import { HumanRunFormatter } from "../src/human-log.js";
-import { toBuilderShadowObservation } from "../src/builder/shadow-observation.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import type { RunEvent } from "../src/types.js";
-import type { ProbePlan } from "../src/judge/probe-schema.js";
 
 test("Diagnostics redact known secrets, embedded headers, quoted values and URL credentials before truncation", () => {
   const raw = ['opaque-gateway-credential', 'Authorization: Bearer header-value',
@@ -29,7 +27,7 @@ test("Gateway wait transport reasons are redacted in both machine and human logs
     const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { chunks.push(chunk); } }, ["opaque-credential"]);
     await store.record({ at: "2026-09-07T00:00:00Z", type: "gateway_wait", packetId: "p", detail: {
-      source: "planner", retry: 1, delayMs: 30_000, failure: { kind: "unavailable", retryable: true },
+      source: "planning", retry: 1, delayMs: 30_000, failure: { kind: "unavailable", retryable: true },
       reason: "TypeError: fetch failed → Error: token=opaque-credential [ECONNRESET]",
     } });
     const ledger = await readFile(join(directory, "ledger.jsonl"), "utf8");
@@ -48,7 +46,7 @@ test("Internal events are correlated; private previews stay out of public logs a
     await store.record({ at: "2026-09-07T00:00:00Z", type: "builder_finished", packetId: "p",
       detail: { summary: "opaque-credential", contentPreview: "PRIVATE-PLAN", inputTokens: 123, apiKey: "hidden", probePlan: "NEVER-LOG" } } as unknown as RunEvent);
     store.setAcceptedSha("sha2");
-    await store.record({ at: "2026-09-07T00:00:02Z", type: "packet_accepted", packetId: "p" });
+    await store.record({ at: "2026-09-07T00:00:02Z", type: "checkpoint_saved", packetId: "p" });
     const [first, second] = store.snapshot.ledger;
     assert.equal(first.runId, second.runId);
     assert.notEqual(first.eventId, second.eventId);
@@ -63,47 +61,6 @@ test("Internal events are correlated; private previews stay out of public logs a
   });
 });
 
-test("Evidence stores only bounded sanitized observations and shares sanitization with Builder feedback", async () => {
-  await withTempDir("shallow-evidence-", async (directory) => {
-    const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
-      join(directory, "ledger.jsonl"), null, ["opaque-credential"]);
-    const report = { packetId: "p", verdict: "fail" as const, passedCases: [], failures: Array.from({ length: 20 }, () => ({
-      caseId: "c", stepIndex: 2, category: "locator" as const,
-      message: "opaque-credential", locatorSnapshot: "Cookie: sid=private\n" + "x".repeat(5000),
-      inputSummary: "opaque-credential\n" + "x".repeat(5000),
-      pageUrl: "https://alice:password-url@example.invalid/#/items?token=url-secret",
-      locatorAttempts: [{ locator: { by: "text" as const, text: "opaque-credential" }, message: "password=attempt-secret", matchCount: 2 }],
-    })), probePlan: "HIDDEN-PLAN" };
-    const plan: ProbePlan = { packetId: "p", cases: [{ id: "c", requirementIds: ["r"], purpose: "happy_path",
-      expectationBasis: ["fixture"], steps: [
-      { op: "goto", path: "/" }, { op: "reload" },
-      { op: "expectText", locator: { by: "text", text: "opaque-credential" }, text: "HIDDEN-ASSERTION" },
-    ] }] };
-    const id = await store.saveEvidence(report, plan);
-    assert.ok(id);
-    const raw = await readFile(join(directory, "evidence", `${id}.json`), "utf8");
-    const evidence = JSON.parse(raw);
-    assert.equal(evidence.failures.length, 8);
-    assert.equal(evidence.failureCount, 20);
-    assert.ok(evidence.failures[0].inputSummary.length <= 1500);
-    assert.doesNotMatch(raw, /opaque-credential|sid=private|HIDDEN-PLAN|HIDDEN-ASSERTION|attempt-secret/);
-    assert.match(evidence.planSha256, /^[a-f0-9]{64}$/);
-    assert.deepEqual(evidence.failures[0].locators, [{ by: "text", text: "[redacted]" }]);
-    assert.equal(evidence.failures[0].locatorAttempts[0].locator.text, "[redacted]");
-    assert.equal(evidence.failures[0].locatorAttempts[0].matchCount, 2);
-    assert.match(evidence.failures[0].pageUrl, /#\/items/);
-    assert.doesNotMatch(JSON.stringify(evidence), /password-url|url-secret/);
-    assert.ok(evidence.failures[0].accessibilityExcerpt.length <= 1500);
-    const feedback = toBuilderShadowObservation(report, ["opaque-credential"]);
-    assert.equal(feedback.failures[0].inputSummary, evidence.failures[0].inputSummary);
-    assert.equal("pageUrl" in feedback.failures[0], false);
-    assert.equal("locatorAttempts" in feedback.failures[0], false);
-    assert.doesNotMatch(JSON.stringify(feedback), /opaque-credential|sid=private|HIDDEN-PLAN/);
-    for (let index = 1; index < 128; index++) await store.saveEvidence(report);
-    assert.equal(await store.saveEvidence(report), undefined);
-    assert.equal((await readdir(join(directory, "evidence"))).length, 128);
-  });
-});
 
 test("Private diagnostics reject candidate nesting and directory-link aliases", async () => {
   await withTempDir("shallow-private-", async (directory) => {

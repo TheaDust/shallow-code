@@ -11,32 +11,32 @@
 
 ## 核心约束
 
-### Builder 与 Judge
+### Builder 与 Checker
 
 - Pi Worker 是唯一实现目标应用业务代码的 Builder；控制器只调度、验收及安装任务无关脚手架和批准能力。
-- Judge 依据需求与浏览器观察规划和验收，保持与目标源码、diff、Builder 会话及官方测试隔离。Builder 输入通过白名单失败观测装配。
-- 控制器的私有证据不放进工作区：运行日志、Judge 计划、证据与 Pi 会话位于工作区外的 run 目录，`pi-tools.ts` 与候选快照据此屏蔽私有路径。`shallow-progress/` 保持 untracked，用于对外可见的进度记录。ARC 事件投影与平台打包约定由原项目维护，本仓库不再生成 `.arc/` 产物。
+- Checker 依据需求与声明能力的实际观察探索和验收，保持与目标源码、diff、Builder 会话及官方测试隔离。Builder 输入通过白名单失败观测装配。
+- 控制器的私有证据不放进工作区：运行日志、Checker 合同、程序、证据与 Pi 会话位于工作区外的 run 目录，`pi-tools.ts` 与候选快照据此屏蔽私有路径。`shallow-progress/` 保持 untracked，用于对外可见的进度记录。ARC 事件投影与平台打包约定由原项目维护，本仓库不再生成 `.arc/` 产物。
 - Builder 自述、构建成功和历史记录均不能授予 `verified`。历史计划与进度只提供需求 ID 来源，本轮按当前需求重新规划与执行。
 
 ### 验收与修复
 
 - 还原完整 GIVEN / WHEN / THEN。全部 THEN、结果段 AND / BUT 及其显式复合子句都须映射实际结果断言；需求 ID 覆盖不能代替场景覆盖。
-- `legacy` Judge 使用 `probe-schema.ts` 的白名单 DSL；`active` Checker 使用独立进程中的 QuickJS 程序和声明的 Web 能力。两者均保持原文依据、操作、输入、预期、控件角色和完整对象身份。定位严格唯一；`firstMatch` 只由需求原文明示授权，交互控件保持 role / label 语义。
-- Checker 内核消费领域无关的任务、引用和收据；Web 的命令、地址、数据、浏览器和端口由 `checker/adapters/web/` 解释。新能力同步声明、schema、执行绑定与提示词。
+- Checker 是唯一验收入口，任务绑定快照、执行声明和初态。Web 使用独立进程中的 QuickJS 与受控浏览器能力，保持原文依据、完整身份、严格唯一定位和 role / label 交互语义。
+- Checker 内核消费领域无关的任务、引用和收据；应用合同与候选位于 `application/`；Web 的命令、HTTP 就绪、端口和 Builder 能力由 `adapters/web/` 解释，Web 验收能力由 `checker/adapters/web/` 解释。新能力同步声明、schema、执行绑定与提示词。
 - 每个功能组完成后封存独立副本，后台结果只归属原任务、快照和 epoch。模块收口重放最新版本后发布；`producedHead` 与可运行 `acceptedSha` 分开持久化。回滚以集中修复开始时的完整模块为基线，恢复被忽略的输入数据，并保留后续功能组源码。
 - 准备前缀须建立并断言初始状态。修改种子或持久化行为时检查空数据与继承数据；同名对象依据归属、父对象与名称区分。
-- `acceptedSha` 是可运行检查点，`verified` 是当前候选的独立行为证据。Judge 的规划、定位、执行等故障记 `inconclusive` 并保留可运行实现。
+- `acceptedSha` 是可运行检查点，`verified` 是当前候选的独立行为证据。Checker 的探索、复核和执行等故障记 `inconclusive` 并保留可运行实现。
 - 保持候选副本、case 数据隔离和源码/构建一致性检查。修复接受前复验既有通过路径；未接受改动恢复检查点，并保留失败尝试历史。
 - 最终验收只检测当前验收范围；交付修复改变代码后重新验收。Evolution / Stage 的外部前序依赖只作上下文，跳过沿用项单列，不计作通过。
 
 ### 项目配置、提示词与观测
 
 - 项目的安装、构建、开发测试目标、启动命令、环境、就绪条件、依赖输入、生成目录与持久化数据隔离方式由 `shallowcode.config.json`（`ProjectSpec`）声明，与需求 YAML 分开加载；命令使用项目相对 cwd，不依赖 `frontend`/`backend` 之类固定目录名。解析期拒绝绝对路径与 `..` 越界。
-- 入口通过 `resolveRuntimeContract` 装配运行合同；评测端口仅在显式预留时存在。Builder 测试与 app、候选及交付检查共享合同，数据路径与注入变量均按声明使用。
+- 入口通过应用适配器注册表装配 `ApplicationContract`，核心只传递适配器配置；评测端口仅在显式预留时存在。Builder 测试与 app、候选及交付检查共享合同，数据路径与注入变量均按声明使用。
 - 已有项目通过 `project-workspace.ts` 复制到运行拥有的目录，包含当前 staged 和未跟踪源码。原目录与 Git index 保持不动；GitOps 以显式接管参数操作副本，回滚只恢复该副本的输入检查点。
 - `run-record.ts` 保存输入摘要与基线。resume 核对输入和合同，恢复接受检查点并重新验收；apply 核对补丁和受影响文件的完整输入内容后写回，保留用户 index。交付配置须与本轮运行合同一致，需求与参考文件使用私有快照。
-- 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充。Builder 技能位于 `prompts/skills/<name>/SKILL.md`，用 name/description 描述适用条件，正文按需读取；Pi 只显式加载该目录，技能文件仅允许 read 访问。
-- 合同修改核对 Builder、Planner、复核、精化及 baseline 的适用资产和动态装配，而非只改一份 Markdown。
+- 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充。Builder 通用技能位于 `prompts/skills/<name>/SKILL.md`，Web 技能位于 `prompts/adapters/web/skills/<name>/SKILL.md`，用 name/description 描述适用条件，正文按需读取；Pi 只显式加载通用目录及选定适配器的技能目录，技能文件仅允许 read 访问。
+- 合同修改核对 Builder、Checker 探索与复核、功能分组及适用的共享执行调用方的适用资产和动态装配，而非只改一份 Markdown。
 - 新增或调整运行事件同步 `types.ts`、`human-log.ts` 与对应测试；主线观测经 `RunStateStore.record` 发射，诊断使用统一脱敏。
 
 ## 源码索引
@@ -46,9 +46,9 @@
 | 生产装配、CLI、项目运行配置 | `index.ts`、`bin/shallow.mjs`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
 | 需求解析、原文阶段分析、依赖、增量范围 | `src/catalog.ts`、`src/requirement-text.ts`、`src/requirement-analysis.ts`、`src/evolution.ts`、`src/scheduler.ts` |
 | 功能分组 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`prompts/planning/feature-grouping.md` |
-| 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/controller-metadata.ts`、`src/run-record.ts`、`src/candidate-runtime.ts`、`src/git-ops.ts`、`src/final-verifier.ts` |
+| 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/controller-metadata.ts`、`src/run-record.ts`、`src/application/candidate-runtime.ts`、`src/git-ops.ts` |
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
-| Judge 规划、覆盖、恢复与执行 | `src/judge/llm-probe-planner.ts`、`probe-schema.ts`、`probe-coverage.ts`、`audit.ts`、`playwright-probe-runner.ts`（均在 `src/judge/`） |
+| 应用适配、配置、运行与 Builder 能力 | `src/application/port.ts`、`registry.ts`、`candidate-runtime.ts`；`src/adapters/web/`；注册装配 `src/adapters/index.ts`、`src/adapters/checker.ts` |
 | Checker 调度、产物、证据与恢复 | `src/checker-pipeline.ts`、`src/snapshot-store.ts`、`src/checker/port.ts`、`queue.ts`、`checkpoints.ts`、`artifacts.ts`、`agent.ts`、`evidence.ts`（后六项在 `src/checker/`） |
 | Checker 模型、Web 能力与程序 | `src/checker/model.ts`、`src/checker/adapters/web/`、`prompts/checker/` |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
@@ -69,9 +69,9 @@ npm run test:all
 按改动选择回归入口：
 
 - 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/evolution.test.ts`。
-- Judge 合同与恢复：`test/probe-contract.test.ts`、`test/semantic-review.test.ts`、`test/locator-recovery.test.ts`、`test/browser/`。
-- Checker：`test/checker-core.test.ts`、`test/checker-agent.test.ts`、`test/checker-pipeline.test.ts`、`test/checker-web-runtime.test.ts`、`test/snapshot-store.test.ts` 及 `test/browser/checker-*.test.ts`。
-- 管线、工作区与交付：`test/pipeline.e2e.test.ts`、`test/project-workspace.test.ts`、`test/run-record.test.ts`、`test/resume-pipeline.test.ts`、`test/entry.test.ts`、`test/candidate-runtime.test.ts`、`test/final-verifier.test.ts`、`test/inherited-data.test.ts`。
+- 应用适配与运行：`test/application.test.ts`、`test/application-boundaries.test.ts`、`test/web-runtime.test.ts`、`test/project-spec.test.ts`、`test/candidate-runtime.test.ts`。
+- Checker：`test/checker-core.test.ts`、`test/checker-agent.test.ts`、`test/checker-pipeline.test.ts`、`test/checker-entry.test.ts`、`test/checker-web-runtime.test.ts`、`test/snapshot-store.test.ts` 及 `test/browser/checker-*.test.ts`。
+- 管线、工作区与交付：`test/project-workspace.test.ts`、`test/run-record.test.ts`、`test/entry.test.ts`、`test/candidate-runtime.test.ts`、`test/inherited-data.test.ts`。
 - 提示词与共享执行：`test/builder-prompt.test.ts`、`test/prompt-assets.test.ts`、`test/pi-worker.test.ts`、`test/project-spec.test.ts`。
 - 观测：`test/observability.test.ts`、`test/human-log.test.ts`。
 

@@ -1,11 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
-import type { PlatformContract, ProcessCommand } from "./types.js";
+import type { ApplicationContract, ProcessCommand } from "./application/port.js";
 
 /** Project run description, loaded next to (and independently of) requirements.yaml. */
 export const PROJECT_SPEC_FILENAME = "shallowcode.config.json";
-export const DEFAULT_READY_PATH = "/health";
 export const DEFAULT_BUILD_TIMEOUT_MS = 180_000;
 export const DEFAULT_START_TIMEOUT_MS = 30_000;
 export const DEFAULT_TEST_TIMEOUT_MS = 600_000;
@@ -34,11 +33,8 @@ export interface ProjectSpec {
   tests?: ProjectTestTarget[];
   start: ProjectCommand;
   env?: Record<string, string>;
-  /** Path probed on the base URL to decide the application is ready. */
-  readyPath?: string;
-  browserPath?: string;
-  /** Additional ports the application must bind, declared rather than inferred. */
-  extraPorts?: number[];
+  adapter?: string;
+  adapterConfig?: unknown;
   /** Project-relative directories whose manifests define the dependency inputs. */
   dependencyPaths?: string[];
   /** Project-relative directories that are generated output and never source. */
@@ -49,49 +45,11 @@ export interface ProjectSpec {
   dataEnvVar?: string;
 }
 
-/** Ports are assigned per run; they are runtime state, not project declaration. */
-export interface RuntimePorts {
-  port: number;
-  /** Port reserved for delivery-time grading; generation must never bind it. */
-  evaluationPort?: number;
-  extraPorts?: number[];
-}
-
-/**
- * Declared spec for the shipped minimal-web template. Mirrors the previous
- * fixed frontend/backend contract so template runs behave exactly as before.
- */
-export function minimalWebProjectSpec(npm: string): ProjectSpec {
-  return {
-    install: [
-      { executable: npm, args: ["install", "--no-audit", "--no-fund"], cwd: "frontend" },
-      { executable: npm, args: ["install", "--no-audit", "--no-fund"], cwd: "backend" },
-    ],
-    build: [{ executable: npm, args: ["run", "build"], cwd: "frontend" }],
-    tests: [
-      { id: "frontend", executable: process.execPath, args: ["node_modules/vitest/vitest.mjs", "run", "--maxWorkers=1"], cwd: "frontend" },
-      { id: "backend", executable: process.execPath, args: ["--test", "--test-concurrency=1"], cwd: "backend" },
-    ],
-    start: { executable: npm, args: ["run", "start"], cwd: "backend" },
-    readyPath: DEFAULT_READY_PATH,
-    dataPaths: ["backend/data", "backend/.data"],
-    dependencyPaths: ["frontend", "backend"],
-    generatedPaths: ["frontend/dist"],
-  };
-}
-
-/** Runtime contract for the shipped template, used by fixtures and a blank template run. */
-export function minimalWebContract(
-  ports: RuntimePorts,
-  platform: NodeJS.Platform = process.platform,
-): PlatformContract {
-  return resolveRuntimeContract(minimalWebProjectSpec(npmExecutable(platform)), ports);
-}
-
 /** Read and validate the project run description for `projectRoot`. */
 export async function loadProjectSpec(
   projectRoot: string,
   filename = PROJECT_SPEC_FILENAME,
+  parser: (raw: unknown, origin: string) => ProjectSpec = parseProjectSpec,
 ): Promise<ProjectSpec> {
   const file = join(resolve(projectRoot), filename);
   let content: string;
@@ -110,7 +68,7 @@ export async function loadProjectSpec(
   } catch (error) {
     throw new Error(`${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return parseProjectSpec(raw, file);
+  return parser(raw, file);
 }
 
 export function parseProjectSpec(raw: unknown, origin = PROJECT_SPEC_FILENAME): ProjectSpec {
@@ -123,9 +81,6 @@ export function parseProjectSpec(raw: unknown, origin = PROJECT_SPEC_FILENAME): 
   if (record.build !== undefined) spec.build = parseCommandList(record.build, `${origin}.build`);
   if (record.tests !== undefined) spec.tests = parseTestTargets(record.tests, `${origin}.tests`);
   if (record.env !== undefined) spec.env = parseEnv(record.env, `${origin}.env`);
-  if (record.readyPath !== undefined) spec.readyPath = parseReadyPath(record.readyPath, `${origin}.readyPath`);
-  if (record.browserPath !== undefined) spec.browserPath = parseReadyPath(record.browserPath, `${origin}.browserPath`);
-  if (record.extraPorts !== undefined) spec.extraPorts = parsePorts(record.extraPorts, `${origin}.extraPorts`);
   if (record.dependencyPaths !== undefined) {
     spec.dependencyPaths = parseRelativePaths(record.dependencyPaths, `${origin}.dependencyPaths`);
   }
@@ -137,30 +92,21 @@ export function parseProjectSpec(raw: unknown, origin = PROJECT_SPEC_FILENAME): 
     spec.dataPaths = parseRelativePaths(record.dataPaths, `${origin}.dataPaths`);
   }
   if (record.dataEnvVar !== undefined) {
-    if (typeof record.dataEnvVar !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(record.dataEnvVar) || record.dataEnvVar === "PORT") {
-      throw new Error(`${origin}.dataEnvVar must name a data directory environment variable other than PORT`);
+    if (typeof record.dataEnvVar !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(record.dataEnvVar)) {
+      throw new Error(`${origin}.dataEnvVar must name a data directory environment variable`);
     }
     spec.dataEnvVar = record.dataEnvVar;
   }
+  if (record.adapter !== undefined && (typeof record.adapter !== "string" || !record.adapter.trim())) throw new Error(`${origin}.adapter must be a non-empty string`);
+  if (record.adapter !== undefined) spec.adapter = record.adapter as string;
+  if (record.adapterConfig !== undefined) spec.adapterConfig = record.adapterConfig;
   return spec;
 }
 
-/**
- * Resolve a declared spec plus this run's ports into the runtime contract every
- * phase shares. Commands are normalized to the resolved shape; unknown project
- * timeouts win over the phase default.
- */
-export function resolveRuntimeContract(spec: ProjectSpec, ports: RuntimePorts): PlatformContract {
-  // Ports the project declares plus ports reserved for this run, minus the two
-  // ports generation must never bind. Duplicates collapse so a repeated
-  // declaration cannot double-bind.
-  const extraPorts = [...new Set([...(spec.extraPorts ?? []), ...(ports.extraPorts ?? [])])]
-    .filter((port) => port !== ports.port && port !== ports.evaluationPort)
-    .sort((left, right) => left - right);
+export function resolveApplicationContract(spec: ProjectSpec): ApplicationContract {
+  if (!spec.adapter) throw new Error("Select an application adapter before resolving its contract");
   return {
-    baseUrl: `http://127.0.0.1:${ports.port}`,
-    port: ports.port,
-    ...(ports.evaluationPort === undefined ? {} : { evaluationPort: ports.evaluationPort }),
+    adapterId: spec.adapter, adapterConfig: spec.adapterConfig ?? {},
     installCommands: (spec.install ?? []).map(toProcessCommand),
     buildCommands: (spec.build ?? []).map(toProcessCommand),
     startCommand: toProcessCommand(spec.start),
@@ -170,9 +116,6 @@ export function resolveRuntimeContract(spec: ProjectSpec, ports: RuntimePorts): 
     ...(spec.dataEnvVar ? { dataEnvVar: spec.dataEnvVar } : {}),
     ...(spec.dependencyPaths ? { dependencyPaths: [...spec.dependencyPaths] } : {}),
     generatedPaths: [...(spec.generatedPaths ?? [])],
-    healthPath: spec.readyPath ?? DEFAULT_READY_PATH,
-    browserPath: spec.browserPath ?? "/",
-    ...(extraPorts.length > 0 ? { extraPorts } : {}),
     buildTimeoutMs: DEFAULT_BUILD_TIMEOUT_MS,
     startTimeoutMs: spec.start.timeoutMs ?? DEFAULT_START_TIMEOUT_MS,
   };
@@ -247,27 +190,6 @@ function parseEnv(value: unknown, location: string): Record<string, string> {
     env[key] = entry;
   }
   return env;
-}
-
-function parseReadyPath(value: unknown, location: string): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//") ||
-    /[\\\u0000-\u0020\u007f]/.test(value) || /(^|\/)\.\.(\/|$)/.test(value)) {
-    throw new Error(`${location} must be an absolute path beginning with "/"`);
-  }
-  return value;
-}
-
-function parsePorts(value: unknown, location: string): number[] {
-  if (!Array.isArray(value)) throw new Error(`${location} must be an array of port numbers`);
-  const ports: number[] = [];
-  for (const [index, entry] of value.entries()) {
-    if (typeof entry !== "number" || !Number.isInteger(entry) || entry <= 0 || entry > 65_535) {
-      throw new Error(`${location}[${index}] must be a port number between 1 and 65535`);
-    }
-    if (ports.includes(entry)) throw new Error(`${location}[${index}] repeats an earlier port: ${entry}`);
-    ports.push(entry);
-  }
-  return ports;
 }
 
 function parseStringList(value: unknown, location: string): string[] {

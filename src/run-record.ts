@@ -14,7 +14,7 @@ import { ArtifactStore } from "./checker/artifacts.js";
 import type { EvidenceReceipt } from "./checker/port.js";
 
 export interface RunRecord {
-  version: 1 | 2;
+  version: 3;
   requirementsDir: string;
   requirementsDigest: string;
   contractDigest: string;
@@ -27,9 +27,9 @@ export interface RunRecord {
   historicalRequirements?: HistoricalRequirements;
   stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
   auditInheritedRequirements: boolean;
-  generateFinalAuditPlans: boolean;
   resumedFrom?: string;
-  checker?: CheckerConfig;
+  checker: CheckerConfig;
+  bindingDigest?: string;
   checkerRunId?: string;
 }
 
@@ -64,9 +64,9 @@ export async function saveRunRecord(runDirectory: string, record: RunRecord): Pr
 
 export async function loadRunRecord(runDirectory: string): Promise<RunRecord> {
   const record = JSON.parse(await readFile(join(runDirectory, "run.json"), "utf8")) as RunRecord;
-  if ((record.version !== 1 && record.version !== 2) || !isAbsolute(record.outputDir) || !isAbsolute(record.requirementsDir) ||
-    !record.inputBaseline || !/^[0-9a-f]{40,64}$/i.test(record.inputBaseline)) throw new Error("Run has no resumable input baseline");
-  if (record.version === 2 && (!record.checker || !record.checkerRunId || record.checker.mode === "legacy")) throw new Error("Checker run is missing its execution settings");
+  if (record.version !== 3 || !isAbsolute(record.outputDir) || !isAbsolute(record.requirementsDir) ||
+    !record.inputBaseline || !/^[0-9a-f]{40,64}$/i.test(record.inputBaseline)) throw new Error("Run format is unsupported; start a new Checker run");
+  if (!record.checker || !record.checkerRunId || record.checker.mode !== "active") throw new Error("Checker run is missing its execution settings");
   record.projectSpec = parseProjectSpec(record.projectSpec, "run.json.projectSpec");
   const root = await runGit(record.outputDir, ["rev-parse", "--show-toplevel"], false);
   if (await realpath(root.stdout.trim()) !== await realpath(record.outputDir)) throw new Error("Recorded workspace is not a repository root");
@@ -93,41 +93,11 @@ export async function lockWorkspace(directory: string): Promise<() => Promise<vo
 }
 
 export async function readResumeCheckpoint(runDirectory: string, record: RunRecord): Promise<{ sha: string; requirementIds: string[] }> {
-  if (record.checker?.mode === "active") {
-    const checkpoint = await readCheckerCheckpoint(join(runDirectory, "checker", "controller.json"));
-    if (!checkpoint) throw new Error("Checker run has no committed checkpoint index");
-    const sha = checkpoint.producedHead?.sourceSha ?? checkpoint.accepted.sha;
-    await runGit(record.outputDir, ["cat-file", "-e", `${sha}^{commit}`], false);
-    return { sha, requirementIds: checkpoint.producedHead?.implementedRequirementIds ?? checkpoint.accepted.requirementIds };
-  }
-  let contents: string;
-  try { contents = await readFile(join(runDirectory, "run-ledger.jsonl"), "utf8"); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    contents = "";
-  }
-  let sha = record.inputBaseline!;
-  const ids = new Set<string>();
-  const lines = contents.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    let event: { acceptedSha?: string; type: string; detail?: { requirementIds?: string[]; implementedRequirementIds?: string[] } };
-    try { event = JSON.parse(lines[i]); }
-    catch {
-      // Only a torn final append is recoverable; interior corruption loses provenance.
-      if (lines.slice(i + 1).some(line => line.trim())) throw new Error("Run ledger is corrupted before its final entry");
-      break;
-    }
-    if ((event.type === "checkpoint_saved" || event.type === "pipeline_finished") &&
-      event.acceptedSha && /^[0-9a-f]{40,64}$/i.test(event.acceptedSha)) sha = event.acceptedSha;
-    if (event.type === "checkpoint_saved") for (const id of event.detail?.requirementIds ?? []) ids.add(id);
-    if (event.type === "pipeline_finished") {
-      ids.clear();
-      for (const id of event.detail?.implementedRequirementIds ?? []) ids.add(id);
-    }
-  }
+  const checkpoint = await readCheckerCheckpoint(join(runDirectory, "checker", "controller.json"));
+  if (!checkpoint) throw new Error("Checker run has no committed checkpoint index");
+  const sha = checkpoint.producedHead?.sourceSha ?? checkpoint.accepted.sha;
   await runGit(record.outputDir, ["cat-file", "-e", `${sha}^{commit}`], false);
-  return { sha, requirementIds: [...ids] };
+  return { sha, requirementIds: checkpoint.producedHead?.implementedRequirementIds ?? checkpoint.accepted.requirementIds };
 }
 
 export async function writeRunReport(runDirectory: string, summary: RunSummary, patchFile?: string): Promise<void> {

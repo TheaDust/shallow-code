@@ -35,7 +35,7 @@ export class PromptBuilder implements BuilderPort {
       summary: "Builder call deadline exhausted during reference-image preflight" };
     const attachReferences = Boolean(this.options.referenceImages) && !this.textOnly && !this.visionUnsupported;
     const input: CodingAgentRequest = { ...prompt, outputDir: request.outputDir,
-      timeoutMs: remainingMs(), sessionKey: options.sessionKey, platformContract: request.platformContract, requirementsDir: this.options.requirementsDir,
+      timeoutMs: remainingMs(), sessionKey: options.sessionKey, applicationContract: request.applicationContract, requirementsDir: this.options.requirementsDir,
       references, textOnly: this.textOnly, attachReferences, visionUnsupported: this.visionUnsupported,
       contextWindow: this.options.contextWindow };
     if (options.continuationFeedback) input.taskPrompt += "\n\n" + loadPrompt("system", "implementation-continuation")

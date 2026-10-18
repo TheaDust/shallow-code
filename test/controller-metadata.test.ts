@@ -20,18 +20,15 @@ import { PROGRESS_DIR_NAME } from "../src/progress-journal.js";
 import { copyProjectWorkspace, hasProjectFiles } from "../src/project-workspace.js";
 import { PROJECT_SPEC_FILENAME } from "../src/project-spec.js";
 import { snapshotFiles } from "../src/run-record.js";
-import { installStarterScaffold } from "../src/starter-scaffold.js";
-import type { PlatformContract } from "../src/types.js";
+import { installStarterScaffold } from "../src/adapters/web/scaffold.js";
+import type { ApplicationContract } from "../src/types.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-const contract = (): PlatformContract => ({
-  baseUrl: "http://127.0.0.1:43210",
-  port: 43210,
+const contract = (): ApplicationContract => ({
+  adapterId: "web", adapterConfig: { baseUrl: "http://127.0.0.1:43210", port: 43210, healthPath: "/health", browserPath: "/", extraPorts: [] },
   startCommand: { executable: "npm", args: ["run", "start"], cwd: "backend" },
-  healthPath: "/health",
   installCommands: [],
   buildCommands: [],
-  extraPorts: [],
   buildTimeoutMs: 1_000,
   startTimeoutMs: 1_000,
 });

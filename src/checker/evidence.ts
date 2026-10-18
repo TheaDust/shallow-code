@@ -9,7 +9,6 @@ export interface CheckerRequirements {
   prerequisites?: AtomicRequirement[];
   implementedRequirementIds?: string[];
   allRequirements?: AtomicRequirement[];
-  browserEntry?: string;
 }
 export interface SourceClause { id: string; requirementId: string; scenarioId: string; basis: string }
 export interface ContractCheckpoint {

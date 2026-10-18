@@ -1,15 +1,12 @@
 import { realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { spawn } from "node:child_process";
-import { Type } from "typebox";
 import type { BuilderTool, ShellExecutor } from "./tool-contract.js";
 import { toolEnvironment } from "../process-lifecycle.js";
 import { PROGRESS_DIR_NAME } from "../progress-journal.js";
-import type { PlatformContract } from "../types.js";
-import { createBrowserTool } from "./pi-browser-tool.js";
+import type { ApplicationContract } from "../types.js";
 import { createTestTool } from "./pi-test-tool.js";
 import { createAppTool } from "./pi-app-tool.js";
-import { installCapability, listCapabilities } from "./capability-catalog.js";
 
 export async function assertToolPath(root: string, input: string, readOnlyFiles: readonly string[] = []): Promise<string> {
   const canonicalRoot = await realpath(root);
@@ -148,7 +145,7 @@ function scriptNameIsTest(name: string): boolean {
   return normalized.split(/[:.\-]/).some(part => part === "test" || part === "tests");
 }
 
-export function createShellExecutor(cwd: string, contract?: PlatformContract, privateDirectory?: string): ShellExecutor {
+export function createShellExecutor(cwd: string, contract?: ApplicationContract, privateDirectory?: string): ShellExecutor {
   return async (command, directory, { onData, signal, timeout }) => {
     assertToolCommand(command, privateDirectory, cwd);
     assertNotTestCommand(command);
@@ -179,37 +176,6 @@ export function createShellExecutor(cwd: string, contract?: PlatformContract, pr
   };
 }
 
-export function createBuilderTools(cwd: string, managedApp = false, contract?: PlatformContract): BuilderTool[] {
-  const listCapabilityParameters = Type.Object({});
-  const installCapabilityParameters = Type.Object({
-    id: Type.String({ description: "Approved capability id returned by list_capabilities" }),
-  });
-  const listCapabilityTool: BuilderTool<typeof listCapabilityParameters> = {
-    name: "list_capabilities",
-    label: "List approved capabilities",
-    description: "List controller-approved, task-neutral capability packs and whether each is already installed. The catalog never exposes business code or arbitrary packages.",
-    promptSnippet: "list_capabilities: inspect approved task-neutral component packs",
-    parameters: listCapabilityParameters,
-    executionMode: "sequential",
-    async execute() {
-      await assertToolPath(cwd, "frontend/src/ui");
-      const capabilities = await listCapabilities(cwd);
-      return { content: [{ type: "text" as const, text: JSON.stringify(capabilities, null, 2) }], details: { capabilities } };
-    },
-  };
-  const installCapabilityTool: BuilderTool<typeof installCapabilityParameters> = {
-    name: "install_capability",
-    label: "Install approved capability",
-    description: "Install one controller-approved, task-neutral capability pack. Existing differing files are never overwritten; arbitrary npm/git sources are not accepted.",
-    promptSnippet: "install_capability: install an approved component pack without overwriting existing files",
-    parameters: installCapabilityParameters,
-    executionMode: "sequential",
-    async execute(_toolCallId, { id }) {
-      await assertToolPath(cwd, "frontend/src/ui");
-      const result = await installCapability(cwd, id);
-      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }], details: result };
-    },
-  };
-  return [createTestTool(cwd, { contract }), createBrowserTool(),
-    listCapabilityTool, installCapabilityTool, ...(managedApp ? [createAppTool()] : [])];
+export function createBuilderTools(cwd: string, managedApp = false, contract?: ApplicationContract): BuilderTool[] {
+  return [createTestTool(cwd, { contract }), ...(managedApp ? [createAppTool()] : [])];
 }

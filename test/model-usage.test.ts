@@ -60,23 +60,22 @@ test("Usage cost converts per-million rates and totals keep unknown prices out",
   assert.equal(unknown.count, 1);
 });
 
-test("Model totals separate Builder, Judge and Checker, preserve partial prices and include progress without settling it", () => {
+test("Model totals separate Builder and Checker, preserve partial prices and include progress without settling it", () => {
   const totals = new ModelUsageTotals();
   totals.add("builder", { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, cost: 0.002 });
-  totals.add("judge", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
+  totals.add("checker", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
   totals.add("checker", { input: 30, output: 3, cacheRead: 0, cacheWrite: 0 });
   const settled = totals.summary();
   assert.deepEqual(settled.builder, { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, total: 135, cost: 0.002 });
-  assert.deepEqual(settled.judge, { input: 50, output: 5, cacheRead: 0, cacheWrite: 0, total: 55, unpricedTokens: 55 });
-  assert.deepEqual(settled.checker, { input: 30, output: 3, cacheRead: 0, cacheWrite: 0, total: 33, unpricedTokens: 33 });
-  assert.equal(settled.total, settled.builder.total + settled.judge.total + settled.checker.total);
+  assert.deepEqual(settled.checker, { input: 80, output: 8, cacheRead: 0, cacheWrite: 0, total: 88, unpricedTokens: 88 });
+  assert.equal(settled.total, settled.builder.total + settled.checker.total);
   assert.equal(settled.cost, 0.002);
   assert.equal(settled.unpricedTokens, 88);
   assert.match(formatUsageSummary(settled), /已知费用 \$0\.002（部分未计价）/);
-  assert.ok(formatModelUsageSummary(settled).some(line => /^Checker\s+tokens 33/.test(line)), "Checker 用量单独成行");
+  assert.ok(formatModelUsageSummary(settled).some(line => /^Checker\s+tokens 88/.test(line)), "Checker 用量单独成行");
   const zero = new ModelUsageTotals();
-  zero.add("judge", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
-  assert.ok(!formatModelUsageSummary(zero.summary()).some(line => line.startsWith("Checker")), "零用量的 Checker 不占一行");
+  zero.add("checker", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
+  assert.ok(formatModelUsageSummary(zero.summary()).some(line => line.startsWith("Checker")), "Checker 用量有独立行");
   const live = totals.summary({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 });
   assert.equal(live.builder.total, 147);
   assert.equal(live.total, 235);
@@ -86,7 +85,7 @@ test("Model totals separate Builder, Judge and Checker, preserve partial prices 
 
 test("Unpriced usage stays unknown and a known zero price is distinct from an unknown price", () => {
   const totals = new ModelUsageTotals();
-  totals.add("judge", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
+  totals.add("checker", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
   assert.match(formatUsageSummary(totals.summary()), /费用未知$/);
   assert.equal(totals.summary().cost, undefined);
   const free = new UsageTotals();

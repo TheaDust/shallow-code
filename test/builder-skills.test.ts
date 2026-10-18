@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
@@ -7,9 +8,10 @@ import { BUILDER_SKILLS_DIR } from "../src/builder/skills.js";
 
 test("Bundled skills have discoverable metadata, matching names and independent LF bodies", async () => {
   const names = new Set<string>();
-  for (const entry of await readdir(BUILDER_SKILLS_DIR, { withFileTypes: true })) {
+  const directories = [BUILDER_SKILLS_DIR, fileURLToPath(new URL("../prompts/adapters/web/skills/", import.meta.url))];
+  for (const directory of directories) for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
-    const content = await readFile(join(BUILDER_SKILLS_DIR, entry.name, "SKILL.md"), "utf8");
+    const content = await readFile(join(directory, entry.name, "SKILL.md"), "utf8");
     assert.ok(!content.includes("\r"));
     assert.ok(!content.includes("{{"));
     const match = content.match(/^---\n([\s\S]+?)\n---\n([\s\S]+)$/);

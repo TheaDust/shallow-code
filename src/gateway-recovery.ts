@@ -10,7 +10,7 @@ interface PlannerWaiter {
 }
 
 export interface GatewayWait {
-  source: "builder" | "planner";
+  source: "builder" | "planning";
   packetId: string;
   retry: number;
   delayMs: number;
@@ -51,7 +51,7 @@ export class GatewayRecovery {
 
   async run<T>(source: GatewayWait["source"], packetId: string, remainingMs: () => number,
     operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const release = source === "planner" ? await this.acquirePlanner(signal) : undefined;
+    const release = source === "planning" ? await this.acquirePlanner(signal) : undefined;
     try {
       for (let retry = 0; ; retry++) {
         signal?.throwIfAborted();
@@ -86,7 +86,7 @@ export class GatewayRecovery {
           }
           if (this.lastFailure?.kind !== failure.kind) this.failures = 0;
           this.lastFailure = failure;
-          this.lastReason = source === "planner" ? transportCause(error) : undefined;
+          this.lastReason = source === "planning" ? transportCause(error) : undefined;
           const delay = Math.max(failure.retryAfterMs ?? 0, backoffDelay(failure.kind, this.failures));
           this.failures++;
           this.version++;

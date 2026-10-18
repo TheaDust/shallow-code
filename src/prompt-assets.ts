@@ -8,7 +8,7 @@ export class PromptAssetError extends Error {}
 const cache = new Map<string, string>();
 
 export function loadPrompt(
-  category: "system" | "judge" | "planning",
+  category: "system" | "planning" | "adapters/web",
   name: string,
 ): string {
   const key = `${category}/${name}`;

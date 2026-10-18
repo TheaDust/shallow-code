@@ -12,6 +12,7 @@ import { sanitizeDiagnosticText } from "../diagnostics.js";
 import { copyInheritedData } from "../inherited-data.js";
 import { BuilderApp, type AppAction } from "./builder-app.js";
 import type { BuilderTermination } from "./port.js";
+import type { ApplicationRegistry } from "../application/registry.js";
 import type { ModelRates } from "../model-usage.js";
 
 export interface PiWorkerRequest extends CodingAgentRequest {
@@ -51,6 +52,7 @@ export interface PiWorkerLiveOptions {
   onProgress?: (progress: PiWorkerProgress) => void;
   /** Emit stderr keepalives unless an interactive presentation owns terminal output. Defaults to true. */
   heartbeat?: boolean;
+  applications?: ApplicationRegistry;
 }
 
 /** One child per prompt. Never imports the SDK in the long-lived controller. */
@@ -64,20 +66,22 @@ export class PiWorkerClient implements CodingAgentPort {
   async run(input: CodingAgentRequest): Promise<PiWorkerResult> {
     const started = Date.now();
     if (this.closed || this.active) throw new Error("Pi client is closed or already running");
+    const lifecycle = input.applicationContract ? this.live.applications?.get(input.applicationContract.adapterId).lifecycle : undefined;
+    if (input.applicationContract && !lifecycle) throw new Error("Builder application requires an injected application registry");
     await mkdir(this.sessionDir, { recursive: true, mode: 0o700 });
     const prior = input.sessionKey ? this.sessions.get(input.sessionKey) : undefined;
     if (prior && prior.cwd !== resolve(input.outputDir)) throw new Error("Pi session workspace mismatch");
     const fallback: PiWorkerResult = { sessionId: randomUUID(), outcome: "failed", summary: "Pi worker exited before producing a result" };
     const dataDirectory = await mkdtemp(join(resolve(this.sessionDir), "data-"));
-    try { await copyInheritedData(input.outputDir, dataDirectory, input.platformContract?.dataPaths); }
+    try { await copyInheritedData(input.outputDir, dataDirectory, input.applicationContract?.dataPaths); }
     catch (error) {
       await rm(dataDirectory, { recursive: true, force: true });
       throw new ExecutionFault("builder", "builder_start", false, { cause: error });
     }
-    const application = input.platformContract ? new BuilderApp(input.outputDir, { ...input.platformContract, dataDirectory }) : undefined;
-    const child = fork(fileURLToPath(new URL("./pi-worker.ts", import.meta.url)), [], {
+    const application = input.applicationContract ? new BuilderApp(input.outputDir, { ...input.applicationContract, dataDirectory }, lifecycle!) : undefined;
+    const child = fork(fileURLToPath(new URL("../pi-worker-entry.ts", import.meta.url)), [], {
       cwd: input.outputDir, execArgv: ["--import", import.meta.resolve("tsx")],
-      env: { ...toolEnvironment(), [input.platformContract?.dataEnvVar ?? "SHALLOW_DATA_DIR"]: dataDirectory }, detached: process.platform !== "win32",
+      env: { ...toolEnvironment(), [input.applicationContract?.dataEnvVar ?? "SHALLOW_DATA_DIR"]: dataDirectory }, detached: process.platform !== "win32",
       stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
     let finish!: () => void;
@@ -129,7 +133,7 @@ export class PiWorkerClient implements CodingAgentPort {
         timer = setTimeout(() => res({ ...fallback, ...progress, outcome: "timed_out", summary: "Pi call deadline reached" }), Math.max(1, input.timeoutMs));
       });
       tree = await ownProcessTree(child);
-      child.send({ ...input, ...(input.platformContract ? { platformContract: { ...input.platformContract, dataDirectory } } : {}),
+      child.send({ ...input, ...(input.applicationContract ? { applicationContract: { ...input.applicationContract, dataDirectory } } : {}),
         gateway: this.gateway, sessionDir: this.sessionDir, sessionFile: prior?.file,
         ...(this.live.modelCost ? { modelCost: this.live.modelCost } : {}),
         ...(this.sseCaptureDir ? { sseCaptureDir: this.sseCaptureDir } : {}) } satisfies PiWorkerRequest);

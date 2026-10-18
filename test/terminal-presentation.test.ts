@@ -13,9 +13,11 @@ import type { RunEvent } from "../src/types.js";
 import { MemoryTerminal } from "./helpers/terminal.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-const options = { requirementIds: ["A", "B", "C"], models: { builder: "gateway/builder-model", judge: "gateway/judge-model" }, onInterrupt() {} };
+const options = { requirementIds: ["A", "B", "C"], models: { builder: "gateway/builder-model", checker: "gateway/checker-model" }, onInterrupt() {} };
 const formatter = new HumanRunFormatter();
 function receive(view: BuildView, type: RunEvent["type"], detail: Record<string, unknown> = {}, packetId = "packet-a"): void {
+  if (type === "module_check_finished") detail = { ...detail, published: true,
+    requirementResults: detail.requirementResults ?? Object.fromEntries(((detail.requirementIds ?? []) as string[]).map(id => [id, detail.status])) };
   const event = { at: "2026-10-13T00:00:00Z", type, packetId, detail } as RunEvent;
   view.receive(event, formatter.format(JSON.stringify(event)) ?? type);
 }
@@ -24,28 +26,28 @@ test("Run view counts independent evidence, keeps runnable checkpoints and refle
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "builder_finished", { outcome: "completed" });
   receive(view, "checkpoint_saved", { requirementIds: ["A"], reason: "runnable" });
-  receive(view, "packet_accepted");
-  receive(view, "compatibility_checked", { status: "passed", requirementIds: ["A"] });
-  receive(view, "probe_finished", { verdict: "pass", passed: 1, failed: 0 });
+  receive(view, "checkpoint_saved");
+  receive(view, "check_completed", { status: "passed", requirementIds: ["A"] });
+  receive(view, "check_completed", { verdict: "pass", passed: 1, failed: 0 });
   assert.match(view.render(80).join("\n"), /已验证 0\/3/);
   assert.match(view.render(80).join("\n"), /可运行检查点覆盖 1 条需求/);
-  receive(view, "audit_result", { requirementIds: ["A"], status: "verified" });
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" });
   assert.match(view.render(80).join("\n"), /已验证 1\/3/);
-  receive(view, "audit_result", { requirementIds: ["A"], status: "inconclusive" });
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "inconclusive" });
   assert.match(view.render(80).join("\n"), /已验证 0\/3.*证据不足 1/);
-  receive(view, "audit_result", { requirementIds: ["A"], status: "failed" });
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "failed" });
   assert.match(view.render(80).join("\n"), /已验证 0\/3.*失败 1/);
 });
 
 test("Module audit results update requirement counts before the final audit and reflect later regressions", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
-  receive(view, "module_boundary_audit_finished", { moduleId: "first", packetIds: ["opaque-audit-packet"],
+  receive(view, "module_check_finished", { moduleId: "first", packetIds: ["opaque-audit-packet"],
     results: { "opaque-audit-packet": "verified" }, requirementResults: { A: "verified", B: "inconclusive" } });
   let text = view.render(80).join("\n");
   assert.match(text, /已验证 1\/3.*证据不足 1/);
   assert.match(text, /未验收 1/);
 
-  receive(view, "module_boundary_audit_finished", { moduleId: "second", packetIds: ["other-audit-packet"],
+  receive(view, "module_check_finished", { moduleId: "second", packetIds: ["other-audit-packet"],
     results: { "other-audit-packet": "verified" }, requirementResults: { A: "failed", B: "verified", C: "verified" } });
   text = view.render(80).join("\n");
   assert.match(text, /已验证 2\/3.*失败 1/);
@@ -54,7 +56,7 @@ test("Module audit results update requirement counts before the final audit and 
 
 test("Only retained repairs update live audit counts and the final summary replaces stage results", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
-  receive(view, "module_boundary_audit_finished", { moduleId: "first", packetIds: ["audit-packet"],
+  receive(view, "module_check_finished", { moduleId: "first", packetIds: ["audit-packet"],
     results: { "audit-packet": "failed" }, requirementResults: { A: "failed" } });
   receive(view, "repair_batch_finished", { round: 1, retained: false, reason: "restored", requirementResults: { A: "verified" } });
   assert.match(view.render(80).join("\n"), /已验证 0\/3.*失败 1/);
@@ -72,10 +74,10 @@ test("Only retained repairs update live audit counts and the final summary repla
 test("Evolution skips stay outside the current numerator and denominator", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "evolution_scope_selected", { auditRequirementIds: ["B", "C"], skippedRequirementIds: ["A"] });
-  receive(view, "module_boundary_audit_finished", { moduleId: "first", packetIds: ["audit-packet"],
+  receive(view, "module_check_finished", { moduleId: "first", packetIds: ["audit-packet"],
     results: { "audit-packet": "verified" }, requirementResults: { A: "verified", B: "verified", C: "inconclusive" } });
   assert.match(view.render(80).join("\n"), /已验证 1\/2.*证据不足 1/);
-  receive(view, "audit_result", { requirementIds: ["A", "B"], status: "verified" });
+  receive(view, "module_check_finished", { requirementIds: ["A", "B"], status: "verified" });
   const text = view.render(80).join("\n");
   assert.match(text, /已验证 1\/2/);
   assert.match(text, /沿用跳过 1/);
@@ -84,10 +86,10 @@ test("Evolution skips stay outside the current numerator and denominator", () =>
 test("Run view names the models it runs with in full and compact layouts", () => {
   const full = new BuildView(options, () => 24, terminalTheme(false)).render(80).join("\n");
   assert.match(full, /模型\s+Builder gateway\/builder-model/);
-  assert.match(full, /Judge gateway\/judge-model/);
+  assert.match(full, /Checker gateway\/checker-model/);
   const compact = new BuildView(options, () => 8, terminalTheme(false)).render(80).join("\n");
   assert.match(compact, /模型\s+Builder gateway\/builder-model/);
-  assert.match(compact, /Judge gateway\/judge-model/);
+  assert.match(compact, /Checker gateway\/checker-model/);
 });
 
 test("Run view preserves foreground activity during background planning and fits smaller terminals", () => {
@@ -95,7 +97,7 @@ test("Run view preserves foreground activity during background planning and fits
     const view = new BuildView(options, () => rows, terminalTheme(false));
     receive(view, "packet_selected", { names: ["一段很长的中文模块名称与详细说明".repeat(5)] });
     receive(view, "builder_started", { attempt: 1 });
-    receive(view, "probe_planning", {}, "packet-background");
+    receive(view, "check_started", {}, "packet-background");
     const lines = view.render(columns);
     assert.ok(lines.length <= rows, `${columns}×${rows}: ${lines.length} rows`);
     assert.ok(lines.every(line => visibleWidth(line) <= columns), `${columns} columns exceeded`);
@@ -293,15 +295,15 @@ test("Result card offers applicable commands, quotes paths and separates skips f
     "run", "changes.patch", "demo", 5_000, false);
   assert.match(withUsage, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 200） · 费用 \$0\.01/);
   assert.match(withUsage, /Builder\s+tokens 1\.2k/);
-  assert.match(withUsage, /Judge\s+tokens 0/);
+  assert.match(withUsage, /Checker\s+tokens 0/);
 });
 
 test("Run view accumulates model tokens and cost and shows in-flight progress until the call settles", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "feature_grouping_usage", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
-  receive(view, "probe_planner_usage", { operation: "plan", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  receive(view, "feature_grouping_usage", { operation: "plan", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   assert.match(view.render(80).join("\n"), /总计\s+tokens 240（入 200 \/ 出 40） · 费用 \$0\.0002/);
-  assert.match(view.render(80).join("\n"), /Judge\s+tokens 240/);
+  assert.match(view.render(80).join("\n"), /Checker\s+tokens 240/);
   view.liveUsage({ usage: { status: "available", input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } });
   assert.match(view.render(80).join("\n"), /Builder\s+tokens 1\.0k（入 800 \/ 出 200） · 费用 \$0\.0012/);
   assert.match(view.render(80).join("\n"), /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
@@ -311,15 +313,15 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   const text = view.render(80).join("\n");
   assert.match(text, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
   assert.match(text, /Builder\s+tokens 1\.0k/);
-  assert.match(text, /Judge\s+tokens 240/);
+  assert.match(text, /Checker\s+tokens 240/);
 });
 
-test("Run view attributes Checker usage to its own line instead of Judge", () => {
+test("Run view attributes verification usage to the Checker group", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "checker_usage", { jobId: "j1", role: "semantic_review", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   const text = view.render(80).join("\n");
   assert.match(text, /Checker\s+tokens 120（入 100 \/ 出 20） · 费用 \$0\.0001/);
-  assert.match(text, /Judge\s+tokens 0/);
+  assert.match(text, /Builder\s+tokens 0/);
   assert.match(text, /总计\s+tokens 120/);
 });
 
@@ -327,14 +329,14 @@ test("Run view keeps grouped cache counts and partial cost visible in an 80-colu
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "builder_usage", { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,
     cacheWrite: 1_000_000, total: 4_000_000, cost: 2 });
-  receive(view, "probe_planner_usage", { operation: "plan", input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1200 });
+  receive(view, "feature_grouping_usage", { operation: "plan", input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1200 });
   const lines = view.render(80);
   const text = lines.join("\n");
   assert.ok(lines.length <= 24);
   assert.ok(lines.every(line => visibleWidth(line) <= 80));
   assert.match(text, /总计/);
   assert.match(text, /Builder/);
-  assert.match(text, /Judge/);
+  assert.match(text, /Checker/);
   assert.match(text, /缓存读 1\.00M/);
   assert.match(text, /缓存写 1\.00M/);
   assert.match(text, /部分未计价/);
@@ -344,11 +346,11 @@ test("Run view keeps grouped cache counts and partial cost visible in an 80-colu
 test("Progress entries drop internal packet ids", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "builder_started", {}, "packet-a");
-  receive(view, "audit_result", { requirementIds: ["A"], status: "verified" }, "packet-a");
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" }, "packet-a");
   receive(view, "execution_fault", { source: "runner", code: "browser_launch", retry: true }, "packet-b");
   const text = view.render(80).join("\n");
   assert.match(text, /Builder 开始编写代码/);
-  assert.match(text, /独立验收通过/);
+  assert.match(text, /模块集中检查完成/);
   assert.match(text, /执行基础设施故障（runner \/ browser_launch）/);
   assert.doesNotMatch(text, /packet-a|packet-b/);
 });

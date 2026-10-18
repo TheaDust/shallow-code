@@ -1,14 +1,12 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
-import { locatorCandidates, probePlanSha256, type ProbeLocator, type ProbePlan } from "./judge/probe-schema.js";
 export { sanitizeDiagnosticText } from "./diagnostics.js";
 
 import type {
   RequirementStatus,
   RunEvent,
-  ShadowReport,
 } from "./types.js";
 
 export interface RunStateSnapshot {
@@ -35,8 +33,6 @@ export class RunStateStore {
   private readonly state: RunStateSnapshot;
   private readonly runId = randomUUID();
   private firstEventAtMs?: number;
-  private evidenceCount = 0;
-  private readonly semanticCorrections = new Map<string, number>();
   private ledgerWrites: Promise<void> = Promise.resolve();
 
   constructor(
@@ -79,60 +75,6 @@ export class RunStateStore {
     this.state.attemptsByPacketId[packetId] = attempt;
   }
 
-  /** Per-run quota fence: each case may receive at most one semantic correction. */
-  semanticCorrectionCount(packetId: string, caseId: string): number {
-    return this.semanticCorrections.get(`${packetId}\u0000${caseId}`) ?? 0;
-  }
-
-  noteSemanticCorrection(packetId: string, caseId: string): void {
-    const key = `${packetId}\u0000${caseId}`;
-    this.semanticCorrections.set(key, (this.semanticCorrections.get(key) ?? 0) + 1);
-  }
-
-  /** Bounded, source-free failure evidence; neither full plans nor raw browser traces. */
-  async saveEvidence(report: ShadowReport, plan?: ProbePlan): Promise<string | undefined> {
-    if (!this.ledgerFile || report.failures.length === 0 || this.evidenceCount >= 128) return undefined;
-    const id = `${this.runId}-${++this.evidenceCount}`;
-    const evidence = {
-      id, packetId: sanitizeDiagnosticText(report.packetId, this.secrets), verdict: report.verdict,
-      acceptedSha: this.state.acceptedSha, attempt: this.state.attemptsByPacketId[report.packetId],
-      ...(report.candidate ? { candidate: report.candidate } : {}),
-      ...(plan ? { planSha256: probePlanSha256(plan) } : {}),
-      failureCount: report.failures.length,
-      failures: report.failures.slice(0, 8).map((failure) => {
-        const step = plan?.cases.find((item) => item.id === failure.caseId)?.steps[failure.stepIndex];
-        return {
-          caseId: sanitizeDiagnosticText(failure.caseId, this.secrets), stepIndex: failure.stepIndex,
-          category: failure.category, message: sanitizeDiagnosticText(failure.message, this.secrets),
-          ...(failure.pageUrl ? { pageUrl: sanitizeDiagnosticText(failure.pageUrl, this.secrets, 1_000) } : {}),
-          ...(failure.inputSummary ? { inputSummary: sanitizeDiagnosticText(failure.inputSummary, this.secrets) } : {}),
-          ...(failure.locatorSnapshot ? { accessibilityExcerpt: sanitizeDiagnosticText(failure.locatorSnapshot, this.secrets) } : {}),
-          ...(step && "locator" in step ? {
-            locators: locatorCandidates(step.locator).map((locator) => sanitizeEvidenceLocator(locator, this.secrets)),
-          } : {}),
-          ...(failure.locatorAttempts ? {
-            locatorAttempts: failure.locatorAttempts.slice(0, 4).map((attempt) => ({
-              locator: sanitizeEvidenceLocator(attempt.locator, this.secrets),
-              message: sanitizeDiagnosticText(attempt.message, this.secrets),
-              ...(attempt.matchCount === undefined ? {} : { matchCount: attempt.matchCount }),
-            })),
-          } : {}),
-        };
-      }),
-    };
-    try {
-      const payload = `${JSON.stringify(evidence)}\n`;
-      if (Buffer.byteLength(payload) > 128 * 1024) return undefined;
-      const directory = join(dirname(this.ledgerFile), "evidence");
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      await writeFile(join(directory, `${id}.json`), payload, { encoding: "utf8", mode: 0o600, flag: "wx" });
-      return id;
-    } catch {
-      await this.record({ at: new Date().toISOString(), type: "evidence_write_failed", packetId: report.packetId });
-      return undefined;
-    }
-  }
-
   async record(event: RunEvent): Promise<void> {
     const sequence = this.state.ledger.length + 1;
     const atMs = Date.parse(event.at);
@@ -173,25 +115,13 @@ function redactEvent(event: RunEvent, secrets: readonly string[]): RunEvent {
   })) as RunEvent;
 }
 
-function sanitizeEvidenceLocator(locator: ProbeLocator, secrets: readonly string[]): ProbeLocator {
-  const exact = locator.exact === undefined ? {} : { exact: locator.exact };
-  const scope = locator.scope ? { scope: { ...sanitizeEvidenceLocator(locator.scope as ProbeLocator, secrets),
-    ...(locator.scope.hasText === undefined ? {} : { hasText: sanitizeDiagnosticText(locator.scope.hasText, secrets) }) } } : {};
-  return locator.by === "role"
-    ? { by: "role", role: sanitizeDiagnosticText(locator.role, secrets), ...exact, ...scope,
-      ...(locator.name === undefined ? {} : { name: sanitizeDiagnosticText(locator.name, secrets) }) }
-    : { by: locator.by, text: sanitizeDiagnosticText(locator.text, secrets), ...exact, ...scope };
-}
-
 function eventPhase(event: RunEvent): RunEvent["phase"] {
-  if (event.type.startsWith("check_") || event.type.startsWith("module_check") || event.type === "checker_usage") return "probe";
+  if (event.type.startsWith("check_") || event.type.startsWith("module_check") || event.type === "checker_usage") return "checker";
   if (event.type.startsWith("evidence_")) return "evidence";
   if (event.type.startsWith("builder_")) return "builder";
   if (event.type.startsWith("application_")) return "application";
   if (event.type.startsWith("candidate_")) return "application";
   if (event.type.startsWith("delivery_") || event.type.startsWith("verification_")) return "delivery";
-  if (event.type.startsWith("probe_plan") || event.type === "probe_preplan_failed" || event.type.startsWith("probe_refin")) return "planner";
-  if (event.type.startsWith("probe_")) return "probe";
   if (event.type.startsWith("packet_")) return "decision";
   return "pipeline";
 }

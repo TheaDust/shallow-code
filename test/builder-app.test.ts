@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BuilderApp } from "../src/builder/builder-app.js";
-import { minimalWebContract } from "../src/project-spec.js";
+import { minimalWebContract } from "../src/adapters/web/project-spec.js";
 
 test("Managed app serializes starts, keeps data/port contract and stops only its owned app", async () => {
   const contract = { ...minimalWebContract({ port: 43210 }, "linux"), dataDirectory: "isolated" };
   let starts = 0, stops = 0;
   const app = new BuilderApp("output", contract, { start: async (output, actual) => {
     assert.equal(output, "output"); assert.deepEqual(actual, contract); starts++;
-    return { baseUrl: contract.baseUrl, stop: async () => { stops++; } };
+    return { metadata: { endpoint: "fake" }, stop: async () => { stops++; } };
   } });
   assert.equal((await app.run("status")).running, false);
   await Promise.all([app.run("start"), app.run("start")]);
@@ -28,7 +28,7 @@ test("Closing during startup waits for it and cleans the resulting process", asy
   const contract = minimalWebContract({ port: 43210 }, "linux");
   const app = new BuilderApp("output", contract, { start: async () => {
     await gate;
-    return { baseUrl: contract.baseUrl, stop: async () => { stopped = true; } };
+    return { metadata: { endpoint: "fake" }, stop: async () => { stopped = true; } };
   } });
   const starting = app.run("start");
   const closing = app.close();
@@ -42,7 +42,7 @@ test("Failed startup is reported and can be retried without pretending the app i
   const contract = minimalWebContract({ port: 43210 }, "linux");
   const app = new BuilderApp("output", contract, { start: async () => {
     if (++starts === 1) throw new Error("occupied");
-    return { baseUrl: contract.baseUrl, stop: async () => {} };
+    return { metadata: { endpoint: "fake" }, stop: async () => {} };
   } });
   await assert.rejects(app.run("start"), /occupied/);
   assert.equal((await app.run("status")).running, false);

@@ -14,7 +14,7 @@ import {
 } from "../index.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { loadRunRecord } from "../src/run-record.js";
-import { minimalWebProjectSpec, npmExecutable } from "../src/project-spec.js";
+import { webRuntimeConfig, minimalWebProjectSpec, npmExecutable } from "../src/adapters/web/project-spec.js";
 import { GitCliOps } from "../src/git-ops.js";
 
 test("The production entry resumes an owned checkpoint with fresh artifacts and applies without gateway credentials", { timeout: 60_000 }, async () => {
@@ -60,8 +60,8 @@ test("Existing project entry develops in a separate copy and passes its declared
       assert.equal(context.sourceProjectDir, source);
       assert.notEqual(context.pipelineOptions.outputDir, source);
       assert.equal(context.pipelineOptions.stageStartingPoint, "inherited_application");
-      assert.deepEqual(context.pipelineOptions.platformContract.env, { FLAG: "declared" });
-      assert.equal(context.pipelineOptions.platformContract.testTargets?.[0].id, "unit");
+      assert.deepEqual(context.pipelineOptions.applicationContract.env, { FLAG: "declared" });
+      assert.equal(context.pipelineOptions.applicationContract.testTargets?.[0].id, "unit");
       await writeFile(join(context.pipelineOptions.outputDir, "server.js"), "implemented");
       return { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [] };
     }, null);
@@ -151,36 +151,17 @@ test("Agent entry validates paths and passes bounded production context", async 
 
     assert.equal(exitCode, 0);
     assert.equal(received?.builderGateway.model, "provider/model");
-    assert.equal(received?.judgeGateway.model, "provider/model");
+    assert.equal(received?.checkerGateway.model, "provider/model");
     assert.equal(received?.pipelineOptions.requirementsFile, join(dirname(received!.pipelineOptions.ledgerFile), "requirements", "requirements.yaml"));
     assert.equal(await readFile(received!.pipelineOptions.requirementsFile, "utf8"), await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
     assert.equal(received?.pipelineOptions.outputDir, outputDir);
     assert.equal(received?.pipelineOptions.totalBudgetMs, 600_000);
-    assert.equal(received?.pipelineOptions.platformContract.port, 3100);
+    assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3100);
     assert.equal(received?.builderContextWindow, 400_000);
     assert.equal(received?.pipelineOptions.auditInheritedRequirements, false);
-    assert.equal(received?.pipelineOptions.generateFinalAuditPlans, false);
   });
 });
 
-test("Agent entry loads the final audit plan switch from env files with real env winning", async () => {
-  await withTempDir("shallow-entry-final-audit-plan-", async directory => {
-    const requirementsDir = join(directory, "requirements");
-    await mkdir(requirementsDir);
-    await writeFile(join(requirementsDir, "requirements.yaml"), "id: ROOT\nname: Root\ntype: FOLDER\nchildren: []\n");
-    const envFile = join(directory, "gateway.env");
-    await writeFile(envFile, "SHALLOW_FINAL_AUDIT_GENERATE_PLAN=0\n");
-    const argv = ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output")];
-    const received: boolean[] = [];
-    const execute: AgentExecution = async context => {
-      received.push(context.pipelineOptions.generateFinalAuditPlans!);
-      return { status: "delivered", verifiedRequirementIds: [], blockedRequirementIds: [], acceptedSha: "sha" };
-    };
-    await main(argv, gatewayEnv(), execute, envFile);
-    await main(argv, { ...gatewayEnv(), SHALLOW_FINAL_AUDIT_GENERATE_PLAN: "1" }, execute, envFile);
-    assert.deepEqual(received, [false, true]);
-  });
-});
 
 test("Agent entry loads the Evolution audit switch from env files with real env winning", async () => {
   await withTempDir("shallow-entry-evolution-audit-", async directory => {
@@ -235,10 +216,10 @@ test("Agent entry picks a non-3000 probe port when the override is absent", asyn
       null,
     );
 
-    const contract = received?.pipelineOptions.platformContract;
+    const contract = received?.pipelineOptions.applicationContract;
     assert.ok(contract);
-    assert.notEqual(contract.port, 3000);
-    assert.equal(contract.baseUrl, `http://127.0.0.1:${contract.port}`);
+    assert.notEqual(webRuntimeConfig(contract).port, 3000);
+    assert.equal(webRuntimeConfig(contract).baseUrl, `http://127.0.0.1:${webRuntimeConfig(contract).port}`);
     assert.equal(received?.builderContextWindow, 256_000);
   });
 });
@@ -264,10 +245,10 @@ test("Agent entry honors SHALLOW_EVAL_PORT and keeps the probe port off it", asy
       null,
     );
 
-    const contract = received?.pipelineOptions.platformContract;
-    assert.equal(contract?.evaluationPort, 43100);
-    assert.notEqual(contract?.port, 43100);
-    assert.notEqual(contract?.port, 3000);
+    const contract = received?.pipelineOptions.applicationContract;
+    assert.equal(webRuntimeConfig(contract!).evaluationPort, 43100);
+    assert.notEqual(webRuntimeConfig(contract!).port, 43100);
+    assert.notEqual(webRuntimeConfig(contract!).port, 3000);
   });
 });
 
@@ -367,7 +348,7 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
         "OPENAI_API_KEY=file-key",
         "OPENAI_BASE_URL=https://file.example/v1",
         'MODEL="file/model"',
-        "SHALLOW_JUDGE_MODEL=file/judge",
+        "SHALLOW_CHECKER_MODEL=file/judge",
         'SHALLOW_PROBE_PORT=3210',
       ].join("\n"),
     );
@@ -394,14 +375,14 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
     assert.equal(received?.builderGateway.apiKey, "file-key");
     assert.equal(received?.builderGateway.baseUrl, "https://file.example/v1");
     assert.equal(received?.builderGateway.model, "file/model");
-    assert.equal(received?.judgeGateway.model, "file/judge");
-    assert.equal(received?.judgeGateway.apiKey, "file-key");
-    assert.equal(received?.pipelineOptions.platformContract.port, 3210);
+    assert.equal(received?.checkerGateway.model, "file/judge");
+    assert.equal(received?.checkerGateway.apiKey, "file-key");
+    assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3210);
 
-    await main(argv, { MODEL: "env/model", SHALLOW_JUDGE_MODEL: "env/judge" }, execute, join(directory, "gateway.env"));
+    await main(argv, { MODEL: "env/model", SHALLOW_CHECKER_MODEL: "env/judge" }, execute, join(directory, "gateway.env"));
     assert.equal(received?.builderGateway.model, "env/model");
     assert.equal(received?.builderGateway.apiKey, "file-key");
-    assert.equal(received?.judgeGateway.model, "env/judge");
+    assert.equal(received?.checkerGateway.model, "env/judge");
   });
 });
 
@@ -511,10 +492,10 @@ test("Agent entry takes extra ports from the project's own run configuration", a
       null,
     );
 
-    const contract = received?.pipelineOptions.platformContract;
-    assert.deepEqual(contract?.extraPorts, [3301, 4400]);
+    const contract = received?.pipelineOptions.applicationContract;
+    assert.deepEqual(webRuntimeConfig(contract!).extraPorts, [3301, 4400]);
     assert.deepEqual(contract?.startCommand, { executable: "node", args: ["server.js"], cwd: "output" });
-    assert.ok(!contract?.extraPorts?.includes(contract!.port));
+    assert.ok(!webRuntimeConfig(contract!).extraPorts?.includes(webRuntimeConfig(contract!).port));
   });
 });
 

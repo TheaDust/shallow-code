@@ -32,7 +32,7 @@ test("Planner gateway waits report the nested transport error and code", async (
     gatewayFailure: { kind: "unavailable" as const, retryable: true },
   });
   let attempts = 0;
-  await f.recovery.run("planner", "packet-a", unlimited, async () => {
+  await f.recovery.run("planning", "packet-a", unlimited, async () => {
     if (++attempts === 1) throw plannerError;
     return "recovered";
   });
@@ -84,7 +84,7 @@ test("Switching between rate limits and outages starts each delay schedule at it
   const attemptTimes: number[] = [];
   const failures = [httpGatewayFailure(503), httpGatewayFailure(429),
     { kind: "unavailable" as const, retryable: true }, httpGatewayFailure(408)];
-  await f.recovery.run("planner", "packet-a", unlimited, async () => {
+  await f.recovery.run("planning", "packet-a", unlimited, async () => {
     attemptTimes.push(f.now());
     const failure = failures.shift();
     if (failure) throw new GatewayRequestError(failure);
@@ -97,7 +97,7 @@ test("Persistent outages exhaust the caller's window without disabling later cal
   const f = fixture();
   const windowMs = 3_600_000;
   let calls = 0;
-  await assert.rejects(f.recovery.run("planner", "packet-a", () => windowMs - f.now(), async () => { calls++; throw down(); }),
+  await assert.rejects(f.recovery.run("planning", "packet-a", () => windowMs - f.now(), async () => { calls++; throw down(); }),
     error => error instanceof GatewayRequestError && error.gatewayFailure.status === 429);
   assert.ok(calls > 10, `expected recovery to outlast the old five-attempt cap, saw ${calls} attempts`);
   assert.equal(f.now(), windowMs);
@@ -150,9 +150,9 @@ test("Two Planner requests run alongside Builder while additional requests wait"
   const calls: string[] = [];
   let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
-  const first = f.recovery.run("planner", "a", unlimited, async () => { calls.push("planner-a"); await blocked; });
-  const second = f.recovery.run("planner", "b", unlimited, async () => { calls.push("planner-b"); await blocked; });
-  const third = f.recovery.run("planner", "c", unlimited, async () => { calls.push("planner-c"); });
+  const first = f.recovery.run("planning", "a", unlimited, async () => { calls.push("planner-a"); await blocked; });
+  const second = f.recovery.run("planning", "b", unlimited, async () => { calls.push("planner-b"); await blocked; });
+  const third = f.recovery.run("planning", "c", unlimited, async () => { calls.push("planner-c"); });
   await f.recovery.run("builder", "build", unlimited, async () => { calls.push("builder"); });
   assert.ok(calls.includes("planner-a"));
   assert.ok(calls.includes("builder"));
@@ -165,7 +165,7 @@ test("Two Planner requests run alongside Builder while additional requests wait"
 
 test("Planner-specific authorization errors leave Builder available", async () => {
   const f = fixture();
-  await assert.rejects(f.recovery.run("planner", "a", unlimited, async () => {
+  await assert.rejects(f.recovery.run("planning", "a", unlimited, async () => {
     throw new GatewayRequestError(httpGatewayFailure(401));
   }));
   assert.equal(await f.recovery.run("builder", "a", unlimited, async () => "ok"), "ok");
@@ -175,25 +175,25 @@ test("Cancelling a queued Planner removes it without consuming an execution slot
   const f = fixture();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const first = f.recovery.run("planner", "a", unlimited, () => held);
-  const second = f.recovery.run("planner", "b", unlimited, () => held);
+  const first = f.recovery.run("planning", "a", unlimited, () => held);
+  const second = f.recovery.run("planning", "b", unlimited, () => held);
   const controller = new AbortController();
   let queuedCalls = 0;
-  const cancelled = assert.rejects(f.recovery.run("planner", "c", unlimited,
+  const cancelled = assert.rejects(f.recovery.run("planning", "c", unlimited,
     async () => { queuedCalls++; }, controller.signal), { name: "AbortError" });
   controller.abort();
   await cancelled;
   release();
   await Promise.all([first, second]);
   assert.equal(queuedCalls, 0);
-  assert.equal(await f.recovery.run("planner", "d", unlimited, async () => "ok"), "ok");
+  assert.equal(await f.recovery.run("planning", "d", unlimited, async () => "ok"), "ok");
 });
 
 test("Cancelling a Planner interrupts gateway backoff", async () => {
   const recovery = new GatewayRecovery();
   const controller = new AbortController();
   recovery.setRecorder(async () => { controller.abort(); });
-  await assert.rejects(recovery.run("planner", "a", unlimited, async () => {
+  await assert.rejects(recovery.run("planning", "a", unlimited, async () => {
     throw new GatewayRequestError(httpGatewayFailure(503));
   }, controller.signal), { name: "AbortError" });
   assert.equal(recovery.exhausted, false);
@@ -206,7 +206,7 @@ test("An in-flight success cannot release a cooldown raised by the other client"
   let finishPlanner!: () => void;
   let plannerStarted!: () => void;
   const started = new Promise<void>(resolve => { plannerStarted = resolve; });
-  const planner = recovery.run("planner", "a", unlimited, async () => {
+  const planner = recovery.run("planning", "a", unlimited, async () => {
     plannerStarted();
     await new Promise<void>(resolve => { finishPlanner = resolve; });
   });
@@ -217,7 +217,7 @@ test("An in-flight success cannot release a cooldown raised by the other client"
   finishPlanner();
   await planner;
   let secondPlannerCalls = 0;
-  const next = recovery.run("planner", "b", unlimited, async () => { secondPlannerCalls++; });
+  const next = recovery.run("planning", "b", unlimited, async () => { secondPlannerCalls++; });
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(secondPlannerCalls, 0);
   assert.equal(builderCalls, 1);

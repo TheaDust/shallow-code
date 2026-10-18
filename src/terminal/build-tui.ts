@@ -20,7 +20,7 @@ const RENDER_INTERVAL_MS = 200;
 export interface BuildTuiOptions {
   requirementIds: string[];
   /** 本轮实际使用的模型；状态页显式标注来源。 */
-  models: { builder: string; judge: string };
+  models: { builder: string; checker: string };
   onInterrupt(): void;
 }
 
@@ -62,11 +62,7 @@ export class BuildView implements Component {
     if (["checkpoint_saved", "module_rescued", "run_resumed"].includes(event.type)) {
       for (const id of ids("requirementIds")) this.runnable.add(id);
     }
-    if (event.type === "audit_result") {
-      for (const id of ids("requirementIds")) this.statuses.set(id, detail!.status as RequirementStatus);
-    }
-    if ((event.type === "module_check_finished" && detail?.published === true) || event.type === "module_boundary_audit_finished" ||
-      (event.type === "repair_batch_finished" && detail?.retained === true)) {
+    if ((event.type === "module_check_finished" && detail?.published === true) || (event.type === "repair_batch_finished" && detail?.retained === true)) {
       const results = detail?.requirementResults as Record<string, RequirementStatus> | undefined;
       for (const [id, status] of Object.entries(results ?? {})) this.statuses.set(id, status);
     }
@@ -82,8 +78,8 @@ export class BuildView implements Component {
         for (const id of ids(key)) this.statuses.set(id, status);
       }
     }
-    if (event.type === "feature_grouping_usage" || event.type === "probe_planner_usage") {
-      this.addUsage("judge", detail);
+    if (event.type === "feature_grouping_usage") {
+      this.addUsage("checker", detail);
       return;
     }
     if (event.type === "checker_usage") {
@@ -139,7 +135,7 @@ export class BuildView implements Component {
     ].join("  ");
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
     const activity = ` ${t.accent(frame)} ${this.activity}`;
-    const models = ` ${t.muted("模型")}  Builder ${this.options.models.builder} ${t.muted("·")} Judge ${this.options.models.judge}`;
+    const models = ` ${t.muted("模型")}  Builder ${this.options.models.builder} ${t.muted("·")} Checker ${this.options.models.checker}`;
     const footer = t.muted(" d 详细日志   ? 帮助   Ctrl+C 中断");
     const usage = formatModelUsageSummary(this.usage.summary(this.live));
     const compact = () => [terminalHeader("Build Agent", width, t)[0], models, activity,
@@ -169,7 +165,7 @@ export class BuildView implements Component {
     return lines.map(line => fitTerminalText(line, width));
   }
 
-  private addUsage(source: "builder" | "judge" | "checker", usage: Record<string, unknown> | undefined): void {
+  private addUsage(source: "builder" | "checker", usage: Record<string, unknown> | undefined): void {
     if (!usage || typeof usage.input !== "number" || typeof usage.output !== "number") return;
     const number = (key: string) => typeof usage[key] === "number" ? usage[key] as number : 0;
     const cost = typeof usage.cost === "number" ? usage.cost : undefined;
@@ -189,14 +185,10 @@ export class BuildView implements Component {
       case "packet_selected": return "已选择需求包，准备 Builder";
       case "builder_started": return `Builder · 实现当前模块${detail?.attempt ? ` · 第 ${detail.attempt} 次尝试` : ""}`;
       case "builder_finished": return detail?.outcome === "completed" ? "Builder 本轮完成，等待运行检查" : "Builder 本轮结束，检查候选与检查点";
-      case "candidate_prepared": return "候选构建完成，准备浏览器验收";
-      case "probe_planning": return "Judge · 规划验收场景";
-      case "probe_planned": return `Judge · 执行 ${detail?.cases ?? ""} 个浏览器场景`;
-      case "audit_result": return detail?.status === "verified" ? "独立验收通过" : detail?.status === "failed" ? "验收复现业务失败" : "验收证据不足，保留可运行实现";
+      case "candidate_prepared": return "候选构建完成，准备独立验收";
       case "gateway_wait": return `${detail?.source === "builder" ? "Builder" : "Planner"} · 等待模型网关恢复`;
       case "repair_batch_started": return `Builder · 第 ${detail?.round ?? 1} 轮修复`;
       case "delivery_started": this.phase = "最终交付"; return "重新验收当前范围，检查交付入口";
-      case "verification_started": return "检查交付应用与浏览器入口";
       case "pipeline_finished": return "本轮结束，正在保存报告与补丁";
       case "pipeline_failed": return "运行异常，正在保存诊断";
       default: return undefined;
@@ -279,9 +271,6 @@ export class BuildTui {
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null ? value as Record<string, unknown> : undefined;
-}
 
 export function buildResult(summary: RunSummary, runDirectory: string, patch: string | undefined,
   projectDirectory: string, elapsedMs: number, colour: boolean, width = 80): string {

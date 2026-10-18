@@ -29,15 +29,6 @@ export class HumanRunFormatter {
   }
 }
 
-function plannerFailureText(detail: RunEvent["detail"]): string {
-  const message = pickString(detail, "message");
-  const category = pickString(detail, "category");
-  const validationError = pickString(detail, "validationError");
-  return `${category ? ` [${category}]` : ""}${message ? `：${message}` : ""}${
-    validationError ? `；原因：${validationError}` : ""
-  }`;
-}
-
 function parseEvent(rawLine: string): RunEvent | null {
   const trimmed = rawLine.trim();
   if (!trimmed) return null;
@@ -87,14 +78,6 @@ function describe(type: string, event: RunEvent): string | null {
       return `模块实现未形成可运行版本，已恢复检查点（${packetId}）${reason ? `：${reason}` : ""}`;
     case "module_rescued":
       return `Builder 未完成回执，但写出的应用可运行，已保存为可运行版本（${packetId}）；需求 ${strings(detail?.requirementIds).join("、")}${reason ? `；回执原因：${reason}` : ""}`;
-    case "audit_result":
-      return `独立验收${detail?.status === "verified" ? "通过" : detail?.status === "failed" ? "业务失败已复现" : "无法判断"}（${packetId}）；保留可运行检查点${pickString(detail, "failureKind") ? `；分类 ${inconclusiveKindText(pickString(detail, "failureKind")!)}` : ""}${detail?.navigationRecovered ? "；使用已确认的导航恢复" : ""}${detail?.uncoveredOutcomes ? `；未覆盖场景结果 ${detail.uncoveredOutcomes}` : ""}${reason ? `；${reason}` : ""}`;
-    case "repair_guard_checked":
-      return `修复守卫${({ passed: "通过", regressed: "确认回归", unresolved: "无法判定" } as Record<string, string>)[pickString(detail, "status") ?? ""] ?? "检查"}（${packetId}）${detail?.critical ? "；必须确认的既有路径" : ""}${detail?.retried ? "；已用新应用实例重试" : ""}${pickString(detail, "failureKind") ? `；分类 ${inconclusiveKindText(pickString(detail, "failureKind")!)}` : ""}`;
-    case "public_entry_checked":
-      return `公共入口检查${({ passed: "通过", failed: "缺口已复现", unresolved: "无法判定" } as Record<string, string>)[pickString(detail, "status") ?? ""] ?? "完成"}（${packetId}）；仅为入口证据，完整场景验收另计${pickString(detail, "failureKind") ? `；分类 ${inconclusiveKindText(pickString(detail, "failureKind")!)}` : ""}`;
-    case "compatibility_checked":
-      return `兼容性检查${({ passed: "通过", failed: "缺口已复现", unresolved: "无法判定" } as Record<string, string>)[pickString(detail, "status") ?? ""] ?? "完成"}（${packetId}）；不单独授予需求通过${pickString(detail, "failureKind") ? `；分类 ${inconclusiveKindText(pickString(detail, "failureKind")!)}` : ""}`;
     case "repair_batch_started":
       return `开始第 ${detail?.round} 轮修复；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "repair_batch_finished":
@@ -117,9 +100,9 @@ function describe(type: string, event: RunEvent): string | null {
       const evolutionStart = pickString(evolution, "startingPoint");
       const evolutionText = evolution ? `；增量开发 Evolution${evolutionStage === null ? "" : ` Stage ${evolutionStage}`}${evolutionStart === "inherited_application" ? "（继承已有应用）" : evolutionStart === "blank_template" ? "（空白模板）" : ""}` : "";
       const model = pickString(detail, "model");
-      const judgeModel = pickString(detail, "judgeModel");
-      const judgeText = judgeModel && judgeModel !== model ? `；Judge 模型 ${judgeModel}` : "";
-      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；探针端口 ${pickNumber(detail, "port") ?? "未知"}${model ? `；模型 ${model}` : ""}${judgeText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
+      const checkerModel = pickString(detail, "checkerModel");
+      const checkerText = checkerModel && checkerModel !== model ? `；Checker 模型 ${checkerModel}` : "";
+      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${checkerText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
     }
     case "packet_selected":
       return `选定需求包 ${packetId}${strings(detail?.names).length ? `：${strings(detail?.names).join("、")}` : ""}`;
@@ -169,26 +152,10 @@ function describe(type: string, event: RunEvent): string | null {
       return `模型网关故障不可重试，停止派发实现任务（${packetId}）；需求保持待处理`;
     case "builder_finished":
       return `Builder ${builderOutcomeText(pickString(detail, "outcome"))}（${packetId}）${pickString(detail, "summary") ? `；自述回执（非验收）：${pickString(detail, "summary")}` : ""}${describeBuilderExecution(detail?.execution)}`;
-    case "probe_planning":
-      return `开始规划黑盒探针（${packetId}）`;
-    case "application_starting":
-      return `开始启动候选应用（${packetId}）`;
     case "candidate_prepared":
       return `候选构建${detail?.reused ? "已复用" : "已完成"}；候选 ${pickString(detail, "candidateId")}；${detail?.installed ? "已安装依赖" : "复用依赖"}；安装 ${renderDuration(pickNumber(detail, "installMs") ?? 0)}，构建 ${renderDuration(pickNumber(detail, "buildMs") ?? 0)}`;
     case "candidate_prepare_failed":
       return `候选准备失败；阶段 ${pickString(detail, "stage")}${message ? `：${message}` : ""}`;
-    case "application_ready":
-      return `候选应用已就绪（${packetId}）：${pickString(detail, "baseUrl") ?? ""}`;
-    case "application_stopped":
-      return `候选应用已停止（${packetId}）`;
-    case "probe_started":
-      return `开始执行 ${pickNumber(detail, "cases") ?? 0} 个黑盒探针（${packetId}）；基础设施重试 ${pickNumber(detail, "retryCount") ?? 0}`;
-    case "verification_started":
-      return `开始交付验证（安装→构建→启动→健康检查→浏览器冒烟）；基础设施重试 ${pickNumber(detail, "retryCount") ?? 0}`;
-    case "verification_finished":
-      return `交付验证${detail?.ok ? "通过" : "失败"}；阶段 ${pickString(detail, "stage")}${message ? `：${message}` : ""}`;
-    case "evidence_write_failed":
-      return `失败证据保存失败（${packetId}），继续依据现有判词决策`;
     case "builder_reference_images": {
       const mode = pickString(detail, "mode");
       const skipped = Array.isArray(detail?.skipped) ? detail.skipped.length : 0;
@@ -199,55 +166,10 @@ function describe(type: string, event: RunEvent): string | null {
         : "参考图片不可用，按文字继续";
       return `${description}（${packetId}）；跳过 ${skipped} 项`;
     }
-    case "probe_planned": {
-      const cases = pickNumber(detail, "cases");
-      return cases === null
-        ? `探针用例已生成（${packetId}）`
-        : `已生成 ${cases} 个探针用例（${packetId}）`;
-    }
-    case "probe_planner_usage": {
-      const label = ({ plan: "探针规划", refine: "探针定位精化", review: "探针语义复核" } as Record<string, string>)[
-        pickString(detail, "operation") ?? ""
-      ] ?? "探针调用";
-      const tokens = tokenUsageParts(detail);
-      return tokens.length ? `${label} token 用量（${packetId}）；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
-    }
-    case "application_start_failed":
-      return `应用启动失败（${packetId}）${message ? `：${message}` : ""}`;
-    case "probe_finished":
-      return `探针${verdictText(pickString(detail, "verdict"))}${
-        detail?.refined === true ? "（精化后重跑）" : ""
-      }（${packetId}）${typeof detail?.passed === "number" ? `；通过 ${detail.passed} / 失败 ${detail.failed}；失败分类 ${strings(detail.categories).join("、") || "无"}` : ""}${pickString(detail, "evidenceId") ? `；私有证据 ${pickString(detail, "evidenceId")}` : ""}`;
-    case "probe_refined":
-      return `定位器已精化，重跑探针（${packetId}）${detail?.refinementAttempt ? `；定位恢复第 ${detail.refinementAttempt}/2 轮` : ""}`;
-    case "probe_navigation_attempted":
-      return `首页搜索导航复查${detail?.recovered ? "通过，待新实例确认" : detail?.improved ? "部分路径通过，继续检查" : "未通过"}（${packetId}）`;
-    case "probe_refinement_failed":
-      return `定位器精化失败（${packetId}）${detail?.refinementAttempt ? `；定位恢复第 ${detail.refinementAttempt}/2 轮` : ""}${plannerFailureText(detail)}`;
-    case "probe_review_started":
-      return `开始语义复核探针依据（${packetId}）；失败 ${pickNumber(detail, "failed") ?? 0} / ${pickNumber(detail, "cases") ?? 0} 个用例`;
-    case "probe_reviewed": {
-      const verdict = pickString(detail, "verdict");
-      if (verdict === "corrected") {
-        const corrections = Array.isArray(detail?.corrections) ? detail.corrections.length : 0;
-        return `语义复核发现探针与需求冲突，按需求重建 ${corrections} 个用例并重跑（${packetId}）`;
-      }
-      return `语义复核确认探针依据成立（${packetId}）`;
-    }
-    case "probe_review_failed":
-      return `语义复核失败（${packetId}）${plannerFailureText(detail)}`;
-    case "probe_planner_retry":
-      return `探针规划失败，将重试（${packetId}）${plannerFailureText(detail)}`;
-    case "probe_planner_failed":
-      return `探针规划失败（${packetId}）${plannerFailureText(detail)}`;
-    case "probe_preplan_failed":
-      return `后台探针预规划失败（${packetId}）${plannerFailureText(detail)}`;
     case "execution_fault":
       return `执行基础设施故障（${packetId}，${pickString(detail, "source")} / ${pickString(detail, "code")}），${
         detail?.retry === true ? "保持候选和计划，重试一次" : "停止当前执行"
       }；Builder 尝试 ${pickNumber(detail, "attempt") ?? 0}`;
-    case "packet_accepted":
-      return `需求包验收通过（${packetId}）${event.acceptedSha ? `；接受 SHA ${event.acceptedSha}` : ""}`;
     case "delivery_started":
       return "进入交付窗口，开始最终验收";
     case "delivery_repair_started":
@@ -267,16 +189,6 @@ function describe(type: string, event: RunEvent): string | null {
         ? `交付运行检查通过${stageSuffix}`
         : `交付失败${stageSuffix}${message ? `：${message}` : ""}`;
     }
-    case "module_boundary_audit_finished": {
-      const requirementResults = asRecord(detail?.requirementResults);
-      const results = requirementResults ?? asRecord(detail?.results) ?? {};
-      const counts = { verified: 0, failed: 0, inconclusive: 0 };
-      for (const status of Object.values(results)) {
-        if (status === "verified" || status === "failed" || status === "inconclusive") counts[status]++;
-      }
-      const checks = strings(detail?.regressionPacketIds).length;
-      return `模块边界验收完成（${pickString(detail, "moduleId") ?? ""}）；${requirementResults ? "累计需求" : ""}通过 ${counts.verified}，失败 ${counts.failed}，无法判断 ${counts.inconclusive}${checks ? `；跨模块种子入口抽查 ${checks} 条` : ""}`;
-    }
     case "pipeline_finished": {
       const breakdown = asRecord(detail?.inconclusiveByKind);
       const categories = breakdown ? Object.entries(breakdown).map(([kind, ids]) => `${inconclusiveKindText(kind)} ${strings(ids).length}`).join("、") : "";
@@ -284,7 +196,7 @@ function describe(type: string, event: RunEvent): string | null {
         ? `；本轮验收范围 ${strings(detail.auditRequirementIds).length} 条；跳过旧需求验收 ${strings(detail.skippedRequirementIds).length} 条` : "";
       const usage = modelUsageSummary(detail?.modelUsage);
       const usageText = usage ? `；模型用量 ${formatModelUsageSummary(usage).join("；")}` : "";
-      return `流水线结束${detail ? `；结果 ${pickString(detail, "status")}；已实现 ${strings(detail.implementedRequirementIds).length}，已验证 ${strings(detail.verifiedRequirementIds).length}，业务失败 ${strings(detail.failedRequirementIds).length}，无法判断 ${strings(detail.inconclusiveRequirementIds).length}，阻塞 ${strings(detail.blockedRequirementIds).length}，待处理 ${strings(detail.pendingRequirementIds).length}；阻塞 ID：${strings(detail.blockedRequirementIds).join("、") || "无"}；待处理 ID：${strings(detail.pendingRequirementIds).join("、") || "无"}${categories ? `；无法判断分类：${categories}` : ""}${strings(detail.missingPlanRequirementIds).length ? `；缺计划 ID：${strings(detail.missingPlanRequirementIds).join("、")}` : ""}${auditScope}；接受 SHA ${pickString(detail, "acceptedSha")}${usageText}` : ""}`;
+      return `流水线结束${detail ? `；结果 ${pickString(detail, "status")}；已实现 ${strings(detail.implementedRequirementIds).length}，已验证 ${strings(detail.verifiedRequirementIds).length}，业务失败 ${strings(detail.failedRequirementIds).length}，无法判断 ${strings(detail.inconclusiveRequirementIds).length}，阻塞 ${strings(detail.blockedRequirementIds).length}，待处理 ${strings(detail.pendingRequirementIds).length}；阻塞 ID：${strings(detail.blockedRequirementIds).join("、") || "无"}；待处理 ID：${strings(detail.pendingRequirementIds).join("、") || "无"}${categories ? `；无法判断分类：${categories}` : ""}${auditScope}；接受 SHA ${pickString(detail, "acceptedSha")}${usageText}` : ""}`;
     }
     default:
       return null;
@@ -403,9 +315,8 @@ function modelUsageSummary(value: unknown): ModelUsageSummary | null {
   const record = asRecord(value);
   const total = usageSummary(record);
   const builder = usageSummary(record?.builder);
-  const judge = usageSummary(record?.judge);
   const checker = usageSummary(record?.checker);
-  return total && builder && judge ? { ...total, builder, judge, ...(checker ? { checker } : {}) } : null;
+  return total && builder && checker ? { ...total, builder, checker } : null;
 }
 
 function asNumber(value: unknown): number | null {
@@ -417,13 +328,6 @@ function builderOutcomeText(outcome: string | null): string {
   if (outcome === "timed_out") return "超时";
   if (outcome === "failed") return "失败";
   return outcome ? `结束于 ${outcome}` : "结束";
-}
-
-function verdictText(verdict: string | null): string {
-  if (verdict === "pass") return "通过";
-  if (verdict === "fail") return "失败";
-  if (verdict === "inconclusive") return "无法定论";
-  return `结果 ${verdict ?? "未知"}`;
 }
 
 function pickString(detail: Record<string, unknown> | undefined, key: string): string | null {

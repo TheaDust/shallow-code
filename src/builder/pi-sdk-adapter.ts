@@ -14,9 +14,10 @@ import { BUILDER_SKILLS_DIR } from "./skills.js";
 import { PiExecutionCollector, type ExecutionSummary } from "./pi-execution-stats.js";
 import { piProviderModel } from "./pi-model-config.js";
 import { opencodeSessionHeaders } from "../gateway-headers.js";
+import type { BuilderCapabilityPack } from "../application/port.js";
 import type { ModelRates } from "../model-usage.js";
 
-type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "platformContract"> & {
+type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "applicationContract"> & {
   gateway: GatewayConfig;
   sessionDir: string;
   sessionFile?: string;
@@ -67,8 +68,8 @@ function toPiTool(tool: BuilderTool): ToolDefinition {
 // Headless sessions need no renderer types; keep native renderer fields at runtime.
 type PiTool = Omit<ToolDefinition, "renderCall" | "renderResult">;
 
-function createTools(input: PiSessionOptions, skillFiles: readonly string[]): ToolDefinition[] {
-  const { outputDir: cwd, platformContract: contract } = input;
+function createTools(input: PiSessionOptions, skillFiles: readonly string[], capabilities?: BuilderCapabilityPack): ToolDefinition[] {
+  const { outputDir: cwd, applicationContract: contract } = input;
   const privateDirectory = dirname(input.sessionDir);
   const guard = <T extends PiTool>(tool: T): T => ({ ...tool,
     async execute(...args: Parameters<T["execute"]>) {
@@ -81,14 +82,14 @@ function createTools(input: PiSessionOptions, skillFiles: readonly string[]): To
   const files = [guard(createReadToolDefinition(cwd)), guard(createEditToolDefinition(cwd)), guard(createWriteToolDefinition(cwd))];
   const shell = createBashToolDefinition(cwd, { operations: { exec: createShellExecutor(cwd, contract, privateDirectory) } });
   shell.name = "shell";
-  shell.description = `Run a short ${process.platform === "win32" ? "PowerShell" : "Bash"} command in the application. Use this for file searches, builds and type checks; run tests with the run_tests tool instead. ${contract ? "Use the app tool to start and stop the application for browser checks." : "Do not start persistent servers; briefly starting the app in the background for a browser-tool check is allowed when instructed."}`;
-  const tools: PiTool[] = [...files, shell, ...createBuilderTools(cwd, Boolean(contract), contract).map(toPiTool)];
+  shell.description = `Run a short ${process.platform === "win32" ? "PowerShell" : "Bash"} command in the application. Use this for file searches, builds and type checks; run tests with the run_tests tool instead. ${contract ? "Use the app tool to manage application checks." : "Do not leave persistent application processes running."}`;
+  const tools: PiTool[] = [...files, shell, ...[...createBuilderTools(cwd, Boolean(contract), contract), ...(capabilities?.tools ?? [])].map(toPiTool)];
   return tools;
 }
 
 /** The only module that imports Pi SDK types, tools and session lifecycle. */
 export async function createPiSession(input: PiSessionOptions,
-  onProgress: (snapshot: PiSessionSnapshot) => void): Promise<PiSession> {
+  onProgress: (snapshot: PiSessionSnapshot) => void, capabilities?: BuilderCapabilityPack): Promise<PiSession> {
   const agentDir = join(input.sessionDir, "config");
   await mkdir(agentDir, { recursive: true, mode: 0o700 });
   const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(),
@@ -103,12 +104,12 @@ export async function createPiSession(input: PiSessionOptions,
     provider: { maxRetries: 0, timeoutMs: input.timeoutMs } }, compaction: { enabled: true }, enableInstallTelemetry: false });
   const resourceLoader = new DefaultResourceLoader({ cwd: input.outputDir, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-    additionalSkillPaths: [BUILDER_SKILLS_DIR],
+    additionalSkillPaths: [BUILDER_SKILLS_DIR, ...(capabilities?.skillDirectories ?? [])],
     systemPrompt: input.systemPrompt });
   await resourceLoader.reload();
   const manager = input.sessionFile ? SessionManager.open(input.sessionFile) : SessionManager.create(input.outputDir, input.sessionDir);
   if (resolve(manager.getCwd()) !== resolve(input.outputDir)) throw new Error("Persisted Pi session workspace mismatch");
-  const tools = createTools(input, resourceLoader.getSkills().skills.map(skill => skill.filePath));
+  const tools = createTools(input, resourceLoader.getSkills().skills.map(skill => skill.filePath), capabilities);
   const { session, modelFallbackMessage } = await createAgentSession({ cwd: input.outputDir, agentDir,
     modelRuntime, model: modelRuntime.getModel("shallow-gateway", input.gateway.model),
     settingsManager, resourceLoader, sessionManager: manager,

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ArtifactStore, atomicWrite, canonicalJson, hashBytes } from "./artifacts.js";
-import type { AdapterDeclaration, CheckJob, CheckOutcome, CheckReport, CheckerPort, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef } from "./port.js";
+import type { AdapterDeclaration, CheckOutcome, CheckReport, CheckerPort, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef } from "./port.js";
 import { checkerSourceClauses, evaluateProgramEvidence, sameRef, validateAcceptanceContract,
   type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview } from "./evidence.js";
 import type { CheckerModel, CheckerTool } from "./model.js";
@@ -15,9 +15,6 @@ export type { CheckerRequirements } from "./evidence.js";
 
 async function promptAsset(name: string): Promise<string> {
   return (await readFile(fileURLToPath(new URL(`../../prompts/checker/${name}.md`, import.meta.url)), "utf8")).trimEnd();
-}
-export async function checkerPromptDigest(): Promise<string> {
-  return hashBytes((await Promise.all(["exploration", "review", "tools"].map(promptAsset))).join("\n\n"));
 }
 const refSchema = Type.Object({ id: Type.String(), digest: Type.String() });
 const programSchema = Type.Object({ descriptor: Type.Object({ id: Type.String(), digest: Type.String(), schema: refSchema, mediaType: Type.String() }),

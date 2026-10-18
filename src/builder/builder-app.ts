@@ -1,17 +1,16 @@
-import { CommandAppLifecycle } from "../final-verifier.js";
-import type { AppLifecycle } from "../pipeline.js";
-import type { PlatformContract } from "../types.js";
+import type { ApplicationLifecycle } from "../application/port.js";
+import type { ApplicationContract } from "../types.js";
 
 export type AppAction = "start" | "status" | "stop";
-export interface AppStatus { running: boolean; baseUrl: string }
+export interface AppStatus { running: boolean; metadata?: unknown }
 
 /** Parent-owned: survives Worker termination long enough to finish cleanup. */
 export class BuilderApp {
-  private application?: Awaited<ReturnType<AppLifecycle["start"]>>;
+  private application?: Awaited<ReturnType<ApplicationLifecycle["start"]>>;
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
-  constructor(private outputDir: string, private contract: PlatformContract,
-    private lifecycle: AppLifecycle = new CommandAppLifecycle()) {}
+  constructor(private outputDir: string, private contract: ApplicationContract,
+    private lifecycle: ApplicationLifecycle) {}
 
   run(action: AppAction): Promise<AppStatus> {
     if (this.closed) return Promise.reject(new Error("Builder application manager is closed"));
@@ -24,7 +23,7 @@ export class BuilderApp {
       if (action === "start" && !this.application) {
         this.application = await this.lifecycle.start(this.outputDir, this.contract);
       }
-      return { running: Boolean(this.application), baseUrl: this.contract.baseUrl };
+      return { running: Boolean(this.application), metadata: this.application?.metadata };
     });
   }
 

@@ -2,32 +2,21 @@ import { createPiSession, type PiSessionSnapshot } from "./pi-sdk-adapter.js";
 import { subtractUsage, type ExecutionUsage } from "./pi-execution-stats.js";
 import { installSseCapture } from "./sse-capture.js";
 import { installSseResilience } from "./sse-resilience.js";
-import { closeSharedBrowser } from "./pi-browser-tool.js";
+import type { BuilderCapabilityPack } from "../application/port.js";
 import { loadReferenceImages } from "./reference-images.js";
 import { isImageUnsupportedMessage } from "./vision-probe.js";
 import type { PiWorkerRequest, PiWorkerResult, PiWorkerProgress } from "./pi-worker-client.js";
 import { fillTemplate, loadPrompt } from "../prompt-assets.js";
 import { classifyGatewayFailure, observeGatewayFailures } from "../gateway-failure.js";
 
-// Wait for ownership to be established by the parent before executing anything.
-process.once("message", (request: PiWorkerRequest) => {
-  void run(request).then(send, error => send({ sessionId: "unavailable", outcome: "failed", summary: error instanceof Error ? error.message : String(error) }));
-});
-process.on("disconnect", () => process.exit(1));
-
-function send(result: PiWorkerResult): void {
-  // Parent receives a bounded receipt, then kills the owned job/group and awaits cleanup.
-  process.send?.(result);
-}
-
-async function run(input: PiWorkerRequest): Promise<PiWorkerResult> {
+export async function runPiWorker(input: PiWorkerRequest, capabilities?: BuilderCapabilityPack): Promise<PiWorkerResult> {
   let baseline: ExecutionUsage | undefined;
   // 续做会话的统计包含此前调用；先记录基线，上报与回执都只给本次调用增量。
   const rebase = (snapshot: PiSessionSnapshot): PiSessionSnapshot => baseline === undefined ? snapshot
     : { ...snapshot, usage: subtractUsage(snapshot.usage, baseline) };
   const session = await createPiSession(input, snapshot => {
     process.send?.({ type: "builder_progress", ...rebase(snapshot) } satisfies PiWorkerProgress);
-  });
+  }, capabilities);
   baseline = session.snapshot().usage;
   const reportProgress = () => {
     process.send?.({ type: "builder_progress", ...rebase(session.snapshot()) } satisfies PiWorkerProgress);
@@ -72,5 +61,5 @@ async function run(input: PiWorkerRequest): Promise<PiWorkerResult> {
         mode: !attach ? "disabled" : input.visionUnsupported ? "unsupported" : input.textOnly ? "text_fallback" : images.length ? "attached" : "unavailable",
         attachedCount: images.length, skipped: loaded.skipped } as const } : {}),
     };
-  } finally { clearInterval(progressTimer); session.dispose(); gateway.uninstall(); resilience.uninstall(); await capture?.uninstall(); await closeSharedBrowser(); }
+  } finally { clearInterval(progressTimer); session.dispose(); gateway.uninstall(); resilience.uninstall(); await capture?.uninstall(); }
 }

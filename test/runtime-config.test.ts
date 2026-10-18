@@ -4,19 +4,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import {
-  deriveModelTimeouts,
-  parseBuilderContextWindow,
-  parseEvaluationPort,
-  parseEvolutionAuditInherited,
-  parseFinalAuditGeneratePlan,
-  parseProbePortOverride,
-  parseRunDirOverride,
-  pickFreePort,
-  readEnvFile,
-  readGatewayConfig,
-  resolveSseCaptureDir,
-} from "../src/runtime-config.js";
+import { deriveModelTimeouts, parseBuilderContextWindow, parseEvolutionAuditInherited, parseRunDirOverride, readEnvFile, readGatewayConfig, resolveSseCaptureDir } from "../src/runtime-config.js";
+import { parseEvaluationPort, parseProbePortOverride, pickFreePort } from "../src/adapters/web/ports.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 test("Evolution inherited audits default off and can be explicitly restored", () => {
@@ -30,17 +19,6 @@ test("Evolution inherited audits default off and can be explicitly restored", ()
   assert.throws(() => parseEvolutionAuditInherited({ SHALLOW_EVOLUTION_AUDIT_INHERITED: "fales" }), /SHALLOW_EVOLUTION_AUDIT_INHERITED/);
 });
 
-test("Final audit plan generation defaults off and can be explicitly enabled", () => {
-  assert.equal(parseFinalAuditGeneratePlan({}), false);
-  for (const value of ["1", "true", " YES ", "ON"]) {
-    assert.equal(parseFinalAuditGeneratePlan({ SHALLOW_FINAL_AUDIT_GENERATE_PLAN: value }), true);
-  }
-  for (const value of ["", "0", "false", " NO ", "OFF"]) {
-    assert.equal(parseFinalAuditGeneratePlan({ SHALLOW_FINAL_AUDIT_GENERATE_PLAN: value }), false);
-  }
-  assert.throws(() => parseFinalAuditGeneratePlan({ SHALLOW_FINAL_AUDIT_GENERATE_PLAN: "enabled" }),
-    /SHALLOW_FINAL_AUDIT_GENERATE_PLAN/);
-});
 
 test("Runtime config requires the three explicit gateway variables", () => {
   const complete = {
@@ -79,15 +57,15 @@ test("Runtime config supports component-scoped gateway overrides", () => {
     ...complete,
     SHALLOW_BUILDER_API_KEY: " builder-key ",
     SHALLOW_BUILDER_MODEL: "  ",
-    SHALLOW_JUDGE_BASE_URL: "https://judge.example/v1",
-    SHALLOW_JUDGE_MODEL: "judge/model",
+    SHALLOW_CHECKER_BASE_URL: "https://judge.example/v1",
+    SHALLOW_CHECKER_MODEL: "judge/model",
   };
   assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_BUILDER"), {
     apiKey: "builder-key",
     baseUrl: "https://gateway.example/v1",
     model: "provider/model",
   });
-  assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_JUDGE"), {
+  assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_CHECKER"), {
     apiKey: "key",
     baseUrl: "https://judge.example/v1",
     model: "judge/model",
@@ -105,31 +83,31 @@ test("Runtime config supports component-scoped gateway overrides", () => {
     model: "builder/model",
   });
   assert.throws(
-    () => readGatewayConfig(onlyBuilder, "SHALLOW_JUDGE"),
-    /SHALLOW_JUDGE_API_KEY or OPENAI_API_KEY/,
+    () => readGatewayConfig(onlyBuilder, "SHALLOW_CHECKER"),
+    /SHALLOW_CHECKER_API_KEY or OPENAI_API_KEY/,
   );
 });
 
 test("Runtime config bounds model calls by the total budget", () => {
   assert.deepEqual(deriveModelTimeouts(600_000), {
     builderTimeoutMs: 240_000,
-    plannerTimeoutMs: 60_000,
+    checkerTimeoutMs: 60_000,
   });
   assert.deepEqual(deriveModelTimeouts(60_000), {
     builderTimeoutMs: 30_000,
-    plannerTimeoutMs: 10_000,
+    checkerTimeoutMs: 10_000,
   });
   assert.deepEqual(deriveModelTimeouts(0), {
     builderTimeoutMs: 5_400_000,
-    plannerTimeoutMs: 720_000,
+    checkerTimeoutMs: 720_000,
   });
   assert.deepEqual(deriveModelTimeouts(10_800_000), {
     builderTimeoutMs: 4_320_000,
-    plannerTimeoutMs: 720_000,
+    checkerTimeoutMs: 720_000,
   });
   assert.deepEqual(deriveModelTimeouts(3_600_000), {
     builderTimeoutMs: 1_440_000,
-    plannerTimeoutMs: 360_000,
+    checkerTimeoutMs: 360_000,
   });
 });
 

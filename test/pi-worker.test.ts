@@ -1,3 +1,5 @@
+import { applications } from "../src/adapters/index.js";
+import { minimalWebContract } from "../src/adapters/web/project-spec.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -89,7 +91,7 @@ test("Pi SDK executes tools and resumes persisted history in a new worker", { ti
       assert.ok(requests.every(request => request.model === "test/model"));
       assert.ok(!JSON.stringify(requests).includes("test-secret"));
       assert.ok(JSON.stringify(requests).includes("<available_skills>"));
-      assert.ok(JSON.stringify(requests).includes("accessible-web-controls"));
+      assert.ok(JSON.stringify(requests).includes("persistent-state"));
       assert.ok(!JSON.stringify(requests).includes("# 可访问 Web 交互"));
       assert.ok(!JSON.stringify(requests).includes("must never load"));
     } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
@@ -189,9 +191,9 @@ test("Pi worker advertises every guarded tool, including the browser tool, to th
     });
     await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
     const port = (server.address() as { port: number }).port;
-    const client = new PiWorkerClient({ apiKey: "test-secret", baseUrl: `http://127.0.0.1:${port}/v1`, model: "test/model" }, join(root, "sessions"));
+    const client = new PiWorkerClient({ apiKey: "test-secret", baseUrl: `http://127.0.0.1:${port}/v1`, model: "test/model" }, join(root, "sessions"), undefined, { applications });
     try {
-      const result = await client.run({ outputDir: app, systemPrompt: "Finish immediately.", taskPrompt: "finish", timeoutMs: 20_000 });
+      const result = await client.run({ outputDir: app, applicationContract: minimalWebContract({ port: 43210 }), systemPrompt: "Finish immediately.", taskPrompt: "finish", timeoutMs: 20_000 });
       assert.equal(result.outcome, "completed", result.summary);
       assert.ok(advertised, "worker never issued a model request");
       // The SDK treats `tools` as an allowlist that also filters custom tools:

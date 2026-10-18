@@ -1,10 +1,12 @@
+import { webBuilderCapabilities } from "../src/adapters/web/builder-capabilities.js";
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createPiSession, type PiSessionSnapshot } from "../src/builder/pi-sdk-adapter.js";
-import { resolveRuntimeContract } from "../src/project-spec.js";
+import { resolveRuntimeContract } from "../src/adapters/web/project-spec.js";
 import { BUILDER_SKILLS_DIR } from "../src/builder/skills.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
@@ -25,7 +27,7 @@ test("Pi adapter preserves native file tools and guards their actual execution",
     const privateFile = join(root, "private.txt");
     await writeFile(visibleFile, "visible content");
     await writeFile(privateFile, "private content");
-    const skillFile = join(BUILDER_SKILLS_DIR, "accessible-web-controls", "SKILL.md");
+    const skillFile = fileURLToPath(new URL("../prompts/adapters/web/skills/accessible-web-controls/SKILL.md", import.meta.url));
     const skillContent = await readFile(skillFile, "utf8");
     await mkdir(join(app, ".pi", "skills", "unapproved"), { recursive: true });
     await writeFile(join(app, ".pi", "skills", "unapproved", "SKILL.md"),
@@ -68,7 +70,7 @@ test("Pi adapter preserves native file tools and guards their actual execution",
     try {
       const session = await createPiSession({ outputDir: app, sessionDir: join(root, "sessions"),
         gateway: { apiKey: "fixture", model: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` },
-        systemPrompt: "Use the requested tool and finish.", timeoutMs: 20_000 }, snapshot => progress.push(snapshot));
+        systemPrompt: "Use the requested tool and finish.", timeoutMs: 20_000 }, snapshot => progress.push(snapshot), webBuilderCapabilities(app));
       try {
         for (const entry of cases) {
           assert.deepEqual(await session.prompt(`Execute ${entry.name}.`), {
@@ -110,7 +112,7 @@ test("Pi adapter executes a project tool with its declared parameters and enviro
     });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     try {
-      const session = await createPiSession({ outputDir: app, sessionDir: join(root, "sessions"), platformContract: contract,
+      const session = await createPiSession({ outputDir: app, sessionDir: join(root, "sessions"), applicationContract: contract,
         gateway: { apiKey: "fixture", model: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` },
         systemPrompt: "Run the declared tests.", timeoutMs: 20_000 }, () => {});
       try {

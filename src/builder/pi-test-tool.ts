@@ -6,9 +6,9 @@ import { Type } from "typebox";
 import type { BuilderTool } from "./tool-contract.js";
 import { toolEnvironment } from "../process-lifecycle.js";
 import { spawnProcess } from "../process-spawn.js";
-import { stopProcess } from "../final-verifier.js";
-import { minimalWebProjectSpec, DEFAULT_TEST_TIMEOUT_MS } from "../project-spec.js";
-import type { PlatformContract } from "../types.js";
+import { stopProcess } from "../application/commands.js";
+import { DEFAULT_TEST_TIMEOUT_MS } from "../project-spec.js";
+import type { ApplicationContract } from "../types.js";
 import { NON_APPLICATION_METADATA_NAMES } from "../controller-metadata.js";
 
 const MAX_OUTPUT_CHARS = 30_000;
@@ -20,9 +20,8 @@ const parameters = Type.Object({
 });
 export interface TestToolOptions {
   spawnFn?: typeof spawn;
-  frontendTimeoutMs?: number;
-  backendTimeoutMs?: number;
-  contract?: PlatformContract;
+  timeoutMs?: number;
+  contract?: ApplicationContract;
 }
 interface SuiteResult {
   target: string;
@@ -37,7 +36,7 @@ const DIGEST_IGNORED_DIRECTORIES = new Set<string>(["node_modules", ...NON_APPLI
 
 /** Execute the frozen project declaration; template tests use single-worker commands. */
 export function createTestTool(cwd: string, options: TestToolOptions = {}): BuilderTool<typeof parameters> {
-  const targets = options.contract ? options.contract.testTargets ?? [] : minimalWebProjectSpec(process.execPath).tests!;
+  const targets = options.contract ? options.contract.testTargets ?? [] : [];
   const successful = new Map<string, SuiteResult>();
   const environment = { ...toolEnvironment(), ...options.contract?.env, CI: "1",
     ...(options.contract?.dataDirectory ? { [options.contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: options.contract.dataDirectory } : {}) };
@@ -62,7 +61,7 @@ export function createTestTool(cwd: string, options: TestToolOptions = {}): Buil
         signal?.throwIfAborted();
         const cached = digest ? successful.get(digest) : undefined;
         if (cached) { results.push({ ...cached, durationMs: 0, cached: true }); continue; }
-        const timeout = target.timeoutMs ?? (target.id === "frontend" ? options.frontendTimeoutMs : target.id === "backend" ? options.backendTimeoutMs : undefined) ?? DEFAULT_TEST_TIMEOUT_MS;
+        const timeout = target.timeoutMs ?? options.timeoutMs ?? DEFAULT_TEST_TIMEOUT_MS;
         const result = await runSuite(cwd, target, timeout, params.filter, signal, environment, options.spawnFn);
         results.push(result);
         if (digest && result.exitCode === 0 && !result.timedOut) successful.set(digest, result);

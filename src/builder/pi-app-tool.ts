@@ -8,7 +8,7 @@ const parameters = Type.Object({ action: Type.Union([Type.Literal("start"), Type
 export function createAppTool(): BuilderTool<typeof parameters> {
   return {
     name: "app", label: "Manage development app",
-    description: "Start, inspect or stop the Web app using its declared project commands, environment, readiness path and isolated data. Install dependencies and build first. start waits for readiness and returns baseUrl for browser. stop only stops this call's owned app. Stop before rebuilding, then start to load changes.",
+    description: "Start, inspect or stop the application using its declared runtime adapter and isolated data. Install dependencies and build first. start waits for readiness and returns adapter metadata. Stop before rebuilding and when checks finish.",
     parameters, executionMode: "sequential",
     async execute(_id, { action }, signal) {
       const status = await requestApp(action, signal);

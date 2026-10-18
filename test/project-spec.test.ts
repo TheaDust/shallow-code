@@ -1,3 +1,4 @@
+import { webRuntimeConfig, webSettings } from "../src/adapters/web/project-spec.js";
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -12,7 +13,7 @@ import {
   npmExecutable,
   parseProjectSpec,
   resolveRuntimeContract,
-} from "../src/project-spec.js";
+} from "../src/adapters/web/project-spec.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 const FULL_SPEC = {
@@ -34,8 +35,8 @@ const FULL_SPEC = {
 test("Browser entry is independent of readiness and remains within the project origin", () => {
   const spec = parseProjectSpec({ start: { executable: "node" }, readyPath: "/status", browserPath: "/workspace#/home" });
   const contract = resolveRuntimeContract(spec, { port: 43001 });
-  assert.equal(contract.browserPath, "/workspace#/home");
-  assert.equal(contract.healthPath, "/status");
+  assert.equal(webRuntimeConfig(contract).browserPath, "/workspace#/home");
+  assert.equal(webRuntimeConfig(contract).healthPath, "/status");
   for (const browserPath of ["//other.example", "/\\other.example", "/bad\npath", "/unencoded space", "/../outside"]) {
     assert.throws(() => parseProjectSpec({ start: { executable: "node" }, browserPath }), /browserPath/);
   }
@@ -53,9 +54,9 @@ test("The shipped template declares the previous frontend/backend process contra
     { executable: "npm", args: ["run", "build"], cwd: "frontend" },
   ]);
   assert.deepEqual(linux.startCommand, { executable: "npm", args: ["run", "start"], cwd: "backend" });
-  assert.equal(linux.baseUrl, "http://127.0.0.1:3000");
-  assert.equal(linux.healthPath, DEFAULT_READY_PATH);
-  assert.deepEqual(linux.extraPorts, [3301]);
+  assert.equal(webRuntimeConfig(linux).baseUrl, "http://127.0.0.1:3000");
+  assert.equal(webRuntimeConfig(linux).healthPath, DEFAULT_READY_PATH);
+  assert.deepEqual(webRuntimeConfig(linux).extraPorts, [3301]);
   assert.equal(windows.startCommand.executable, "npm.cmd");
   // No reserved delivery port unless the run declares one.
   assert.equal("evaluationPort" in minimalWebContract({ port: 3000 }, "linux"), false);
@@ -63,8 +64,8 @@ test("The shipped template declares the previous frontend/backend process contra
 
 test("An explicit probe port drives the base URL without changing the declared commands", () => {
   const contract = minimalWebContract({ port: 3100 }, "linux");
-  assert.equal(contract.port, 3100);
-  assert.equal(contract.baseUrl, "http://127.0.0.1:3100");
+  assert.equal(webRuntimeConfig(contract).port, 3100);
+  assert.equal(webRuntimeConfig(contract).baseUrl, "http://127.0.0.1:3100");
   assert.deepEqual(contract.buildCommands, [
     { executable: "npm", args: ["run", "build"], cwd: "frontend" },
   ]);
@@ -83,9 +84,9 @@ test("The shipped template spec resolves to the previous fixed frontend/backend 
   assert.deepEqual(contract.startCommand, {
     executable: spec.start.executable, args: ["run", "start"], cwd: "backend",
   });
-  assert.equal(contract.healthPath, DEFAULT_READY_PATH);
-  assert.equal(contract.baseUrl, "http://127.0.0.1:3000");
-  assert.deepEqual(contract.extraPorts, [3301]);
+  assert.equal(webRuntimeConfig(contract).healthPath, DEFAULT_READY_PATH);
+  assert.equal(webRuntimeConfig(contract).baseUrl, "http://127.0.0.1:3000");
+  assert.deepEqual(webRuntimeConfig(contract).extraPorts, [3301]);
 });
 
 test("A project with any directory layout resolves its own commands and ports", () => {
@@ -95,16 +96,16 @@ test("A project with any directory layout resolves its own commands and ports", 
   assert.deepEqual(contract.installCommands, [
     { executable: "pnpm", args: ["install", "--frozen-lockfile"], cwd: "web" },
   ]);
-  assert.equal(contract.healthPath, "/__ready");
-  assert.equal(contract.baseUrl, "http://127.0.0.1:45123");
-  assert.deepEqual(contract.extraPorts, [3301, 8081]);
-  assert.equal(contract.evaluationPort, 3000);
+  assert.equal(webRuntimeConfig(contract).healthPath, "/__ready");
+  assert.equal(webRuntimeConfig(contract).baseUrl, "http://127.0.0.1:45123");
+  assert.deepEqual(webRuntimeConfig(contract).extraPorts, [3301, 8081]);
+  assert.equal(webRuntimeConfig(contract).evaluationPort, 3000);
 });
 
 test("Declared and run-time extra ports merge, and never include the probe or evaluation port", () => {
   const spec = parseProjectSpec({ start: { executable: "node" }, extraPorts: [3301, 4000] });
   const contract = resolveRuntimeContract(spec, { port: 45123, evaluationPort: 3000, extraPorts: [3301, 8081, 3000, 45123] });
-  assert.deepEqual(contract.extraPorts, [3301, 4000, 8081]);
+  assert.deepEqual(webRuntimeConfig(contract).extraPorts, [3301, 4000, 8081]);
   const withoutExtras = resolveRuntimeContract(parseProjectSpec({ start: { executable: "node" } }), {
     port: 45123, evaluationPort: 3000,
   });
@@ -170,9 +171,9 @@ test("A project run configuration is loaded and validated from disk", async () =
   await withTempDir("shallowcode-spec-", async (root) => {
     await writeFile(join(root, PROJECT_SPEC_FILENAME), JSON.stringify(FULL_SPEC), "utf8");
     const spec = await loadProjectSpec(root);
-    assert.equal(spec.readyPath, "/__ready");
+    assert.equal(webSettings(spec).readyPath, "/__ready");
     assert.deepEqual(spec.env, { NODE_ENV: "test" });
-    assert.deepEqual(spec.extraPorts, [3301, 8081]);
+    assert.deepEqual(webSettings(spec).extraPorts, [3301, 8081]);
   });
 });
 

@@ -7,9 +7,9 @@ import { test } from "node:test";
 import { Type } from "typebox";
 import { CheckerCleanupError, createCheckerAgent, createPiCheckerModel } from "../src/checker/agent.js";
 import { ArtifactStore } from "../src/checker/artifacts.js";
-import { checkerSourceClauses, type AcceptanceContract, type CheckerManifest, type CheckerRequirements, type SourceClause } from "../src/checker/evidence.js";
+import { type AcceptanceContract, type CheckerManifest, type CheckerRequirements, type SourceClause } from "../src/checker/evidence.js";
 import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../src/checker/model.js";
-import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef, TypedRef } from "../src/checker/port.js";
+import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef } from "../src/checker/port.js";
 import type { AtomicRequirement } from "../src/types.js";
 
 async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean } = {}) {

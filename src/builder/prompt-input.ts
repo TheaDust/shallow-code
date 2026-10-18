@@ -1,5 +1,5 @@
 import type {
-  PlatformContract,
+  ApplicationContract,
   ProductContext,
   RequirementAncestor,
   WorkPacket,
@@ -45,7 +45,7 @@ export interface BuilderShadowObservation {
 }
 
 export interface DeliveryFailureObservation {
-  stage: "install" | "build" | "readiness" | "browser" | "candidate" | "complete";
+  stage: "install" | "build" | "readiness" | "entry" | "candidate" | "complete";
   command?: string;
   expected: string;
   actual: string;
@@ -57,7 +57,7 @@ export type BuilderPromptInput =
       packet: WorkPacket;
       projectContext: BuilderProjectContext;
       outputDir: string;
-      platformContract: PlatformContract;
+      applicationContract: ApplicationContract;
     }
   | {
       mode: "repair" | "root_cause_repair";
@@ -65,11 +65,11 @@ export type BuilderPromptInput =
       projectContext: BuilderProjectContext;
       shadowObservation: BuilderShadowObservation;
       outputDir: string;
-      platformContract: PlatformContract;
+      applicationContract: ApplicationContract;
     }
   | {
       mode: "delivery_repair";
       deliveryFailure: DeliveryFailureObservation;
       outputDir: string;
-      platformContract: PlatformContract;
+      applicationContract: ApplicationContract;
     };

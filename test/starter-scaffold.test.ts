@@ -3,20 +3,16 @@ import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { installStarterScaffold } from "../src/starter-scaffold.js";
+import { installStarterScaffold } from "../src/adapters/web/scaffold.js";
 import { GitCliOps, runGit } from "../src/git-ops.js";
-import type { PlatformContract } from "../src/types.js";
+import type { ApplicationContract } from "../src/types.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-const contract = (extraPorts = [3301, 4312]): PlatformContract => ({
-  baseUrl: "http://127.0.0.1:43210",
-  port: 43210,
-  evaluationPort: 3000,
+const contract = (extraPorts = [3301, 4312]): ApplicationContract => ({
+  adapterId: "web", adapterConfig: { baseUrl: "http://127.0.0.1:43210", port: 43210, healthPath: "/health", browserPath: "/", extraPorts: extraPorts },
   installCommands: [],
   buildCommands: [],
   startCommand: { executable: "npm", args: ["run", "start"], cwd: "backend" },
-  healthPath: "/health",
-  extraPorts,
   buildTimeoutMs: 1_000,
   startTimeoutMs: 1_000,
 });

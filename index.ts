@@ -9,22 +9,16 @@ import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
 import { discoverRequirementsDir, parseInvocation, type CliOptions } from "./src/cli.js";
-import { FinalVerifier } from "./src/final-verifier.js";
-import { CandidateRuntime } from "./src/candidate-runtime.js";
 import { SnapshotStore } from "./src/snapshot-store.js";
 import { ArtifactStore, atomicWrite } from "./src/checker/artifacts.js";
 import type { ContentRef } from "./src/checker/port.js";
 import { createCheckerAgent, createPiCheckerModel, type CheckerModelUsage } from "./src/checker/agent.js";
-import { createWebExecutionAdapter } from "./src/checker/adapters/web/index.js";
 import type { CheckerRuntime } from "./src/checker-pipeline.js";
 import { GitCliOps } from "./src/git-ops.js";
 import { HumanRunFormatter } from "./src/human-log.js";
 import { BuildTui, buildResult } from "./src/terminal/build-tui.js";
 import { ProgressJournal, PROGRESS_DIR_NAME } from "./src/progress-journal.js";
-import { installStarterScaffold } from "./src/starter-scaffold.js";
-import { LlmProbePlanner } from "./src/judge/llm-probe-planner.js";
 import { LlmFeatureGrouper } from "./src/llm-feature-grouper.js";
-import { PlaywrightProbeRunner } from "./src/judge/playwright-probe-runner.js";
 import {
   runPipeline,
   type PipelineOptions,
@@ -33,24 +27,21 @@ import {
 import type { LogSink } from "./src/run-state.js";
 import { sanitizeDiagnosticText } from "./src/diagnostics.js";
 import { resolveModelRates, type ModelRates } from "./src/model-usage.js";
-import { PROBE_PLAN_JSON_SCHEMA } from "./src/judge/probe-schema.js";
 import {
   deriveModelTimeouts,
   parseBuilderContextWindow,
   parseCheckerConfig,
-  parseEvaluationPort,
   parseEvolutionAuditInherited,
-  parseFinalAuditGeneratePlan,
-  parseProbePortOverride,
   parseRunDirOverride,
-  pickFreePort,
   readEnvFile,
   resolveSseCaptureDir,
   readGatewayConfig,
   referenceImagesEnabled,
   type GatewayConfig,
 } from "./src/runtime-config.js";
-import { loadProjectSpec, minimalWebProjectSpec, npmExecutable, resolveRuntimeContract, type ProjectSpec } from "./src/project-spec.js";
+import { loadProjectSpec, type ProjectSpec } from "./src/project-spec.js";
+import { applications } from "./src/adapters/index.js";
+import { checkerAdapters } from "./src/adapters/checker.js";
 import { copyProjectWorkspace, hasProjectFiles, writeProjectPatch } from "./src/project-workspace.js";
 import { applyRun, digest, loadRunRecord, lockWorkspace, readResumeCheckpoint, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
 import { loadRequirementCatalog } from "./src/catalog.js";
@@ -62,15 +53,15 @@ export interface AgentExecutionContext {
   sourceProjectDir?: string;
   /** Builder 侧网关（SHALLOW_BUILDER_* 覆盖，缺省公共网关）。 */
   builderGateway: GatewayConfig;
-  /** Judge / Planner 侧网关（SHALLOW_JUDGE_* 覆盖，缺省公共网关）。 */
-  judgeGateway: GatewayConfig;
+  /** Checker / 功能分组侧网关（SHALLOW_CHECKER_* 覆盖，缺省公共网关）。 */
+  checkerGateway: GatewayConfig;
   /** 解析后的模型单价（USD / 百万 token）；null 表示只统计 token。 */
   builderModelCost: ModelRates | null;
-  judgeModelCost: ModelRates | null;
+  checkerModelCost: ModelRates | null;
   pipelineOptions: PipelineOptions;
   modelTimeouts: {
     builderTimeoutMs: number;
-    plannerTimeoutMs: number;
+    checkerTimeoutMs: number;
   };
   /** Mainline Pi context ceiling (`SHALLOW_BUILDER_CONTEXT_WINDOW`). */
   builderContextWindow: number;
@@ -121,13 +112,13 @@ export async function main(
   }
   const checker = prior?.checker ?? requestedChecker;
   const builderGateway = readGatewayConfig(mergedEnv, "SHALLOW_BUILDER");
-  const judgeGateway = readGatewayConfig(mergedEnv, "SHALLOW_JUDGE");
+  const checkerGateway = readGatewayConfig(mergedEnv, "SHALLOW_CHECKER");
   // 单价来自内置模型目录，可被 MODEL_COST_* / SHALLOW_BUILDER_COST_* /
-  // SHALLOW_JUDGE_COST_* 按字段覆盖；解析失败时只统计 token。
+  // SHALLOW_CHECKER_COST_* 按字段覆盖；解析失败时只统计 token。
   const builderModelCost = resolveModelRates(builderGateway.baseUrl, builderGateway.model,
     { component: "SHALLOW_BUILDER", env: mergedEnv });
-  const judgeModelCost = resolveModelRates(judgeGateway.baseUrl, judgeGateway.model,
-    { component: "SHALLOW_JUDGE", env: mergedEnv });
+  const checkerModelCost = resolveModelRates(checkerGateway.baseUrl, checkerGateway.model,
+    { component: "SHALLOW_CHECKER", env: mergedEnv });
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
   try {
     await access(requirementsFile);
@@ -147,15 +138,7 @@ export async function main(
     throw new Error("Resume inputs changed (requirements, project contract, prompts or engine); start a new run for the updated inputs");
   }
   const checkpoint = prior && invocation.command === "resume" ? await readResumeCheckpoint(invocation.runDirectory, prior) : undefined;
-  const evaluationPort = parseEvaluationPort(mergedEnv);
-  const declaredExtraPorts = spec.extraPorts ?? [];
-  const probePortOverride = parseProbePortOverride(mergedEnv);
-  if (probePortOverride !== null && (probePortOverride === evaluationPort || declaredExtraPorts.includes(probePortOverride))) {
-    throw new Error(
-      `SHALLOW_PROBE_PORT must differ from the evaluation port ${evaluationPort} and the project extra ports ${declaredExtraPorts.join(", ") || "(none)"}`,
-    );
-  }
-  const probePort = probePortOverride ?? (await pickFreePort([...(evaluationPort === null ? [] : [evaluationPort]), ...declaredExtraPorts]));
+  const applicationContract = await applications.get(spec.adapter ?? "web").configure(spec, mergedEnv);
   const runDir = parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs");
   const sseCaptureDir = resolveSseCaptureDir(mergedEnv, join(runDir, runId, "sse-capture"));
   const referenceImages = referenceImagesEnabled(mergedEnv);
@@ -172,7 +155,7 @@ export async function main(
   const inheritedProject = prior ? prior.sourceProjectDir !== undefined || prior.stageStartingPoint === "inherited_application" : cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
   const workingDirectory = inheritedProject && !prior
     ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), spec.generatedPaths,
-      checker.mode === "legacy" ? [] : spec.dataPaths)
+      spec.dataPaths)
     : cli.outputDir;
   const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
   const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
@@ -186,20 +169,16 @@ export async function main(
     outputDir: workingDirectory,
     ledgerFile: join(runDir, runId, "run-ledger.jsonl"),
     totalBudgetMs: cli.budgetMs,
-    platformContract: resolveRuntimeContract(spec, {
-      port: probePort,
-      ...(evaluationPort === null ? {} : { evaluationPort }),
-      ...(declaredExtraPorts.length > 0 ? { extraPorts: declaredExtraPorts } : {}),
-    }),
+    applicationContract,
     progressDir: join(workingDirectory, PROGRESS_DIR_NAME),
     ...(inheritedProject ? { historicalProgressDir: join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
     auditInheritedRequirements: prior?.auditInheritedRequirements ?? parseEvolutionAuditInherited(mergedEnv),
-    generateFinalAuditPlans: prior?.generateFinalAuditPlans ?? parseFinalAuditGeneratePlan(mergedEnv),
     ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
   };
   const runRecord: RunRecord = {
-    version: checker.mode === "legacy" ? 1 : 2, checker,
+    version: 3, checker,
     checkerRunId: prior?.checkerRunId ?? runId,
+    ...(prior?.bindingDigest ? { bindingDigest: prior.bindingDigest } : {}),
     requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
     outputDir: workingDirectory,
     ...(prior?.sourceProjectDir ? { sourceProjectDir: prior.sourceProjectDir } : inheritedProject && !prior ? { sourceProjectDir: cli.outputDir } : {}),
@@ -208,32 +187,27 @@ export async function main(
     historicalRequirements,
     ...(prior ? { inputBaseline: prior.inputBaseline, stageStartingPoint: prior.stageStartingPoint, resumedFrom: invocation.command === "resume" ? invocation.runDirectory : undefined } : {}),
     auditInheritedRequirements: pipelineOptions.auditInheritedRequirements ?? false,
-    generateFinalAuditPlans: pipelineOptions.generateFinalAuditPlans ?? false,
   };
   await saveRunRecord(runDirectory, runRecord);
   if (invocation.command === "resume") {
-    try { await cp(join(invocation.runDirectory, "plans"), join(runDirectory, "plans"), { recursive: true }); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (checker.mode !== "legacy") {
-      await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
-        filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
-    }
+    await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
+      filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
   }
   process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
   const summary = await execute({
     runRecord, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
     ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
     builderGateway,
-    judgeGateway,
+    checkerGateway,
     builderModelCost,
-    judgeModelCost,
+    checkerModelCost,
     pipelineOptions,
     modelTimeouts: deriveModelTimeouts(cli.budgetMs),
     builderContextWindow: parseBuilderContextWindow(mergedEnv),
     sseCaptureDir,
     referenceImages,
   }).catch((error: unknown) => {
-    throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, judgeGateway)));
+    throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, checkerGateway)));
   });
   const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
   await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
@@ -248,8 +222,8 @@ export async function main(
 
 async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
   const promptDir = new URL("./prompts/", import.meta.url);
-  const hash = createHash("sha256").update(JSON.stringify(resolveRuntimeContract(spec, { port: 1 })))
-    .update(JSON.stringify(PROBE_PLAN_JSON_SCHEMA)).update(await readFile(new URL("./package-lock.json", import.meta.url)));
+  const hash = createHash("sha256").update(JSON.stringify(applications.get(spec.adapter ?? "web").parseSpec(spec)))
+    .update(await readFile(new URL("./package-lock.json", import.meta.url)));
   for (const name of (await readdir(promptDir, { recursive: true })).filter(name => name.endsWith(".md")).sort()) {
     const path = name.replaceAll("\\", "/");
     hash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
@@ -264,11 +238,14 @@ async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
  */
 async function loadProjectSpecOrDefault(outputDir: string): Promise<ProjectSpec> {
   try {
-    return await loadProjectSpec(outputDir);
+    return await loadProjectSpec(outputDir, undefined, (raw, origin) => {
+      const id = (raw as { adapter?: string })?.adapter ?? "web";
+      return applications.get(id).parseSpec(raw, origin);
+    });
   } catch (error) {
     if (!(error instanceof Error) || !error.message.startsWith("Missing project run configuration:")) throw error;
     if (await hasProjectFiles(outputDir)) throw error;
-    return minimalWebProjectSpec(npmExecutable());
+    return applications.get("web").defaultSpec();
   }
 }
 
@@ -294,16 +271,13 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, judgeGateway, builderModelCost, judgeModelCost, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, checkerGateway, builderModelCost, checkerModelCost, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
-  process.stderr.write(`[ShallowCode] 项目声明的额外端口：${pipelineOptions.platformContract.extraPorts?.join(", ") || "无"}\n`);
   if (sseCaptureDir) process.stderr.write(`[ShallowCode] SSE 抓包已启用（仅诊断用途）：${sseCaptureDir}\n`);
   process.stderr.write(`[ShallowCode] 参考图片：${referenceImages ? "已开启（首次附带前预探测模型视觉能力）" : "已关闭"}\n`);
-  process.stderr.write(`[ShallowCode] 最终验收补生成 plan：${pipelineOptions.generateFinalAuditPlans ? "已开启" : "已关闭（仅复用已有 plan）"}\n`);
-  const candidate = new CandidateRuntime(pipelineOptions.outputDir,
-    join(dirname(runLogFile), "candidate"), pipelineOptions.platformContract);
+  const applicationAdapter = applications.get(pipelineOptions.applicationContract.adapterId);
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
   let releaseWorkspace: (() => Promise<void>) | undefined;
   let tui: BuildTui | undefined;
@@ -311,6 +285,7 @@ async function executeProduction(
     const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined, {
       ...(builderModelCost ? { modelCost: builderModelCost } : {}),
       heartbeat: !interactive,
+      applications,
       onProgress: progress => { tui?.view.liveUsage(progress); },
     }), {
       timeoutMs: modelTimeouts.builderTimeoutMs,
@@ -320,16 +295,8 @@ async function executeProduction(
       visionProbe: new VisionCapability(builderGateway),
       ...(builderModelCost ? { modelCost: builderModelCost } : {}),
     });
-    const planner = new LlmProbePlanner({
-      ...judgeGateway,
-      browserPath: pipelineOptions.platformContract.browserPath,
-      timeoutMs: modelTimeouts.plannerTimeoutMs,
-      ...(judgeModelCost ? { cost: judgeModelCost } : {}),
-    });
-    const runner = new PlaywrightProbeRunner();
-    const lifecycle = candidate;
     const git = await GitCliOps.open(pipelineOptions.outputDir, {
-      allowExisting: sourceProjectDir !== undefined || context.resumeCheckpointSha !== undefined, generatedPaths: pipelineOptions.platformContract.generatedPaths,
+      allowExisting: sourceProjectDir !== undefined || context.resumeCheckpointSha !== undefined, generatedPaths: pipelineOptions.applicationContract.generatedPaths,
     });
     releaseWorkspace = await lockWorkspace(pipelineOptions.outputDir);
     if (context.resumeCheckpointSha) {
@@ -349,9 +316,9 @@ async function executeProduction(
     }
     // Git owns rollback from this point onward. Install the generic shell before
     // runPipeline captures its initial baseline, and never touch an existing app.
-    const starterScaffold = await installStarterScaffold(
+    const starterScaffold = await applicationAdapter.installScaffold(
       pipelineOptions.outputDir,
-      pipelineOptions.platformContract,
+      pipelineOptions.applicationContract,
     );
     const stageStartingPoint = context.resumeCheckpointSha && context.runRecord.stageStartingPoint
       ? context.runRecord.stageStartingPoint
@@ -363,7 +330,6 @@ async function executeProduction(
     context.runRecord.stageStartingPoint = context.resumeCheckpointSha ? context.runRecord.stageStartingPoint : stageStartingPoint;
     await saveRunRecord(dirname(runLogFile), context.runRecord);
     process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
-    const finalVerifier = new FinalVerifier(runner, lifecycle, candidate, context.runRecord.projectSpec);
     const promptDir = new URL("./prompts/", import.meta.url);
     const promptHash = createHash("sha256");
     for (const name of (await readdir(promptDir, { recursive: true })).filter((name) => name.endsWith(".md")).sort()) {
@@ -373,15 +339,15 @@ async function executeProduction(
     if (interactive) {
       tui = new BuildTui({
         requirementIds: Object.keys(context.runRecord.requirementDigests!),
-        models: { builder: builderGateway.model, judge: judgeGateway.model },
+        models: { builder: builderGateway.model, checker: checkerGateway.model },
         onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
       });
       tui.start();
     }
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir), process.stderr,
       tui ? (rawLine, line) => tui!.record(rawLine, line) : undefined);
-    let checkerRuntime: CheckerRuntime | undefined;
-    if (pipelineOptions.checker?.mode !== "legacy" && pipelineOptions.checker) {
+    let checkerRuntime!: CheckerRuntime;
+    {
       const directory = join(dirname(runLogFile), "checker");
       const artifacts = new ArtifactStore(directory, context.runRecord.checkerRunId!);
       const snapshots = new SnapshotStore(join(directory, "snapshots"));
@@ -391,53 +357,44 @@ async function executeProduction(
         if ((error as NodeJS.ErrnoException).code !== "ENOENT" || context.runRecord.resumedFrom) throw error;
         initialDataSnapshot = (await snapshots.seal({ sourceDirectory: pipelineOptions.outputDir,
           sourceSha: await git.captureAccepted("shallow: Checker input baseline"), packetId: "input-baseline",
-          generatedPaths: pipelineOptions.platformContract.generatedPaths, dataPaths: pipelineOptions.platformContract.dataPaths })).ref;
+          generatedPaths: pipelineOptions.applicationContract.generatedPaths, dataPaths: pipelineOptions.applicationContract.dataPaths })).ref;
         await atomicWrite(join(directory, "baseline.json"), JSON.stringify(initialDataSnapshot) + "\n");
       }
-      const web = await createWebExecutionAdapter({ artifacts, snapshots, spec: context.runRecord.projectSpec,
+      const execution = await checkerAdapters.get(pipelineOptions.applicationContract.adapterId)({ artifacts, snapshots, spec: context.runRecord.projectSpec,
         workspace: join(directory, "workers"), initialDataSnapshot,
-        reservedPorts: [pipelineOptions.platformContract.port, ...(pipelineOptions.platformContract.evaluationPort ? [pipelineOptions.platformContract.evaluationPort] : [])] });
+        applicationContract: pipelineOptions.applicationContract });
+      if (context.runRecord.bindingDigest && context.runRecord.bindingDigest !== execution.adapter.binding.digest) throw new Error("Checker execution binding changed; start a new run");
+      context.runRecord.bindingDigest = execution.adapter.binding.digest;
+      await saveRunRecord(dirname(runLogFile), context.runRecord);
       let recordUsage: (item: CheckerModelUsage) => void = () => {};
-      const model = createPiCheckerModel({ gateway: judgeGateway, sessionDir: join(directory, "sessions"),
-        ...(judgeModelCost ? { modelCost: judgeModelCost } : {}), onUsage: item => recordUsage(item) });
-      checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: web.adapter, model }),
-        binding: web.adapter.binding, initialStates: web.declaration.initialStates, resourceKeys: web.declaration.resourceKeys,
+      const model = createPiCheckerModel({ gateway: checkerGateway, sessionDir: join(directory, "sessions"),
+        ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item) });
+      checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model }),
+        binding: execution.adapter.binding, initialStates: execution.declaration.initialStates, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },
         async verifyDelivery(job, signal) {
-          try { await web.adapter.verifyDelivery(job, signal); return { ok: true, stage: "complete", message: "Frozen candidate satisfies the Web execution binding and delivery checks" }; }
+          try { await execution.adapter.verifyDelivery(job, signal); return { ok: true, stage: "complete", message: "Frozen candidate satisfies its execution binding and delivery checks" }; }
           catch (error) { return { ok: false, stage: "readiness", message: error instanceof Error ? error.message : String(error) }; }
         } };
     }
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
       checker: checkerRuntime,
-      grouper: new LlmFeatureGrouper({ ...judgeGateway, timeoutMs: Infinity, ...(judgeModelCost ? { cost: judgeModelCost } : {}) }),
+      grouper: new LlmFeatureGrouper({ ...checkerGateway, timeoutMs: Infinity, ...(checkerModelCost ? { cost: checkerModelCost } : {}) }),
       builder,
-      planner,
-      runner,
       git,
-      appLifecycle: lifecycle,
-      candidate,
       clock: { nowMs: () => Date.now() },
-      finalVerifier,
       logSink,
-      diagnosticSecrets: gatewaySecrets(builderGateway, judgeGateway),
-      runMetadata: { model: builderGateway.model, judgeModel: judgeGateway.model,
+      diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway),
+      runMetadata: { model: builderGateway.model, checkerModel: checkerGateway.model,
         builderTimeoutMs: modelTimeouts.builderTimeoutMs,
         builderContextWindow,
         starterScaffold,
         promptSha256: promptHash.digest("hex"),
-        probeSchemaSha256: createHash("sha256").update(JSON.stringify(PROBE_PLAN_JSON_SCHEMA)).digest("hex"),
       },
     });
     return summary;
   } finally {
     tui?.stop();
-    try {
-      await candidate.dispose();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[ShallowCode] 候选工作区清理失败：${sanitizeDiagnosticText(message, gatewaySecrets(builderGateway, judgeGateway))}\n`);
-    }
     await releaseWorkspace?.();
   }
 }

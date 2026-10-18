@@ -3,7 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { test } from "node:test";
 
-import { APPROVED_CAPABILITIES } from "../src/builder/capability-catalog.js";
+import { APPROVED_CAPABILITIES } from "../src/adapters/web/capability-catalog.js";
 
 const root = process.cwd();
 const preloadedRoots = [

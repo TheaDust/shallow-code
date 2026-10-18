@@ -4,16 +4,16 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { GitCliOps, runGit } from "../src/git-ops.js";
 import { copyProjectWorkspace, writeProjectPatch } from "../src/project-workspace.js";
-import { applyRun, lockWorkspace, readResumeCheckpoint, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "../src/run-record.js";
+import { applyRun, loadRunRecord, lockWorkspace, readResumeCheckpoint, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "../src/run-record.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 import { readHistoricalRequirementIds } from "../src/evolution.js";
 import { ModelUsageTotals } from "../src/model-usage.js";
 
-test("Run reports persist separate Builder, Judge and Checker usage with partial cost clearly marked", async () => {
+test("Run reports persist separate Builder and Checker usage with partial cost clearly marked", async () => {
   await withTempDir("shallow-usage-report-", async run => {
     const usage = new ModelUsageTotals();
     usage.add("builder", { input: 100, output: 20, cacheRead: 10, cacheWrite: 0, cost: 0.001 });
-    usage.add("judge", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
+    usage.add("checker", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
     usage.add("checker", { input: 60, output: 4, cacheRead: 0, cacheWrite: 0 });
     await writeRunReport(run, { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [], modelUsage: usage.summary() });
     const result = JSON.parse(await readFile(join(run, "result.json"), "utf8"));
@@ -21,8 +21,7 @@ test("Run reports persist separate Builder, Judge and Checker usage with partial
     const report = await readFile(join(run, "report.md"), "utf8");
     assert.match(report, /总计.*tokens 249.*已知费用.*部分未计价/);
     assert.match(report, /Builder.*tokens 130.*费用 \$0\.001/);
-    assert.match(report, /Judge.*tokens 55.*费用未知/);
-    assert.match(report, /Checker.*tokens 64.*费用未知/);
+    assert.match(report, /Checker.*tokens 119.*费用未知/);
   });
 });
 
@@ -49,10 +48,10 @@ async function withOwnedRun(callback: (f: { source: string; work: string; run: s
     await writeFile(join(work, "new.txt"), "new\n");
     await (await import("node:fs/promises")).unlink(join(work, "deleted.txt"));
     const sha = await git.captureAccepted("checkpoint");
-    const record: RunRecord = { version: 1, requirementsDir: source, requirementsDigest: "requirements",
+    const record: RunRecord = { version: 3, requirementsDir: source, requirementsDigest: "requirements",
       contractDigest: "contract", projectSpec: { start: { executable: "node", args: ["app.js"] } },
       outputDir: work, sourceProjectDir: source, inputBaseline: baseline, inputFiles,
-      auditInheritedRequirements: false, generateFinalAuditPlans: false };
+      auditInheritedRequirements: false, checker: { mode: "active", concurrency: 2 }, checkerRunId: "fixture" };
     await saveRunRecord(run, record);
     const patch = await writeProjectPatch(work, baseline, run);
     await writeRunReport(run, { status: "delivered", acceptedSha: sha, verifiedRequirementIds: ["A"], blockedRequirementIds: [] }, patch);
@@ -131,16 +130,15 @@ test("Apply treats a project nested inside another Git repository as its own pat
   }, false);
 });
 
-test("Resume recovers accepted implementations from a torn final ledger append and ignores verification as provenance", async () => {
+test("Resume reads the committed Checker checkpoint rather than diagnostic ledger events", async () => {
   await withOwnedRun(async f => {
-    await writeFile(join(f.run, "run-ledger.jsonl"), [
-      JSON.stringify({ type: "checkpoint_saved", acceptedSha: f.sha, detail: { requirementIds: ["A"] } }),
-      JSON.stringify({ type: "audit_result", acceptedSha: f.sha, detail: { requirementIds: ["B"], status: "verified" } }),
-      '{"type":',
-    ].join("\n"));
+    const { CheckerCheckpoints } = await import("../src/checker/checkpoints.js");
+    const file = join(f.run, "checker", "controller.json");
+    await mkdir(dirname(file), { recursive: true });
+    const checkpoints = await CheckerCheckpoints.open(file, "fixture", f.sha);
+    await checkpoints.produced({ snapshot: { id: "snapshot", digest: "digest" }, sourceSha: f.sha, implementedRequirementIds: ["A"] });
+    await writeFile(join(f.run, "run-ledger.jsonl"), 'broken diagnostic append');
     assert.deepEqual(await readResumeCheckpoint(f.run, f.record), { sha: f.sha, requirementIds: ["A"] });
-    await writeFile(join(f.run, "run-ledger.jsonl"), 'broken\n' + JSON.stringify({ type: "checkpoint_saved" }));
-    await assert.rejects(readResumeCheckpoint(f.run, f.record), /corrupted/);
   });
 });
 
@@ -150,5 +148,14 @@ test("A live workspace owner prevents concurrent resume", async () => {
     try { await assert.rejects(lockWorkspace(f.work), /in use/); }
     finally { await release(); }
     await (await lockWorkspace(f.work))();
+  });
+});
+
+test("Old run formats are rejected before attempting a workspace checkout", async () => {
+  await withTempDir("old-run-format-", async run => {
+    for (const version of [1, 2]) {
+      await writeFile(join(run, "run.json"), JSON.stringify({ version }));
+      await assert.rejects(loadRunRecord(run), /unsupported; start a new Checker run/);
+    }
   });
 });

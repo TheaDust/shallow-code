@@ -4,8 +4,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { createTestTool } from "../src/builder/pi-test-tool.js";
-import { resolveRuntimeContract } from "../src/project-spec.js";
+import { createTestTool as createDeclaredTestTool, type TestToolOptions } from "../src/builder/pi-test-tool.js";
+import { resolveRuntimeContract, minimalWebContract } from "../src/adapters/web/project-spec.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 interface SpawnCall { file: string; args: string[]; cwd: string }
@@ -284,7 +284,7 @@ test("run_tests kills a suite that exceeds its timeout", async () => {
     await makeApp(root);
     let childRef: FakeChild | undefined;
     const { spawnFn } = fakeSpawn(child => { childRef = child; /* never exits on its own; the timeout must kill it */ });
-    const tool = createTestTool(root, { spawnFn, frontendTimeoutMs: 20 });
+    const tool = createTestTool(root, { spawnFn, timeoutMs: 20 });
     const result = await execute(tool, { target: "frontend" });
     assert.ok(childRef!.killed, "suite process was not killed on timeout");
     const text = (result.content[0] as { text: string }).text;
@@ -301,3 +301,7 @@ test("run_tests points at installation when the frontend Vitest entry is missing
     assert.equal(calls.length, 0);
   });
 });
+
+function createTestTool(directory: string, options: TestToolOptions = {}) {
+  return createDeclaredTestTool(directory, { contract: minimalWebContract({ port: 43210 }), ...options });
+}

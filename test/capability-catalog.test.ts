@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { installCapability, listCapabilities } from "../src/builder/capability-catalog.js";
+import { installCapability, listCapabilities } from "../src/adapters/web/capability-catalog.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 test("approved capability installs task-neutral UI files without overwriting", async () => {

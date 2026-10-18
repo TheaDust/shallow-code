@@ -1,11 +1,13 @@
+import { applications } from "../src/adapters/index.js";
+import { webRuntimeConfig } from "../src/adapters/web/project-spec.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
 import { mkdir, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { PiWorkerClient } from "../src/builder/pi-worker-client.js";
-import { pickFreePort } from "../src/runtime-config.js";
-import { minimalWebContract } from "../src/project-spec.js";
+import { pickFreePort } from "../src/adapters/web/ports.js";
+import { minimalWebContract } from "../src/adapters/web/project-spec.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 function completion(res: ServerResponse, tool?: { name: string; arguments: Record<string, unknown> }, finish = "stop") {
@@ -27,7 +29,7 @@ async function fixture(handler: (body: Record<string, unknown>, response: Server
       handler(JSON.parse(raw), res, ++count);
     });
     await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
-    const client = new PiWorkerClient({ apiKey: "test-key", model: "test/model", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` }, join(root, "sessions"));
+    const client = new PiWorkerClient({ apiKey: "test-key", model: "test/model", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` }, join(root, "sessions"), undefined, { applications });
     try { await check(client, app, root); }
     finally { await client.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
   });
@@ -45,17 +47,17 @@ for (const timeout of [false, true]) {
       await writeFile(join(app, "server.cjs"), `
 require('node:http').createServer((req,res)=>res.end(JSON.stringify({data:process.env.SHALLOW_DATA_DIR,extra:process.env.SHALLOW_EXTRA_PORTS}))).listen(Number(process.env.PORT),'127.0.0.1');
 `);
-      const platformContract = minimalWebContract({ port: await pickFreePort([3000, 3301]) });
-      platformContract.startCommand = { executable: process.execPath, args: ["server.cjs"], cwd: "output" };
-      const running = client.run({ ...prompt, timeoutMs: 8_000, outputDir: app, platformContract });
+      const applicationContract = minimalWebContract({ port: await pickFreePort([3000, 3301]) });
+      applicationContract.startCommand = { executable: process.execPath, args: ["server.cjs"], cwd: "output" };
+      const running = client.run({ ...prompt, timeoutMs: 8_000, outputDir: app, applicationContract });
       const response = await appReady;
-      const live = await fetch(platformContract.baseUrl).then(r => r.json()) as { data: string; extra: string };
+      const live = await fetch(webRuntimeConfig(applicationContract).baseUrl).then(r => r.json()) as { data: string; extra: string };
       assert.ok(live.data);
       assert.equal(live.extra, "0");
       if (!timeout) completion(response);
       const result = await running;
       assert.equal(result.outcome, timeout ? "timed_out" : "completed", result.summary);
-      await assert.rejects(fetch(platformContract.baseUrl, { signal: AbortSignal.timeout(1000) }));
+      await assert.rejects(fetch(webRuntimeConfig(applicationContract).baseUrl, { signal: AbortSignal.timeout(1000) }));
       await assert.rejects(readdir(live.data), { code: "ENOENT" });
     });
   });

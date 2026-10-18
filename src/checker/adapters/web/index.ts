@@ -3,15 +3,15 @@ import { cp, lstat, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { chromium, type Browser } from "@playwright/test";
-import { CandidateRuntime } from "../../../candidate-runtime.js";
-import { CandidatePreparationError, verifyDeclaredPorts } from "../../../final-verifier.js";
-import { loadProjectSpec, parseProjectSpec, resolveRuntimeContract, type ProjectSpec } from "../../../project-spec.js";
-import { pickFreePort } from "../../../runtime-config.js";
-import type { AppLifecycle } from "../../../pipeline.js";
+import { CandidateRuntime } from "../../../application/candidate-runtime.js";
+import { CandidatePreparationError, type ApplicationLifecycle } from "../../../application/port.js";
+import { WebAppLifecycle, verifyDeclaredPorts } from "../../../adapters/web/runtime.js";
+import { loadProjectSpec, parseProjectSpec, resolveRuntimeContract, webRuntimeConfig, webSettings, type ProjectSpec } from "../../../adapters/web/project-spec.js";
+import { pickFreePort } from "../../../adapters/web/ports.js";
 import type { SnapshotStore } from "../../../snapshot-store.js";
 import { ArtifactStore, canonicalJson, contentDigest, hashBytes, sameRef } from "../../artifacts.js";
 import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ExecutionSession, ProgramRef, TypedRef } from "../../port.js";
-import { WebProgramRuntime, type WebCheckpoint, type WebExpectation, type WebRuntimeEvent } from "./program-runtime.js";
+import { WebProgramRuntime, type WebCheckpoint, type WebExpectation } from "./program-runtime.js";
 
 export const WEB_PROGRAM_FORMAT = "shallow.web.javascript@1";
 export interface WebAdapterOptions {
@@ -22,7 +22,7 @@ export interface WebAdapterOptions {
   initialDataSnapshot?: ContentRef;
   reservedPorts?: number[];
   promptFragments?: ContentRef[];
-  lifecycle?: AppLifecycle;
+  lifecycle?: ApplicationLifecycle;
   launchBrowser?: () => Promise<Browser>;
 }
 interface ProgramDescriptor { source: ContentRef; initialState: TypedRef; clauses: Array<{ clauseId: string; checkpointId: string }> }
@@ -52,7 +52,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const spec = parseProjectSpec(options.spec);
   const store = options.artifacts;
   const require = createRequire(import.meta.url);
-  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./sandbox-worker.mjs", "../../../candidate-runtime.ts", "../../../project-spec.ts", "../../../final-verifier.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../runtime-config.ts", "../../../snapshot-store.ts", "../../artifacts.ts", "../../agent.ts", "../../evidence.ts", "../../model.ts"];
+  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../artifacts.ts", "../../agent.ts", "../../evidence.ts", "../../model.ts"];
   const release = hashBytes(Buffer.concat(await Promise.all(releaseFiles.map((path) => readFile(new URL(path, import.meta.url))))));
   const executor = { id: "shallow.web.quickjs", version: "1", digest: release };
   const objectSchema = await store.putJson(OBJECT);
@@ -63,12 +63,12 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const inspectSchema = await store.putJson({ type: "object", properties: { actor: { type: "string" } }, additionalProperties: false });
   const resetSchema = await store.putJson({ type: "object", additionalProperties: false });
   const runSchema = await store.putJson(RUN_SCHEMA);
-  const promptFragments = [await store.putBytes(await readFile(new URL("../../../../prompts/checker/web/browser.md", import.meta.url))), ...(options.promptFragments ?? [])];
+  const promptFragments = [await store.putBytes(`Web public entry: ${webSettings(spec).browserPath}`), await store.putBytes(await readFile(new URL("../../../../prompts/checker/web/browser.md", import.meta.url))), ...(options.promptFragments ?? [])];
   const genericPrompts = await Promise.all(["exploration", "review", "tools"].map((name) => readFile(new URL(`../../../../prompts/checker/${name}.md`, import.meta.url), "utf8")));
   const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-case", dataDirectory: "allocated-per-case" }, objectSchema);
   const declaration: AdapterDeclaration = {
     schemaVersion: 1, id: "shallow.web", version: "1", implementation: executor, execution, initialStates,
-    resourceKeys: [...new Set(spec.extraPorts ?? [])].sort((a, b) => a - b).map((port) => `local-port:${port}`),
+    resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
       { id: "run", version: "1", description: "Run bounded JavaScript using controlled browser and contract assertions.", inputSchema: runSchema, outputSchema: objectSchema },
@@ -156,32 +156,34 @@ class WebSession implements ExecutionSession {
     }
     const port = await prepareOneAtATime(async () => {
       signal.throwIfAborted();
-      const allocated = await pickFreePort([...leasedPorts, ...(this.options.spec.extraPorts ?? []), ...(this.options.reservedPorts ?? [])]);
+      const allocated = await pickFreePort([...leasedPorts, ...(webSettings(this.options.spec).extraPorts), ...(this.options.reservedPorts ?? [])]);
       leasedPorts.add(allocated);
       return allocated;
     });
     this.leasedPort = port;
     const contract = resolveRuntimeContract(this.options.spec, { port });
+    const config = webRuntimeConfig(contract);
     this.runtimeContract = contract;
-    this.execution = await this.options.artifacts.putTypedJson({ caseId: randomUUID(), port, baseUrl: contract.baseUrl, initialState: this.job.initialState }, this.schemas.environment);
-    this.candidate = new CandidateRuntime(source, join(root, "candidate"), contract, this.options.lifecycle, undefined, source);
+    this.execution = await this.options.artifacts.putTypedJson({ caseId: randomUUID(), port, baseUrl: config.baseUrl, initialState: this.job.initialState }, this.schemas.environment);
+    this.candidate = new CandidateRuntime(source, join(root, "candidate"), contract, this.options.lifecycle ?? new WebAppLifecycle(), undefined, source);
     const onAbort = () => { void this.candidate?.close().catch(() => {}); void this.browser?.close().catch(() => {}); };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
       const app = await prepareOneAtATime(async () => { signal.throwIfAborted(); return this.candidate!.start(source, contract); });
       this.app = app;
       signal.throwIfAborted();
-      this.baseUrl = app.baseUrl;
+      const baseUrl = (app.metadata as { baseUrl: string }).baseUrl;
+      this.baseUrl = baseUrl;
       this.browser = await (this.options.launchBrowser?.() ?? chromium.launch({ headless: true }));
       const context = await this.browser.newContext({ serviceWorkers: "block" });
       try {
         const page = await context.newPage();
-        const response = await page.goto(new URL(contract.browserPath ?? "/", app.baseUrl).href, { waitUntil: "domcontentloaded", timeout: Math.min(10_000, this.remaining()) });
+        const response = await page.goto(new URL(config.browserPath ?? "/", baseUrl).href, { waitUntil: "domcontentloaded", timeout: Math.min(10_000, this.remaining()) });
         if (!response?.ok() || !response.headers()["content-type"]?.toLowerCase().includes("text/html")) throw new Error("Web browser readiness must return successful HTML");
       } finally { await context.close(); }
       await app.assertUnchanged?.();
       signal.throwIfAborted();
-      this.execution = await this.options.artifacts.putTypedJson({ caseId: randomUUID(), port, baseUrl: app.baseUrl, initialState: this.job.initialState, candidate: app.candidate ?? null }, this.schemas.environment);
+      this.execution = await this.options.artifacts.putTypedJson({ caseId: randomUUID(), port, baseUrl: baseUrl, initialState: this.job.initialState, candidate: app.candidate ?? null }, this.schemas.environment);
       const readiness = await this.record("readiness", { result: "ready", http: true, browser: true }, { readiness: { result: "ready" } });
       this.readinessEvidence.push(readiness);
       this.runtime = this.newRuntime();

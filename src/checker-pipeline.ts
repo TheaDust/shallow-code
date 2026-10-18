@@ -7,7 +7,7 @@ import { evolutionImplementationCatalog, readHistoricalRequirementIds, selectEvo
 import { ExecutionFault } from "./execution-fault.js";
 import { GatewayRequestError } from "./gateway-failure.js";
 import { GatewayRecovery } from "./gateway-recovery.js";
-import type { FinalVerificationReport } from "./final-verifier.js";
+import type { DeliveryReport } from "./application/port.js";
 import { parseFeatureGrouping } from "./feature-grouper.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { ModelUsageTotals } from "./model-usage.js";
@@ -33,7 +33,7 @@ export interface CheckerRuntime {
   initialStates: TypedRef[];
   resourceKeys: string[];
   setUsageRecorder?(recorder: (usage: CheckerModelUsage) => void): void;
-  verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<FinalVerificationReport>;
+  verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<DeliveryReport>;
 }
 type ScopedOutcome = CheckOutcome & { initialState?: TypedRef };
 
@@ -71,12 +71,12 @@ export class CheckerCoordinator {
     const parent = this.checkpoints.snapshot.producedHead;
     const sourceSha = await this.deps.git.captureAccepted(`shallow: produced ${packet.id}`);
     const sealed = await this.runtime.snapshots.seal({ sourceDirectory: this.options.outputDir, sourceSha, packetId: packet.id,
-      parent: parent?.snapshot, generatedPaths: this.options.platformContract.generatedPaths, dataPaths: this.options.platformContract.dataPaths });
+      parent: parent?.snapshot, generatedPaths: this.options.applicationContract.generatedPaths, dataPaths: this.options.applicationContract.dataPaths });
     const head = await this.checkpoints.produced({ snapshot: sealed.ref, sourceSha,
       ...(parent ? { parentSnapshotId: parent.snapshot.id } : {}), implementedRequirementIds: [...implemented] });
     await this.emit({ at: now(), type: "snapshot_sealed", packetId: packet.id, detail: { snapshotId: head.snapshot.id,
       sourceSha, parentSnapshotId: head.parentSnapshotId, requirementIds: packet.requirementIds, sequence: head.ordinal,
-      authoritative: this.options.checker?.mode === "active" } });
+      authoritative: true } });
     return head;
   }
 
@@ -86,8 +86,7 @@ export class CheckerCoordinator {
     if (!initialState) throw new Error("Checker adapter has no initial state");
     const contextualIds = new Set([...packet.requirementIds, ...(packet.prerequisites ?? []).map(item => item.id)]);
     const requirements = await this.runtime.artifacts.putJson(JSON.parse(JSON.stringify({ requirements: packet.requirements,
-      prerequisites: packet.prerequisites ?? [], implementedRequirementIds: head.implementedRequirementIds.filter(id => contextualIds.has(id)),
-      browserEntry: this.options.platformContract.browserPath ?? "/" })));
+      prerequisites: packet.prerequisites ?? [], implementedRequirementIds: head.implementedRequirementIds.filter(id => contextualIds.has(id)) })));
     const job: CheckJob = { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
       packetId: packet.id, attempt: packet.attempt, moduleEpoch: epoch, snapshot: head.snapshot, requirements,
       binding: this.runtime.binding, initialState, requirementIds: packet.requirementIds, mode, programs,
@@ -174,7 +173,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   state.setAcceptedSha(coordinator.checkpoints.snapshot.accepted.sha);
   const recoveredHead = coordinator.checkpoints.snapshot.producedHead;
   if (recoveredHead) await runtime.snapshots.restore(recoveredHead.snapshot, options.outputDir,
-    { generatedPaths: options.platformContract.generatedPaths, dataPaths: options.platformContract.dataPaths });
+    { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
   const implemented = new Set(coordinator.checkpoints.snapshot.producedHead?.implementedRequirementIds ?? options.resumedRequirementIds ?? []);
   const inherited = new Set<string>();
   const skipped = new Set<string>();
@@ -184,7 +183,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   const deadline = (phase: PipelinePhase): number => Date.now() + Math.min(720_000, budget.remaining(phase));
   const emitPhase = (phase: PipelinePhase) => state.record({ at: now(), type: "phase_started", detail: { phase, remainingMs: finite(budget.remaining(phase)) } });
   const packetFor = (id: string, requirements: AtomicRequirement[], attempt: 1 | 2 | 3 = 1): WorkPacket => ({
-    ...makePacket(id, requirements, attempt), browserEntry: options.platformContract.browserPath ?? "/",
+    ...makePacket(id, requirements, attempt),
     prerequisites: catalog.requirements.filter(item => !requirements.includes(item) && dependencyClosure(requirements, byId).has(item.id)) });
   const contextFor = (packet: WorkPacket): BuilderProjectContext => ({ product: packet.requirements[0].product,
     ancestors: [...new Map(packet.requirements.flatMap(item => item.ancestors).map(item => [item.id, item])).values()],
@@ -281,7 +280,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       const observation = await repairObservation(runtime.artifacts, repairPacket, outcomes, !runnable, deps.diagnosticSecrets,
         preparationDiagnostics.join("; ").replaceAll(runtime.directory, "<execution>"));
       const result = await build({ mode: "repair", packet: repairPacket, projectContext: contextFor(repairPacket),
-        shadowObservation: observation, outputDir: options.outputDir, platformContract: options.platformContract }, "repair");
+        shadowObservation: observation, outputDir: options.outputDir, applicationContract: options.applicationContract }, "repair");
       let retained = false;
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(repairPacket, implemented);
@@ -314,7 +313,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       if (!retained) {
         await coordinator.cancelOutstanding();
         await deps.git.restoreAccepted(baseline.sourceSha);
-        await runtime.snapshots.restore(baseline.snapshot, options.outputDir, { generatedPaths: options.platformContract.generatedPaths, dataPaths: options.platformContract.dataPaths });
+        await runtime.snapshots.restore(baseline.snapshot, options.outputDir, { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
         await coordinator.checkpoints.restore(baseline);
         state.setAcceptedSha(coordinator.checkpoints.snapshot.accepted.sha);
         head = baseline;
@@ -332,7 +331,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
 
   try {
     await state.record({ at: now(), type: "pipeline_started", detail: { requirements: catalog.requirements.length,
-      totalBudgetMs: options.totalBudgetMs, port: options.platformContract.port, ...deps.runMetadata } });
+      totalBudgetMs: options.totalBudgetMs, adapterId: options.applicationContract.adapterId, ...deps.runMetadata } });
     if (options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution) {
       const history = options.historicalRequirements ?? await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, "shallow-progress"));
       const selection = selectEvolutionScope(catalog, new Set(history.requirementIds), history.requirementDigests, options.requirementDigests);
@@ -360,7 +359,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         limits: { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20_000 } } });
       const at = Date.now(); let reason: string | undefined; let source: "llm" | "deterministic" = "deterministic";
       try { grouping = parseFeatureGrouping(await deps.grouper.group(implementationCatalog, { timeoutMs: Math.min(720_000, budget.remaining("implementation")),
-        onUsage: async item => { usage.add("judge", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } }), implementationCatalog); source = "llm"; }
+        onUsage: async item => { usage.add("checker", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } }), implementationCatalog); source = "llm"; }
       catch (error) { reason = message(error); }
       await state.record({ at: now(), type: "feature_grouping_finished", detail: { source, reason, grouping: grouping.stats,
         durationMs: Date.now() - at, groups: grouping.packets.map(item => ({ packetId: item.id, requirementIds: item.requirementIds })) } });
@@ -384,7 +383,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       }
       await emitPhase("implementation");
       await state.record({ at: now(), type: "packet_selected", packetId: packet.id, detail: { requirementIds: packet.requirementIds, names: requirements.map(item => item.name) } });
-      const request: BuilderRequest = { mode: "implement", packet, projectContext: contextFor(packet), outputDir: options.outputDir, platformContract: options.platformContract };
+      const request: BuilderRequest = { mode: "implement", packet, projectContext: contextFor(packet), outputDir: options.outputDir, applicationContract: options.applicationContract };
       let result = await build(request, "implementation");
       if (result.outcome !== "completed" && !result.gatewayFailure && budget.remaining("implementation") > 0) result = await build(request, "implementation", true);
       if (result.outcome !== "completed") {
@@ -414,8 +413,8 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     }
     await emitPhase("delivery");
     await state.record({ at: now(), type: "delivery_started" });
-    let delivery: FinalVerificationReport = { ok: false, stage: "candidate", message: "No sealed application is available" };
-    const verifyDelivery = async (candidate: ProducedSnapshot): Promise<FinalVerificationReport> => {
+    let delivery: DeliveryReport = { ok: false, stage: "candidate", message: "No sealed application is available" };
+    const verifyDelivery = async (candidate: ProducedSnapshot): Promise<DeliveryReport> => {
       const packet = packetFor("delivery", scope.length ? scope : catalog.requirements.slice(0, 1));
       const job = await coordinator.submit(candidate, packet, "prepare", deadline("delivery"), undefined, [], undefined, 0);
       await coordinator.report(job); await coordinator.drain();
@@ -426,7 +425,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     for (let round = 1; head && !delivery.ok && round <= 3 && budget.remaining("delivery") > 0; round++) {
       const baseline = head;
       await state.record({ at: now(), type: "delivery_repair_started", detail: { stage: delivery.stage, message: delivery.message, round } });
-      const result = await build({ mode: "delivery_repair", outputDir: options.outputDir, platformContract: options.platformContract,
+      const result = await build({ mode: "delivery_repair", outputDir: options.outputDir, applicationContract: options.applicationContract,
         deliveryFailure: { stage: delivery.stage, expected: "The application satisfies the declared execution and delivery contract", actual: sanitizeDiagnosticText(delivery.message, deps.diagnosticSecrets) } }, "delivery");
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(packetFor(`delivery-repair-${round}`, scope.length ? scope : catalog.requirements), implemented);
@@ -442,7 +441,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         }
       }
       await coordinator.cancelOutstanding(); await deps.git.restoreAccepted(baseline.sourceSha);
-      await runtime.snapshots.restore(baseline.snapshot, options.outputDir, { generatedPaths: options.platformContract.generatedPaths, dataPaths: options.platformContract.dataPaths });
+      await runtime.snapshots.restore(baseline.snapshot, options.outputDir, { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
       await coordinator.checkpoints.restore(baseline);
       state.setAcceptedSha(coordinator.checkpoints.snapshot.accepted.sha);
       await state.record({ at: now(), type: "delivery_repair_restored", detail: { round } });
@@ -457,7 +456,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       if (fallback) {
         await deps.git.restoreAccepted(fallback.sourceSha);
         await runtime.snapshots.restore(fallback.snapshot, options.outputDir,
-          { generatedPaths: options.platformContract.generatedPaths, dataPaths: options.platformContract.dataPaths });
+          { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
         head = fallback;
         implemented.clear(); for (const id of [...fallback.implementedRequirementIds, ...inherited]) implemented.add(id);
         if (budget.remaining("delivery") > 0) {
@@ -471,7 +470,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     }
     if (head && delivery.ok) {
       try { await runtime.snapshots.assertMatches(head.snapshot, options.outputDir,
-        { generatedPaths: options.platformContract.generatedPaths, dataPaths: options.platformContract.dataPaths }); }
+        { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths }); }
       catch (error) {
         delivery = { ok: false, stage: "candidate", message: message(error) };
         for (const item of scope) state.markRequirements([item.id], "inconclusive");

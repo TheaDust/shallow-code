@@ -20,7 +20,7 @@ test("production active Checker verifies, resumes its immutable data binding and
     assert.equal(await main(["--requirements-dir", requirements, "--project", source], env, undefined, null), 0);
     const first = join(runs, (await readdir(runs))[0]);
     const record = await loadRunRecord(first);
-    assert.equal(record.version, 2); assert.equal(record.checker?.mode, "active");
+    assert.equal(record.version, 3); assert.equal(record.checker?.mode, "active");
     const baseline = await readFile(join(first, "checker", "baseline.json"), "utf8");
     const result = JSON.parse(await readFile(join(first, "result.json"), "utf8"));
     assert.equal(result.checker.mode, "active"); assert.equal(result.modelUsage.total, 0);
@@ -32,7 +32,7 @@ test("production active Checker verifies, resumes its immutable data binding and
     assert.equal(resumed.checkerRunId, record.checkerRunId);
     assert.equal(await readFile(join(second, "checker", "baseline.json"), "utf8"), baseline);
     assert.equal(await readFile(join(record.outputDir, "storage", "seed.json"), "utf8"), '{"initial":true}');
-    await assert.rejects(main(["resume", "--run-dir", second], { ...env, SHALLOW_CHECKER_MODE: "legacy" }, undefined, null), /Checker settings changed/);
+    await assert.rejects(main(["resume", "--run-dir", second], { ...env, SHALLOW_CHECKER_MODE: "legacy" }, undefined, null), /only supports active/);
     assert.equal(await main(["apply", "--run-dir", second], {}, undefined, null), 0);
   });
 });

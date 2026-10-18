@@ -4,18 +4,15 @@ import { access, readdir, mkdir, readFile, rm, writeFile } from "node:fs/promise
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { CandidateRuntime } from "../src/candidate-runtime.js";
-import { runPipeline } from "../src/pipeline.js";
-import { PlaywrightProbeRunner } from "../src/judge/playwright-probe-runner.js";
-import { FakeGitOps } from "./fakes/fake-git-ops.js";
-import { FakeProbePlanner } from "./fakes/fake-probe-planner.js";
-import { CommandAppLifecycle, FinalVerifier } from "../src/final-verifier.js";
-import type { PlatformContract, RunEvent } from "../src/types.js";
+import { CandidateRuntime } from "../src/application/candidate-runtime.js";
+import { WebAppLifecycle } from "../src/adapters/web/runtime.js";
+import { webRuntimeConfig } from "../src/adapters/web/project-spec.js";
+import type { ApplicationContract, RunEvent } from "../src/types.js";
 import { reservePort } from "./helpers/fixture-server.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 async function fixture(run: (context: {
-  output: string; workspace: string; candidate: CandidateRuntime; contract: PlatformContract;
+  output: string; workspace: string; candidate: CandidateRuntime; contract: ApplicationContract;
   events: RunEvent[]; counts: () => Promise<string>;
 }) => Promise<void>) {
   await withTempDir("shallow-candidate-", async (root) => {
@@ -33,12 +30,12 @@ require('node:http').createServer((req,res) => {res.setHeader('content-type','te
 fs.writeFileSync(path.join(process.env.SHALLOW_DATA_DIR, 'requests.txt'), 'data');
 res.end(req.url === '/health' ? 'ok' : fs.readFileSync('dist/index.html'));}).listen(Number(process.env.PORT),'127.0.0.1');`);
     const port = await reservePort();
-    const contract: PlatformContract = { port, baseUrl: `http://127.0.0.1:${port}`, evaluationPort: 3000, healthPath: "/health", dataPaths: ["backend/data", "backend/.data"],
+    const contract: ApplicationContract = { adapterId: "web", adapterConfig: { port, baseUrl: `http://127.0.0.1:${port}`, healthPath: "/health", browserPath: "/", extraPorts: [] }, dataPaths: ["backend/data", "backend/.data"],
       installCommands: [{ executable: process.execPath, args: ["install.cjs"], cwd: "output" }],
       buildCommands: [{ executable: process.execPath, args: ["build.cjs"], cwd: "output" }],
       startCommand: { executable: process.execPath, args: ["server.cjs"], cwd: "output" },
       buildTimeoutMs: 5_000, startTimeoutMs: 5_000 };
-    const candidate = new CandidateRuntime(output, workspace, contract);
+    const candidate = new CandidateRuntime(output, workspace, contract, new WebAppLifecycle());
     const events: RunEvent[] = [];
     candidate.setRecorder(async (event) => { events.push(event); });
     try { await run({ output, workspace, candidate, contract, events, counts: () => readFile(log, "utf8") }); }
@@ -52,7 +49,7 @@ test("Declared data paths, environment and generated output work through a real 
     contract.dataPaths = ["storage"];
     contract.dataEnvVar = "APP_DATA_DIR";
     contract.generatedPaths = ["dist"];
-    contract.healthPath = "/ready";
+    webRuntimeConfig(contract).healthPath = "/ready";
     await mkdir(join(output, "storage"));
     await writeFile(join(output, "storage/state.json"), '{"legacy":"kept"}');
     for (const file of ["install.cjs", "build.cjs"]) {
@@ -63,7 +60,7 @@ test("Declared data paths, environment and generated output work through a real 
       const state = JSON.parse(fs.readFileSync(data, 'utf8')); fs.writeFileSync(data, '{"migrated":true}');
       require('node:http').createServer((req,res)=>res.end(req.url==='/ready' ? 'ok' : '<main>'+process.env.PROJECT_FLAG+':'+state.legacy+'</main>')).listen(Number(process.env.PORT), '127.0.0.1');`);
     const app = await candidate.start(output, contract);
-    assert.match(await (await fetch(app.baseUrl)).text(), /declared:kept/);
+    assert.match(await (await fetch((app.metadata as { baseUrl: string }).baseUrl)).text(), /declared:kept/);
     await app.assertUnchanged?.();
     await app.stop();
     assert.equal(await readFile(join(output, "storage/state.json"), "utf8"), '{"legacy":"kept"}');
@@ -72,7 +69,7 @@ test("Declared data paths, environment and generated output work through a real 
     await candidate.prepare();
     assert.equal(await counts(), "install\nbuild\n");
     const second = await candidate.start(output, contract);
-    assert.match(await (await fetch(second.baseUrl)).text(), /declared:kept/);
+    assert.match(await (await fetch((second.metadata as { baseUrl: string }).baseUrl)).text(), /declared:kept/);
     await second.stop();
   });
 });
@@ -92,17 +89,20 @@ test("Declared dependency inputs govern install reuse while other source still t
   });
 });
 
-test("one owned build serves independent module checks, Judge and final Chromium smoke", async () => {
+test("one owned build serves independent checks with fresh runtime identities", async () => {
   await fixture(async ({ output, workspace, candidate, contract, counts, events }) => {
     const selfTest = await candidate.start(output, contract);
-    assert.match(await (await fetch(selfTest.baseUrl)).text(), /current/);
+    assert.match(await (await fetch((selfTest.metadata as { baseUrl: string }).baseUrl)).text(), /current/);
     await selfTest.stop();
-    await assert.rejects(fetch(selfTest.baseUrl));
+    await assert.rejects(fetch((selfTest.metadata as { baseUrl: string }).baseUrl));
     const judged = await candidate.start(output, contract);
-    assert.match(await (await fetch(judged.baseUrl)).text(), /current/);
+    assert.match(await (await fetch((judged.metadata as { baseUrl: string }).baseUrl)).text(), /current/);
     await judged.assertUnchanged?.();
     await judged.stop();
-    const report = await new FinalVerifier(undefined, candidate, candidate).verify(output, contract);
+    const delivered = await candidate.start(output, contract);
+    const report = { ok: true, message: "Ready", candidate: delivered.candidate };
+    await delivered.assertUnchanged?.();
+    await delivered.stop();
     assert.equal(report.ok, true, report.message);
     assert.equal(report.candidate?.buildId, judged.candidate?.buildId);
     assert.notEqual(report.candidate?.runtimeId, judged.candidate?.runtimeId);
@@ -132,7 +132,7 @@ test("new source and untracked files invalidate the build but retain owned depen
     await writeFile(join(output, "view.txt"), "new-source");
     await writeFile(join(output, "new-business.txt"), "new");
     const app = await candidate.start(output, contract);
-    assert.match(await (await fetch(app.baseUrl)).text(), /new-source/);
+    assert.match(await (await fetch((app.metadata as { baseUrl: string }).baseUrl)).text(), /new-source/);
     assert.equal(await counts(), "install\nbuild\nbuild\n");
     await app.stop();
   });
@@ -164,11 +164,11 @@ const file = path.join(process.env.SHALLOW_DATA_DIR, 'state.json'); const state 
 fs.writeFileSync(file, '{"legacy":"kept","migrated":true}');
 res.end(req.url === '/health' ? 'ok' : '<main>' + state + '</main>');}).listen(Number(process.env.PORT),'127.0.0.1');`);
     const app = await candidate.start(output, contract);
-    assert.match(await (await fetch(app.baseUrl)).text(), /legacy/);
+    assert.match(await (await fetch((app.metadata as { baseUrl: string }).baseUrl)).text(), /legacy/);
     await app.stop();
     assert.equal(await readFile(join(output, "backend/data/state.json"), "utf8"), '{"legacy":"kept"}');
     const freshCopy = await candidate.start(output, contract);
-    assert.match(await (await fetch(freshCopy.baseUrl)).text(), /legacy/);
+    assert.match(await (await fetch((freshCopy.metadata as { baseUrl: string }).baseUrl)).text(), /legacy/);
     await freshCopy.stop();
   });
 });
@@ -187,27 +187,16 @@ if (fs.existsSync('migrate.flag') && !workbooks.some(item => item.name === 'EVO 
 require('node:http').createServer((req,res) => {res.setHeader('content-type','text/html');
 res.end(req.url === '/health' ? 'ok' : '<main>' + workbooks.map(item => '<a href="#">' + item.name + '</a>').join('') + '</main>');
 }).listen(Number(process.env.PORT),'127.0.0.1');`);
-    const plan = { packetId: "sheet-inherited-seed", cases: [{ id: "open-workbook", requirementIds: ["REQ-SHEET"],
-      purpose: "happy_path" as const, expectationBasis: ["Open EVO Revenue Model from the workbook list."], steps: [
-        { op: "goto" as const, path: "/" },
-        { op: "click" as const, locator: { by: "role" as const, role: "link", name: "EVO Revenue Model", exact: true } },
-        { op: "expectVisible" as const, locator: { by: "role" as const, role: "main" } },
-      ] }] };
-    const browser = new PlaywrightProbeRunner();
-
     const before = await candidate.start(output, contract);
-    const failed = await browser.run(plan, { baseUrl: before.baseUrl, stepTimeoutMs: 500, caseTimeoutMs: 3_000 });
+    assert.doesNotMatch(await (await fetch((before.metadata as { baseUrl: string }).baseUrl)).text(), /EVO Revenue Model/);
     await before.stop();
-    assert.notEqual(failed.verdict, "pass");
-    assert.equal(failed.failures[0]?.stepIndex, 1);
 
     // Simulate the Builder adding an idempotent old-store migration. The next
-    // Judge run receives a fresh copy of the same inherited delivery data.
+    // Checker run receives a fresh copy of the same inherited delivery data.
     await writeFile(join(output, "migrate.flag"), "enabled\n");
     const after = await candidate.start(output, contract);
-    const passed = await browser.run(plan, { baseUrl: after.baseUrl, stepTimeoutMs: 1_000, caseTimeoutMs: 5_000 });
+    assert.match(await (await fetch((after.metadata as { baseUrl: string }).baseUrl)).text(), /EVO Revenue Model/);
     await after.stop();
-    assert.equal(passed.verdict, "pass", JSON.stringify(passed.failures));
     assert.deepEqual(JSON.parse(await readFile(workbookFile, "utf8")), [{ name: "Legacy workbook", value: "keep me" }]);
   });
 });
@@ -373,11 +362,9 @@ test("local dependencies and installation scripts include application source in 
 });
 
 test("failed build cannot create a reusable credential", async () => {
-  await fixture(async ({ output, candidate, contract, counts }) => {
+  await fixture(async ({ output, candidate, counts }) => {
     await writeFile(join(output, "build.cjs"), "process.exit(2)");
-    const report = await new FinalVerifier(undefined, candidate, candidate).verify(output, contract);
-    assert.equal(report.ok, false);
-    assert.equal(report.stage, "build");
+    await assert.rejects(candidate.prepare(), /exited 2/);
     await assert.rejects(candidate.prepare(), /exited 2/);
     assert.equal(await counts(), "install\ninstall\n");
   });
@@ -394,118 +381,10 @@ test("late source writes during a build cannot produce a credential", async () =
 test("an old healthy process occupying the target port cannot pass verification", async () => {
   await fixture(async ({ output, candidate, contract }) => {
     await candidate.prepare();
-    const old = await new CommandAppLifecycle().start(candidate.directory, { ...contract, dataDirectory: join(candidate.directory, "node_modules") });
+    const old = await new WebAppLifecycle().start(candidate.directory, { ...contract, dataDirectory: join(candidate.directory, "node_modules") });
     try {
       await assert.rejects(candidate.start(output, contract), /already occupied/);
-      assert.equal((await fetch(`${contract.baseUrl}/health`)).ok, true, "unowned process must not be killed");
+      assert.equal((await fetch(`${webRuntimeConfig(contract).baseUrl}/health`)).ok, true, "unowned process must not be killed");
     } finally { await old.stop(); }
-  });
-});
-
-for (const mutation of ["none", "probe", "commit", "delivery"] as const) {
-  test(`pipeline binds acceptance to the candidate and rejects mutation at ${mutation}`, async () => {
-    await fixture(async ({ output, workspace, candidate, contract, counts }) => {
-      await mkdir(workspace, { recursive: true });
-      const requirementsFile = join(workspace, "requirements.yaml");
-      await writeFile(requirementsFile, `id: ROOT
-name: Candidate fixture
-type: ROOT
-children:
-  - id: REQ-PROFILE
-    name: Main content
-    type: ATOMIC
-    dependencies: []
-    description: Show current in the main content.
-`);
-      const ledgerFile = join(workspace, "run-ledger.jsonl");
-      const git = new FakeGitOps(["baseline", "accepted"]);
-      const capture = git.captureAccepted.bind(git);
-      git.captureAccepted = async (message) => {
-        const sha = await capture(message);
-        if (mutation === "commit" && message.includes("checkpoint")) await writeFile(join(output, "late.txt"), "late");
-        return sha;
-      };
-      const browser = new PlaywrightProbeRunner();
-      const run = runPipeline({ requirementsFile, outputDir: output,
-        ledgerFile, totalBudgetMs: 0, platformContract: contract }, {
-        builder: {
-          async run() {
-            return { sessionId: "fixture-session", outcome: "completed", summary: "fixture ready" };
-          },
-          async close() {},
-        },
-        planner: new FakeProbePlanner([{ packetId: "packet-req-profile", cases: [{ id: "main", requirementIds: ["REQ-PROFILE"],
-          purpose: "happy_path", expectationBasis: ["Show current in the main content."],
-          steps: [{ op: "goto", path: "/" }, { op: "expectText", locator: { by: "role", role: "main" }, text: "current" }] }] }]),
-        runner: { async run(plan, options) {
-          const report = await browser.run(plan, options);
-          if (mutation === "probe") await writeFile(join(output, "late.txt"), "late");
-          return report;
-        } },
-        git, appLifecycle: candidate, candidate, clock: { nowMs: () => Date.now() },
-        finalVerifier: { async verify(directory, platform) {
-          if (mutation === "delivery") await writeFile(join(output, "late.txt"), "late");
-          return new FinalVerifier(browser, candidate, candidate).verify(directory, platform);
-        } },
-      });
-      if (mutation === "none") {
-        const result = await run;
-        assert.equal(result.status, "delivered");
-        assert.deepEqual(result.verifiedRequirementIds, ["REQ-PROFILE"]);
-        assert.equal(await counts(), "install\nbuild\n");
-        const events: RunEvent[] = (await readFile(ledgerFile, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
-        const probe = events.find((event) => event.type === "probe_finished");
-        const accepted = events.find((event) => event.type === "checkpoint_saved");
-        assert.ok(probe?.type === "probe_finished" && accepted?.type === "checkpoint_saved");
-        assert.equal(accepted.detail?.candidate?.inputDigest, probe.detail?.candidate?.inputDigest);
-        assert.equal(accepted.detail?.candidate?.buildId, probe.detail?.candidate?.buildId);
-        assert.ok(accepted.detail?.candidate?.applicationDigest);
-      } else {
-        await assert.rejects(run, /evidence is invalid/);
-        const ledger = await readFile(ledgerFile, "utf8");
-        if (mutation !== "delivery") assert.doesNotMatch(ledger, /"type":"packet_accepted"/);
-        assert.deepEqual(git.restoredShas, [mutation === "commit" ? "baseline" : "accepted"]);
-      }
-    });
-  });
-}
-
-test("grader-like delivery verification prepares the real output directory", async () => {
-  await withTempDir("shallow-grader-candidate-", async (root) => {
-    const output = join(root, "output");
-    const workspace = join(root, "runtime");
-    await mkdir(output);
-    await writeFile(join(output, ".gitignore"), "dist/\nnode_modules/\n");
-    await execFileAsync("git", ["-C", output, "init"]);
-    await execFileAsync("git", ["-C", output, "add", "."]);
-    await execFileAsync("git", ["-C", output, "-c", "user.name=ShallowCode", "-c", "user.email=shallowcode@local.invalid", "commit", "-m", "base"]);
-    await writeFile(join(output, "install.cjs"), String.raw`const fs = require('node:fs'); fs.mkdirSync('node_modules', { recursive: true });`);
-    await writeFile(join(output, "build.cjs"), String.raw`const fs = require('node:fs'); fs.mkdirSync('dist', { recursive: true });`);
-    // The server only starts when the build artifact exists in its own cwd, so a
-    // grader-like start on raw outputDir fails unless install/build ran there.
-    const extra = await reservePort();
-    await writeFile(join(output, "server.cjs"), String.raw`const fs = require('node:fs');
-if (!fs.existsSync('dist')) process.exit(9);
-const handler = (req, res) => {
-  if (req.url === '/health') { res.writeHead(200); res.end('ok'); return; }
-  res.setHeader('content-type', 'text/html'); res.writeHead(200); res.end('<main>ready</main>');
-};
-require('node:http').createServer(handler).listen(Number(process.env.PORT), '127.0.0.1');
-if (process.env.SHALLOW_EXTRA_PORTS !== '0') require('node:http').createServer(handler).listen(${extra}, '127.0.0.1');`);
-    const port = await reservePort();
-    const contract: PlatformContract = { port, baseUrl: `http://127.0.0.1:${port}`, evaluationPort: 3000, healthPath: "/health",
-      extraPorts: [extra],
-      installCommands: [{ executable: process.execPath, args: ["install.cjs"], cwd: "output" }],
-      buildCommands: [{ executable: process.execPath, args: ["build.cjs"], cwd: "output" }],
-      startCommand: { executable: process.execPath, args: ["server.cjs"], cwd: "output" },
-      buildTimeoutMs: 5_000, startTimeoutMs: 5_000 };
-    const candidate = new CandidateRuntime(output, workspace, contract);
-    try {
-      const report = await new FinalVerifier(undefined, candidate, candidate).verify(output, contract);
-      assert.equal(report.ok, true, report.message);
-      // The candidate probe built its private copy; the grader-like start must
-      // have seen an output directory prepared by the controller.
-      await access(join(output, "dist"));
-    } finally { await candidate.close(); }
   });
 });

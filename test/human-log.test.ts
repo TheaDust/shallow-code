@@ -7,25 +7,7 @@ test("Resume logs distinguish restored implementation from new behavior evidence
   assert.match(line, /重新独立验收：A、B/);
 });
 
-test("Public entry samples report their evidence boundary", () => {
-  const formatter = new HumanRunFormatter();
-  const line = formatLine(formatter, eventLine("2026-10-07T00:00:00Z", "public_entry_checked", {
-    detail: { requirementIds: ["A"], status: "passed" },
-  }));
-  assert.match(line, /公共入口检查通过/);
-  assert.match(line, /完整场景验收另计/);
-});
-
-test("Compatibility samples cannot be mistaken for requirement verification", () => {
-  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-08T00:00:00Z", "compatibility_checked", {
-    packetId: "anonymous", detail: { requirementIds: ["A"], contract: "derived_web_contracts", status: "failed" },
-  }));
-  assert.match(line, /兼容性检查缺口已复现/);
-  assert.match(line, /不单独授予需求通过/);
-});
-
 import { HumanRunFormatter } from "../src/human-log.js";
-import { ModelUsageTotals } from "../src/model-usage.js";
 
 function eventLine(at: string, type: string, rest: Record<string, unknown> = {}): string {
   return `${JSON.stringify({ at, type, ...rest })}\n`;
@@ -62,37 +44,6 @@ test("Evolution competition logs expose skipped requirements without saying they
   }));
   assert.match(summary, /已实现 1，已验证 1/);
   assert.match(summary, /本轮验收范围 1 条；跳过旧需求验收 1 条/);
-});
-
-test("Module boundary logs distinguish sampled seed entries from full atomic verification", () => {
-  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-01T00:00:00Z", "module_boundary_audit_finished", {
-    detail: { moduleId: "SECOND", packetIds: ["packet-c"], regressionPacketIds: ["packet-a"], results: { "packet-c": "verified" } },
-  }));
-  assert.match(line, /通过 1，失败 0，无法判断 0；跨模块种子入口抽查 1 条/);
-});
-
-test("Module boundary logs use the cumulative requirement snapshot when available", () => {
-  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-01T00:00:00Z", "module_boundary_audit_finished", {
-    detail: { moduleId: "SECOND", packetIds: ["opaque-audit-packet"], results: { "opaque-audit-packet": "verified" },
-      requirementResults: { A: "verified", B: "verified", C: "inconclusive" }, regressionPacketIds: ["sampled-packet"] },
-  }));
-  assert.match(line, /累计需求通过 2，失败 0，无法判断 1；跨模块种子入口抽查 1 条/);
-});
-
-test("Audit and guard logs expose coverage and uncertainty without declaring a regression", () => {
-  const formatter = new HumanRunFormatter();
-  const audit = formatLine(formatter, eventLine("2026-10-02T00:00:00Z", "audit_result", {
-    packetId: "p", detail: { status: "inconclusive", failureKind: "coverage", navigationRecovered: true, uncoveredOutcomes: 2 },
-  }));
-  assert.match(audit, /无法判断.*场景覆盖.*导航恢复.*未覆盖场景结果 2/);
-  const guard = formatLine(formatter, eventLine("2026-10-02T00:00:01Z", "repair_guard_checked", {
-    packetId: "p", detail: { status: "unresolved", critical: false, retried: true, failureKind: "execution" },
-  }));
-  assert.match(guard, /无法判定.*新应用实例重试.*执行故障/);
-  assert.doesNotMatch(guard, /确认回归/);
-  assert.match(formatLine(formatter, eventLine("2026-10-02T00:00:02Z", "repair_guard_checked", {
-    packetId: "menu", detail: { status: "passed", critical: true },
-  })), /通过.*必须确认的既有路径/);
 });
 
 test("Runtime grouping logs show its validated source, fallback reason and actual usage", () => {
@@ -132,7 +83,7 @@ test("Gateway recovery logs distinguish saved code from completed requirements",
     packetId: "a", detail: { source: "builder", retry: 2, delayMs: 60_000, failure: { kind: "rate_limit", retryable: true, status: 429 } },
   })), /网关恢复等待.*a.*builder.*1m.*重试 2/);
   assert.match(formatLine(formatter, eventLine(at, "gateway_wait", {
-    packetId: "a", detail: { source: "planner", retry: 1, delayMs: 30_000,
+    packetId: "a", detail: { source: "planning", retry: 1, delayMs: 30_000,
       failure: { kind: "unavailable", retryable: true }, reason: "TypeError: fetch failed → Error: other side closed [UND_ERR_SOCKET]" },
   })), /底层原因：TypeError: fetch failed → Error: other side closed \[UND_ERR_SOCKET\]/);
   assert.match(formatLine(formatter, eventLine(at, "builder_work_preserved", {
@@ -165,7 +116,7 @@ test("HumanRunFormatter explains dependency gate savings", () => {
 test("HumanRunFormatter records whether the generic starter scaffold was installed", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-09-27T00:00:00Z", "pipeline_started", {
-    detail: { requirements: 2, totalBudgetMs: 0, port: 43210,
+    detail: { requirements: 2, totalBudgetMs: 0, adapterId: "web",
       starterScaffold: { status: "installed", reason: "empty output", files: ["frontend/package.json"] } },
   }));
   assert.match(line, /通用脚手架 installed/);
@@ -174,22 +125,22 @@ test("HumanRunFormatter records whether the generic starter scaffold was install
 test("HumanRunFormatter shows the judge model when it differs from the builder model", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
-    detail: { model: "provider/builder", judgeModel: "provider/judge" },
+    detail: { model: "provider/builder", checkerModel: "provider/judge" },
   }));
   assert.match(line, /；模型 provider\/builder/);
-  assert.match(line, /；Judge 模型 provider\/judge/);
+  assert.match(line, /；Checker 模型 provider\/judge/);
 
   const same = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
-    detail: { model: "provider/model", judgeModel: "provider/model" },
+    detail: { model: "provider/model", checkerModel: "provider/model" },
   }));
   assert.match(same, /；模型 provider\/model/);
-  assert.doesNotMatch(same, /Judge 模型/);
+  assert.doesNotMatch(same, /Checker 模型/);
 });
 
 test("HumanRunFormatter identifies progressive stage starting points", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-10-02T00:00:00Z", "pipeline_started", {
-    detail: { requirements: 14, totalBudgetMs: 0, port: 43210,
+    detail: { requirements: 14, totalBudgetMs: 0, adapterId: "web",
       progressiveStage: { index: 2, currentStageTestsOnly: true,
         startingPoint: "inherited_application", externalDependencyIds: ["REQ-1-1-2"] } },
   }));
@@ -254,148 +205,13 @@ test("HumanRunFormatter distinguishes bounded infrastructure recovery from Build
   }
 });
 
-test("HumanRunFormatter shows planner validation reasons while keeping response previews in the ledger", () => {
-  const formatter = new HumanRunFormatter();
-  for (const type of ["probe_planner_retry", "probe_planner_failed", "probe_preplan_failed", "probe_refinement_failed"]) {
-    const line = formatLine(formatter, eventLine("2026-09-06T06:00:00.000Z", type, {
-      packetId: "profile", detail: {
-        message: "Probe planner content violates ProbePlan", category: "schema",
-        validationError: "ProbePlan.cases[0] requires at least one assertion",
-        contentPreview: "PRIVATE-PLAN-PREVIEW",
-      },
-    }));
-    assert.match(line, /schema/);
-    assert.match(line, /requires at least one assertion/);
-    assert.doesNotMatch(line, /PRIVATE-PLAN-PREVIEW/);
-  }
-});
-
-test("HumanRunFormatter identifies both locator recovery rounds", () => {
-  const formatter = new HumanRunFormatter();
-  for (const [type, refinementAttempt] of [["probe_refinement_failed", 1], ["probe_refined", 2]] as const) {
-    assert.match(formatLine(formatter, eventLine("2026-09-13T00:00:00Z", type, {
-      packetId: "p", detail: { refinementAttempt, validationError: "unchanged failed locator" },
-    })), new RegExp(`定位恢复第 ${refinementAttempt}/2 轮`));
-  }
-  assert.match(formatLine(formatter, eventLine("2026-09-13T00:00:00Z", "probe_navigation_attempted", {
-    packetId: "p", detail: { recovered: true },
-  })), /首页搜索导航复查通过，待新实例确认/);
-  assert.match(formatLine(formatter, eventLine("2026-09-13T00:00:00Z", "probe_navigation_attempted", {
-    packetId: "p", detail: { recovered: false, improved: true },
-  })), /部分路径通过，继续检查/);
-});
-
-test("HumanRunFormatter renders a happy path in Chinese with elapsed time", () => {
-  const formatter = new HumanRunFormatter();
-  const lines = [
-    eventLine("2026-09-05T06:00:00.000Z", "pipeline_started"),
-    eventLine("2026-09-05T06:00:02.000Z", "packet_selected", { packetId: "auth-login" }),
-    eventLine("2026-09-05T06:00:03.000Z", "builder_started", { packetId: "auth-login" }),
-    eventLine(
-      "2026-09-05T06:02:13.000Z",
-      "builder_finished",
-      { packetId: "auth-login", detail: { outcome: "completed", sessionId: "s1" } },
-    ),
-    eventLine(
-      "2026-09-05T06:02:15.000Z",
-      "probe_planned",
-      { packetId: "auth-login", detail: { cases: 3 } },
-    ),
-    eventLine(
-      "2026-09-05T06:02:30.000Z",
-      "probe_finished",
-      { packetId: "auth-login", detail: { verdict: "pass" } },
-    ),
-    eventLine("2026-09-05T06:02:31.000Z", "packet_accepted", { packetId: "auth-login" }),
-    eventLine("2026-09-05T06:03:00.000Z", "pipeline_finished"),
-  ];
-
-  assert.match(formatLine(formatter, lines[0]), /^\[\d{2}:\d{2}:\d{2} \+0s\] 流水线启动$/);
-  assert.match(formatLine(formatter, lines[1]), /^\[\d{2}:\d{2}:\d{2} \+2s\] 选定需求包 auth-login$/);
-  assert.match(
-    formatLine(formatter, lines[2]),
-    /^\[\d{2}:\d{2}:\d{2} \+3s\] Builder 开始编写代码（auth-login）$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[3]),
-    /^\[\d{2}:\d{2}:\d{2} \+2m13s\] Builder 完成（auth-login）$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[4]),
-    /^\[\d{2}:\d{2}:\d{2} \+2m15s\] 已生成 3 个探针用例（auth-login）$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[5]),
-    /^\[\d{2}:\d{2}:\d{2} \+2m30s\] 探针通过（auth-login）$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[6]),
-    /^\[\d{2}:\d{2}:\d{2} \+2m31s\] 需求包验收通过（auth-login）$/,
-  );
-  assert.match(formatLine(formatter, lines[7]), /^\[\d{2}:\d{2}:\d{2} \+3m0s\] 流水线结束$/);
-});
-
 test("HumanRunFormatter renders feature grouping stats at pipeline start", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-09-16T00:00:00.000Z", "pipeline_started", {
-    detail: { requirements: 24, totalBudgetMs: 0, port: 43210, builderContextWindow: 256_000,
+    detail: { requirements: 24, totalBudgetMs: 0, adapterId: "web", builderContextWindow: 256_000,
       grouping: { packets: 6, requirements: 24, maxPacketSize: 5, crossModulePackets: 0, cohesionRate: 0.347, thresholdLimitedPackets: 0 } },
   }));
-  assert.match(line, /流水线启动；原子需求 24；预算 不限时；探针端口 43210；Builder 上下文 256000；功能组 6$/);
-});
-
-test("HumanRunFormatter surfaces failure reasons and refined reruns", () => {
-  const formatter = new HumanRunFormatter();
-  const lines = [
-    eventLine("2026-09-05T06:00:00.000Z", "pipeline_started"),
-    eventLine(
-      "2026-09-05T06:01:00.000Z",
-      "application_start_failed",
-      { packetId: "auth-login", detail: { message: "npm start exited 1: missing script" } },
-    ),
-    eventLine(
-      "2026-09-05T06:02:00.000Z",
-      "builder_finished",
-      { packetId: "auth-login", detail: { outcome: "timed_out", sessionId: "s2" } },
-    ),
-    eventLine(
-      "2026-09-05T06:03:00.000Z",
-      "probe_finished",
-      { packetId: "auth-login", detail: { verdict: "inconclusive", refined: true } },
-    ),
-    eventLine(
-      "2026-09-05T06:05:00.000Z",
-      "delivery_repair_started",
-      { detail: { stage: "readiness", message: "/health unreachable" } },
-    ),
-    eventLine(
-      "2026-09-05T06:06:00.000Z",
-      "delivery_finished",
-      { detail: { ok: false, stage: "readiness", message: "/health unreachable" } },
-    ),
-  ];
-
-  assert.match(formatLine(formatter, lines[0]), /^\[\d{2}:\d{2}:\d{2} \+0s\] 流水线启动$/);
-  assert.match(
-    formatLine(formatter, lines[1]),
-    /^\[\d{2}:\d{2}:\d{2} \+1m0s\] 应用启动失败（auth-login）：npm start exited 1: missing script$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[2]),
-    /^\[\d{2}:\d{2}:\d{2} \+2m0s\] Builder 超时（auth-login）$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[3]),
-    /^\[\d{2}:\d{2}:\d{2} \+3m0s\] 探针无法定论（精化后重跑）（auth-login）$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[4]),
-    /^\[\d{2}:\d{2}:\d{2} \+5m0s\] 最终验收未通过（readiness），启动交付修复：\/health unreachable$/,
-  );
-  assert.match(
-    formatLine(formatter, lines[5]),
-    /^\[\d{2}:\d{2}:\d{2} \+6m0s\] 交付失败（readiness）：\/health unreachable$/,
-  );
+  assert.match(line, /流水线启动；原子需求 24；预算 不限时；应用适配器 web；Builder 上下文 256000；功能组 6$/);
 });
 
 test("HumanRunFormatter breaks Builder time into model and tool and reports tokens", () => {
@@ -462,62 +278,6 @@ test("HumanRunFormatter ignores garbage lines and unknown event types", () => {
   );
 });
 
-test("HumanRunFormatter covers remaining planner, refinement, and delivery events", () => {
-  const formatter = new HumanRunFormatter();
-  const base = "2026-09-05T06:00:00.000Z";
-  assert.match(
-    formatLine(
-      formatter,
-      eventLine(base, "probe_planner_retry", {
-        packetId: "p",
-        detail: { message: "gateway 500" },
-      }),
-    ),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 探针规划失败，将重试（p）：gateway 500$/,
-  );
-  assert.match(
-    formatLine(formatter, eventLine(base, "probe_planner_failed", { packetId: "p" })),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 探针规划失败（p）$/,
-  );
-  assert.match(
-    formatLine(formatter, eventLine(base, "probe_refined", { packetId: "p" })),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 定位器已精化，重跑探针（p）$/,
-  );
-  assert.match(
-    formatLine(
-      formatter,
-      eventLine(base, "probe_refinement_failed", {
-        packetId: "p",
-        detail: { message: "schema drift" },
-      }),
-    ),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 定位器精化失败（p）：schema drift$/,
-  );
-  assert.match(
-    formatLine(formatter, eventLine(base, "delivery_started")),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 进入交付窗口，开始最终验收$/,
-  );
-  assert.match(
-    formatLine(formatter, eventLine(base, "delivery_repair_accepted")),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 交付修复验收通过$/,
-  );
-  assert.match(
-    formatLine(
-      formatter,
-      eventLine(base, "delivery_finished", { detail: { ok: true, stage: "browser" } }),
-    ),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] 交付运行检查通过（browser）$/,
-  );
-  assert.match(
-    formatLine(
-      formatter,
-      eventLine(base, "builder_finished", { packetId: "p", detail: { sessionId: "s" } }),
-    ),
-    /^\[\d{2}:\d{2}:\d{2} \+0s\] Builder 结束（p）$/,
-  );
-});
-
-
 test("Human logs report rescued modules in Chinese", () => {
   const formatter = new HumanRunFormatter();
   assert.match(formatLine(formatter, eventLine("2026-09-15T00:00:00Z", "module_rescued", {
@@ -538,67 +298,6 @@ test("Human logs explain a same-session continuation with its actual failure", (
   assert.match(formatLine(new HumanRunFormatter(), eventLine("2026-09-21T00:00:00Z", "implementation_continued", {
     packetId: "packet-a", detail: { reason: "missing export", timeoutMs: 60_000 },
   })), /同会话续做一次.*missing export/);
-});
-
-test("Human logs distinguish runnable checkpoints, unknown audits, and retained repairs", () => {
-  const formatter = new HumanRunFormatter();
-  const checkpoint = formatLine(formatter, eventLine("2026-09-13T00:00:00Z", "checkpoint_saved", {
-    acceptedSha: "runnable-sha", detail: { requirementIds: ["A"], reason: "module-a" },
-  }));
-  assert.match(checkpoint, /可运行检查点.*功能验收状态单独记录/);
-  assert.doesNotMatch(checkpoint, /验收通过/);
-  assert.match(formatLine(formatter, eventLine("2026-09-13T00:00:01Z", "audit_result", {
-    packetId: "packet-a", detail: { requirementIds: ["A"], status: "inconclusive", reason: "invalid plan" },
-  })), /无法判断.*保留可运行检查点/);
-  assert.match(formatLine(formatter, eventLine("2026-09-13T00:00:02Z", "repair_batch_finished", {
-    detail: { round: 1, retained: false, reason: "regression" },
-  })), /已恢复原检查点.*regression/);
-});
-
-test("Human logs explain semantic review outcomes", () => {
-  const formatter = new HumanRunFormatter();
-  const base = "2026-09-22T00:00:00.000Z";
-  assert.match(formatLine(formatter, eventLine(base, "probe_review_started", {
-    packetId: "p", detail: { cases: 4, failed: 2 },
-  })), /^\[\d{2}:\d{2}:\d{2} \+0s\] 开始语义复核探针依据（p）；失败 2 \/ 4 个用例$/);
-  assert.match(formatLine(formatter, eventLine(base, "probe_reviewed", {
-    packetId: "p", detail: { verdict: "sound", rationale: "依据成立" },
-  })), /语义复核确认探针依据成立（p）$/);
-  assert.match(formatLine(formatter, eventLine(base, "probe_reviewed", {
-    packetId: "p", detail: { verdict: "corrected", corrections: [{ caseId: "c" }] },
-  })), /语义复核发现探针与需求冲突，按需求重建 1 个用例并重跑（p）$/);
-  assert.match(formatLine(formatter, eventLine(base, "probe_review_failed", {
-    packetId: "p", detail: { message: "schema drift" },
-  })), /语义复核失败（p）：schema drift$/);
-});
-
-test("Human logs carry model cost on usage lines and the final totals", () => {
-  const formatter = new HumanRunFormatter();
-  const base = "2026-10-15T00:00:00.000Z";
-  const usage = new ModelUsageTotals();
-  usage.add("builder", { input: 1000, output: 200, cacheRead: 100, cacheWrite: 0, cost: 0.0021 });
-  usage.add("judge", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
-  usage.add("checker", { input: 30, output: 3, cacheRead: 0, cacheWrite: 0, cost: 0.0001 });
-  assert.match(formatLine(formatter, eventLine(base, "builder_usage", { packetId: "p",
-    detail: { input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 } })),
-    /Builder token 用量（p）；tokens 入 10 \/ 出 2 \/ 总计 12；费用未知/);
-  assert.match(formatLine(formatter, eventLine(base, "builder_finished", { packetId: "p",
-    detail: { outcome: "completed", execution: { usage: {
-      status: "available", input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1200, cost: 0.00123 } } } })),
-    /tokens 入 1000 \/ 出 200 \/ 总计 1200；费用 \$0\.00123/);
-  assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", { packetId: "p",
-    detail: { operation: "plan", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12, cost: 0.000004 } })),
-    /tokens 入 10 \/ 出 2 \/ 总计 12；费用 \$0\.000004/);
-  assert.match(formatLine(formatter, eventLine(base, "feature_grouping_usage",
-    { detail: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 } })),
-    /功能分组 token 用量；tokens 入 100 \/ 出 20 \/ 总计 120；费用 \$0\.0001/);
-  assert.match(formatLine(formatter, eventLine(base, "pipeline_finished", { detail: { status: "delivered",
-    verifiedRequirementIds: ["A"], blockedRequirementIds: [], pendingRequirementIds: [], acceptedSha: "sha",
-    modelUsage: usage.summary() } })),
-    /模型用量 总计.*已知费用 \$0\.0022（部分未计价）；Builder.*费用 \$0\.0021；Judge.*费用未知；Checker.*费用 \$0\.0001/);
-  assert.match(formatLine(formatter, eventLine(base, "checker_usage", { packetId: "p",
-    detail: { jobId: "j1", role: "exploration", input: 300, output: 40, cacheRead: 0, cacheWrite: 0, total: 340, cost: 0.0003 } })),
-    /Checker exploration 用量；tokens 入 300 \/ 出 40 \/ 总计 340；费用 \$0\.0003/);
 });
 
 test("Human logs cover Checker queue, module checks and cancellation", () => {
@@ -633,18 +332,4 @@ test("Human logs cover Checker queue, module checks and cancellation", () => {
   assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: false, requirementResults: {} } })),
     /模块集中检查完成；版本 snap-2；结果已归档$/);
-});
-
-test("Human logs report Probe Planner token usage per operation", () => {
-  const formatter = new HumanRunFormatter();
-  const base = "2026-09-27T00:00:00.000Z";
-  assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", {
-    packetId: "p", detail: { operation: "plan", input: 700, output: 50, cacheRead: 200, cacheWrite: 100, total: 1050 },
-  })), /^\[\d{2}:\d{2}:\d{2} \+0s\] 探针规划 token 用量（p）；tokens 入 700 \/ 出 50 \/ 缓存读 200 \/ 缓存写 100 \/ 总计 1050；费用未知$/);
-  assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", {
-    packetId: "p", detail: { operation: "refine", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 },
-  })), /探针定位精化 token 用量（p）；tokens 入 10 \/ 出 2 \/ 总计 12；费用未知$/);
-  assert.match(formatLine(formatter, eventLine(base, "probe_planner_usage", {
-    packetId: "p", detail: { operation: "review", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12 },
-  })), /探针语义复核 token 用量（p）/);
 });

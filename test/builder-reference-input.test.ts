@@ -5,7 +5,7 @@ import { PromptBuilder } from "../src/builder/prompt-builder.js";
 import type { CodingAgentRequest, CodingAgentResult } from "../src/builder/execution-port.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { auditPackets } from "../src/scheduler.js";
-import { minimalWebContract } from "../src/project-spec.js";
+import { minimalWebContract } from "../src/adapters/web/project-spec.js";
 import { VisionCapability } from "../src/builder/vision-probe.js";
 import { UsageTotals, type ModelRates, type UsageSummary } from "../src/model-usage.js";
 
@@ -16,7 +16,7 @@ async function fixture(results: CodingAgentResult[], options: { referenceImages?
   const builder = new PromptBuilder({ run: async request => { calls.push(request); return results.shift()!; }, close: async () => {} },
     { timeoutMs: options.timeoutMs ?? 1000, requirementsDir: resolve("test/fixtures"), contextWindow: 256_000,
       referenceImages: options.referenceImages, visionProbe: options.visionProbe, modelCost: options.modelCost });
-  const request = { mode: "implement" as const, packet, outputDir: "application", platformContract: minimalWebContract({ port: 43210 }, "linux"),
+  const request = { mode: "implement" as const, packet, outputDir: "application", applicationContract: minimalWebContract({ port: 43210 }, "linux"),
     projectContext: { product: packet.requirements[0].product, ancestors: [], satisfiedDependencies: [] } };
   return { builder, calls, request };
 }
@@ -73,7 +73,7 @@ test("Engine-neutral Builder preserves separate prompts, references, key and sma
   assert.ok(forwarded <= 300 && forwarded > 250, `expected the 300ms window minus preflight, got ${forwarded}`);
   assert.equal(f.calls[0].sessionKey, "module");
   assert.equal(f.calls[0].contextWindow, 256_000);
-  assert.deepEqual(f.calls[0].platformContract, f.request.platformContract);
+  assert.deepEqual(f.calls[0].applicationContract, f.request.applicationContract);
   assert.ok(f.calls[0].references?.includes("reference/profile.png"));
   assert.match(f.calls[0].systemPrompt, /唯一代码实现者/);
   assert.match(f.calls[0].taskPrompt, /REQ-A/);

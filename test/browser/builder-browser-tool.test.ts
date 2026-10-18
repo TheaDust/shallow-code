@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { closeSharedBrowser, createBrowserTool } from "../../src/builder/pi-browser-tool.js";
+import { closeSharedBrowser, createBrowserTool } from "../../src/adapters/web/browser-tool.js";
 
 test("browser tool opens a page, runs the script, and captures console errors", { timeout: 90_000 }, async () => {
   const tool = createBrowserTool();

@@ -1,5 +1,3 @@
-import type { ProbeLocator, ProbePlan } from "./judge/probe-schema.js";
-
 export type RequirementStatus = "todo" | "verified" | "blocked" | "failed" | "inconclusive";
 export type InconclusiveKind = "planning" | "coverage" | "preparation" | "locator" | "execution" | "review" | "gateway" | "budget" | "unreproduced";
 
@@ -97,8 +95,6 @@ export interface RequirementNode {
 }
 
 export interface WorkPacket {
-  /** Project-declared public entry for navigation preparation, not business evidence. */
-  browserEntry?: string;
   prerequisites?: AtomicRequirement[];
   /** Earlier-increment capabilities are context, not requirements audited in this packet. */
   externalPrerequisiteIds?: string[];
@@ -108,38 +104,7 @@ export interface WorkPacket {
   attempt: 1 | 2 | 3;
 }
 
-export interface ProcessCommand {
-  executable: string;
-  args: string[];
-  /** Project-relative working directory; "output" is the project root. */
-  cwd: string;
-  timeoutMs?: number;
-}
-
-export interface PlatformContract {
-  /** Controller-owned runtime data, outside the frozen application tree. */
-  dataDirectory?: string;
-  dataPaths?: string[];
-  dataEnvVar?: string;
-  env?: Record<string, string>;
-  testTargets?: Array<ProcessCommand & { id: string }>;
-  dependencyPaths?: string[];
-  generatedPaths?: string[];
-  baseUrl: string;
-  port: number;
-  /** Port reserved for delivery-time grading; generation must never bind it. Absent when none is reserved. */
-  evaluationPort?: number;
-  installCommands: ProcessCommand[];
-  buildCommands: ProcessCommand[];
-  startCommand: ProcessCommand;
-  healthPath: string;
-  /** Public browser entry, independent of the HTTP readiness endpoint. */
-  browserPath?: string;
-  /** Additional application ports declared by the project. */
-  extraPorts?: number[];
-  buildTimeoutMs: number;
-  startTimeoutMs: number;
-}
+export type { ApplicationContract, ProcessCommand } from "./application/port.js";
 
 interface RunEventEnvelope {
   at: string;
@@ -148,7 +113,7 @@ interface RunEventEnvelope {
   eventId?: string;
   sequence?: number;
   elapsedMs?: number;
-  phase?: "pipeline" | "builder" | "planner" | "application" | "probe" | "decision" | "delivery" | "evidence";
+  phase?: "pipeline" | "builder" | "planning" | "application" | "checker" | "decision" | "delivery" | "evidence";
   acceptedSha?: string;
   attempt?: number;
 }
@@ -175,7 +140,7 @@ interface RunEventDetails {
     auditRequirementIds?: string[]; skippedRequirementIds?: string[];
     delivery?: { ok: boolean; stage: string; message: string; candidate?: CandidateEvidence };
     scenarioResults?: RunScenarioResult[] };
-  gateway_wait: { source: "builder" | "planner"; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
+  gateway_wait: { source: "builder" | "planning"; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
   builder_work_preserved: { preserved: boolean; requirementIds: string[]; reason?: string };
   implementation_retry: { requirementIds: string[]; timeoutMs: number; reason?: "timeout" | import("./builder/port.js").BuilderResult["terminationReason"] };
   implementation_split: { requirementIds: string[]; reason: string; kind?: "recovery" | "dependency"; packets: Array<{ packetId: string; requirementIds: string[] }> };
@@ -187,26 +152,20 @@ interface RunEventDetails {
   run_resumed: { requirementIds: string[] };
   module_failed: { requirementIds: string[]; reason: string };
   module_rescued: { requirementIds: string[]; reason: string };
-  audit_result: { requirementIds: string[]; status: "verified" | "failed" | "inconclusive"; reason?: string;
-    failureKind?: InconclusiveKind; navigationRecovered?: boolean; uncoveredOutcomes?: number };
-  repair_guard_checked: { requirementIds: string[]; status: "passed" | "regressed" | "unresolved"; critical: boolean; retried: boolean; failureKind?: InconclusiveKind };
-  public_entry_checked: { requirementIds: string[]; status: "passed" | "failed" | "unresolved"; failureKind?: InconclusiveKind };
-  compatibility_checked: { requirementIds: string[]; contract: "derived_web_contracts";
-    status: "passed" | "failed" | "unresolved"; failureKind?: InconclusiveKind };
   repair_batch_started: { round: number; requirementIds: string[] };
   repair_batch_finished: { round: number; retained: boolean; reason: string; improvedCases?: number; resolvedGaps?: number;
     requirementResults?: Record<string, "verified" | "failed" | "inconclusive"> };
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
 
-  pipeline_started: { requirements?: number; totalBudgetMs?: number; port?: number; model?: string;
+  pipeline_started: { requirements?: number; totalBudgetMs?: number; adapterId?: string; model?: string;
     auditInheritedRequirements?: boolean;
-    builderTimeoutMs?: number; plannerTimeoutMs?: number; builderContextWindow?: number;
-    promptSha256?: string; probeSchemaSha256?: string;
+    builderTimeoutMs?: number; builderContextWindow?: number;
+    promptSha256?: string;
     progressiveStage?: { index: number; currentStageTestsOnly: boolean;
       startingPoint: "inherited_application" | "blank_template" | "unknown"; externalDependencyIds: string[] };
     evolution?: { stageIndex?: number;
       startingPoint: "inherited_application" | "blank_template" | "unknown"; externalDependencyIds: string[] };
-    starterScaffold?: { status: import("./starter-scaffold.js").StarterScaffoldStatus; reason: string; files: string[] };
+    starterScaffold?: { status: import("./application/port.js").ScaffoldResult["status"]; reason: string; files: string[] };
     grouping?: GroupingStats; groupingSource?: "pending_llm" };
   feature_grouping_started: { requirements: number; limits: import("./scheduler.js").FeatureGroupThresholds };
   feature_grouping_usage: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number; cost?: number; attempt?: number };
@@ -227,50 +186,19 @@ interface RunEventDetails {
   candidate_prepared: Omit<CandidateEvidence, "runtimeId"> & { reused: boolean; installed: boolean;
     durationMs: number; installMs: number; buildMs: number };
   candidate_prepare_failed: { stage: string; message: string; durationMs: number };
-  probe_planning: Record<string, never>;
-  probe_preplan_failed: DiagnosticDetail;
-  probe_planned: { cases: number };
-  probe_planner_usage: { operation: "plan" | "refine" | "review"; input: number; output: number;
-    cacheRead: number; cacheWrite: number; total: number; cost?: number };
-  probe_started: { cases: number; retryCount: number; plan?: ProbePlan; planSha256?: string };
-  probe_finished: { verdict: ShadowReport["verdict"]; refined?: boolean; passed?: number; failed?: number;
-    durationMs?: number; categories?: ProbeFailure["category"][]; evidenceId?: string; candidate?: CandidateEvidence };
-  probe_refined: { plan?: ProbePlan; refinementAttempt?: number; beforePlanSha256?: string; planSha256?: string };
-  probe_navigation_attempted: { recovered: boolean; improved?: boolean; beforePlanSha256: string; planSha256: string };
-  probe_refinement_failed: DiagnosticDetail & { refinementAttempt?: number; planSha256?: string };
-  probe_review_started: { cases: number; failed: number };
-  probe_reviewed: { verdict: "sound" | "corrected"; rationale?: string;
-    corrections?: Array<{ caseId: string; conflict?: string; basis?: string[] }>;
-    beforePlanSha256?: string; planSha256?: string };
-  probe_review_failed: DiagnosticDetail & { planSha256?: string };
-  probe_planner_retry: DiagnosticDetail;
-  probe_planner_failed: DiagnosticDetail;
-  application_starting: Record<string, never>;
-  application_ready: { baseUrl: string; candidate?: CandidateEvidence };
-  application_start_failed: DiagnosticDetail;
-  application_stopped: Record<string, never>;
   execution_fault: DiagnosticDetail;
-  packet_accepted: { candidate?: CandidateEvidence };
   delivery_started: Record<string, never>;
   delivery_repair_started: { stage: string; message: string; round?: number };
   delivery_repair_accepted: { candidate?: CandidateEvidence };
   delivery_repair_restored: { round?: number };
   delivery_finished: { ok: boolean; stage: string; message: string };
-  module_boundary_audit_finished: { moduleId: string; moduleName?: string; packetIds: string[];
-    regressionPacketIds?: string[];
-    results: Record<string, "verified" | "failed" | "inconclusive">;
-    /** Latest independent audit results by requirement, for live presentation before the final audit. */
-    requirementResults: Record<string, "verified" | "failed" | "inconclusive"> };
-  verification_started: { retryCount: number };
-  verification_finished: { ok: boolean; stage: string; message: string; durationMs: number; retryCount: number; candidate?: CandidateEvidence };
   pipeline_finished: { status: "delivered" | "partial" | "failed"; verifiedRequirementIds: string[];
     blockedRequirementIds: string[]; implementedRequirementIds?: string[]; failedRequirementIds?: string[]; inconclusiveRequirementIds?: string[]; pendingRequirementIds: string[]; acceptedSha: string; memory?: Record<string, unknown>;
-    missingPlanRequirementIds?: string[]; inconclusiveByKind?: Partial<Record<InconclusiveKind, string[]>>;
+    inconclusiveByKind?: Partial<Record<InconclusiveKind, string[]>>;
     auditRequirementIds?: string[]; skippedRequirementIds?: string[];
     modelUsage?: import("./model-usage.js").ModelUsageSummary;
   };
   pipeline_failed: DiagnosticDetail;
-  evidence_write_failed: Record<string, never>;
 }
 
 type CheckEventDetail = {
@@ -290,26 +218,6 @@ type CheckEventDetail = {
 export type RunEvent = RunEventEnvelope & {
   [Type in keyof RunEventDetails]: { type: Type; detail?: RunEventDetails[Type] }
 }[keyof RunEventDetails];
-
-export interface ProbeFailure {
-  caseId: string;
-  stepIndex: number;
-  category: "assertion" | "locator" | "navigation" | "timeout" | "runner" | "precondition";
-  message: string;
-  inputSummary?: string;
-  /** Observed location for Judge recovery and private evidence. */
-  pageUrl?: string;
-  locatorSnapshot?: string;
-  locatorAttempts?: Array<{ locator: ProbeLocator; message: string; matchCount?: number }>;
-}
-
-export interface ShadowReport {
-  candidate?: CandidateEvidence;
-  packetId: string;
-  verdict: "pass" | "fail" | "inconclusive";
-  passedCases: string[];
-  failures: ProbeFailure[];
-}
 
 export interface CandidateEvidence {
   candidateId: string;

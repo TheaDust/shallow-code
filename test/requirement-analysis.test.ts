@@ -2,13 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { maskRequirementLiterals, requirementLiterals, requirementOutcomeClauses, requirementSentences } from "../src/requirement-text.js";
 import { requirementScenarioFacts, scenarioPhaseIndex, scenarioStepPhases } from "../src/requirement-analysis.js";
-import { probeCoverageGaps, scenarioOutcomes } from "../src/judge/probe-coverage.js";
+import { checkerSourceClauses } from "../src/checker/evidence.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { withTempDir } from "./helpers/temp-dir.js";
-import type { ProbeCase } from "../src/judge/probe-schema.js";
 import type { AtomicRequirement } from "../src/types.js";
 
 function requirement(): AtomicRequirement {
@@ -58,30 +57,17 @@ test("Literal scanning preserves escaped quotes, apostrophes, code spans and sou
 
 test("Chinese outcomes retain quoted punctuation and each explicit result's source identity", () => {
   const input = requirement();
-  const outcomes = scenarioOutcomes([input]).filter(outcome => outcome.scenarioId === "cancel-own");
-  assert.deepEqual(outcomes.map(({ stepIndex, clauseIndex, text }) => ({ stepIndex, clauseIndex, text })), [
-    { stepIndex: 3, clauseIndex: 0, text: "预约显示「已取消；可以重订」。" },
-    { stepIndex: 3, clauseIndex: 1, text: "名额释放。" },
-    { stepIndex: 4, clauseIndex: undefined, text: "其他用户的预约不变。" },
+  const outcomes = checkerSourceClauses({ requirements: [input] }, [input.id]).filter(outcome => outcome.scenarioId === "cancel-own");
+  assert.deepEqual(outcomes.map(({ id, basis }) => ({ id, basis })), [
+    { id: "cancel:cancel-own:3:0", basis: "预约显示「已取消；可以重订」。" },
+    { id: "cancel:cancel-own:3:1", basis: "名额释放。" },
+    { id: "cancel:cancel-own:4:0", basis: "其他用户的预约不变。" },
   ]);
   assert.deepEqual(requirementOutcomeClauses('Show "A and B; C" or "D"; retain the value.'),
     ['Show "A and B; C" or "D"', "retain the value."]);
 });
 
-test("Chinese persistence requires the mapped assertion to execute after reload", () => {
-  const input = requirement();
-  input.scenarioContracts = [{ id: "persist", name: "刷新保留", steps: [
-    { keyword: "THEN", content: "刷新后显示「已取消」。" },
-  ] }];
-  const probeCase: ProbeCase = { id: "persist", requirementIds: [input.id], purpose: "persistence", expectationBasis: [],
-    steps: [{ op: "expectText", locator: { by: "text", text: "已取消", exact: true }, text: "已取消" },
-      { op: "reload" }, { op: "expectText", locator: { by: "text", text: "已取消", exact: true }, text: "已取消" }],
-    outcomeChecks: [{ scenarioId: "persist", stepIndex: 0, assertionIndexes: [0] }] };
-  const plan = { packetId: "persist", cases: [probeCase], uncoveredOutcomes: [] };
-  assert.match(probeCoverageGaps(plan, [input])[0].reason, /after a reload/);
-  probeCase.outcomeChecks![0].assertionIndexes = [2];
-  assert.deepEqual(probeCoverageGaps(plan, [input]), []);
-});
+
 
 test("Catalog preserves Chinese initial declarations and quoted values with internal punctuation", async () => {
   await withTempDir("shallow-chinese-contract-", async directory => {

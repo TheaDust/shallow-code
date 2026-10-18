@@ -9,4 +9,4 @@ category 为 locator 或 precondition 的观测表示需要诊断，目标业务
 允许使用的失败观测：
 {{FAILURES}}
 
-检查相关代码和 ARCHITECTURE.md；只修改解释这些失败所必需的实现，按 ARCHITECTURE.md 交接约定原位更新改变的条目。按自测约定检查代表性失败与受影响的已通过路径，输出回执供独立 Judge 复验。
+检查相关代码和 ARCHITECTURE.md；只修改解释这些失败所必需的实现，按 ARCHITECTURE.md 交接约定原位更新改变的条目。按自测约定检查代表性失败与受影响的已通过路径，输出回执供独立 Checker 复验。

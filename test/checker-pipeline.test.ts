@@ -47,10 +47,47 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
 }
 
 test("Checker configuration declares migration mode and bounded concurrency", () => {
-  assert.deepEqual(parseCheckerConfig({}), { mode: "legacy", concurrency: 2 });
+  assert.deepEqual(parseCheckerConfig({}), { mode: "active", concurrency: 2 });
   assert.deepEqual(parseCheckerConfig({ SHALLOW_CHECKER_MODE: "active", SHALLOW_CHECKER_CONCURRENCY: "1" }), { mode: "active", concurrency: 1 });
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: "agent" }));
+  for (const mode of ["legacy", "observe"]) assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: mode }), /only supports active/);
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_CONCURRENCY: "3" }));
+});
+
+test("An incomplete group cannot grant its implementation or dispatch dependent groups", async () => {
+  await withModulePipeline(async f => {
+    await attach(f);
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      return request.mode === "implement" && request.packet.requirementIds.includes("A")
+        ? { ...result, outcome: "failed", terminationReason: "missing_terminal_response" } : result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, "partial");
+    assert.deepEqual(result.verifiedRequirementIds, []);
+    assert.deepEqual(result.implementedRequirementIds, []);
+    assert.equal(f.builder.requests.filter(request => request.mode === "implement").length, 2);
+    assert.ok((await f.events()).some(event => event.type === "dependency_gate_blocked"));
+  });
+});
+
+test("Current changed requirements are audited while inherited Evolution context remains explicitly skipped", async () => {
+  await withModulePipeline(async f => {
+    await attach(f);
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    input.type = "ROOT";
+    input.name = "Product - Evolution";
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    f.options.stageStartingPoint = "inherited_application";
+    f.options.auditInheritedRequirements = false;
+    f.options.historicalRequirements = { requirementIds: ["A"], plans: 0, ignoredPlans: 0,
+      planRequirementCount: 0, checkpointRequirementCount: 1, checkpointSupplementCount: 1, requirementDigests: {} };
+    const result = await f.run();
+    assert.deepEqual(result.skippedRequirementIds, ["A"]);
+    assert.deepEqual(result.verifiedRequirementIds.sort(), ["B", "C"]);
+    assert.ok(!f.builder.requests.some(request => request.mode === "implement" && request.packet.requirementIds.includes("A")));
+  });
 });
 
 test("Builder continues B while Checker reads sealed A and current final evidence alone publishes", async () => {
@@ -107,7 +144,7 @@ test("Module boundary rechecks prerequisite behavior changed by a later module",
 });
 
 test("Checker observations update only published current results in the terminal", () => {
-  const view = new BuildView({ requirementIds: ["A"], models: { builder: "b", judge: "c" }, onInterrupt() {} }, () => 24, terminalTheme(false));
+  const view = new BuildView({ requirementIds: ["A"], models: { builder: "b", checker: "c" }, onInterrupt() {} }, () => 24, terminalTheme(false));
   const formatter = new HumanRunFormatter();
   const event = { at: "2026-10-16T00:00:00Z", type: "module_check_finished" as const,
     detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snapshot", published: true, requirementResults: { A: "verified" as const } } };
@@ -142,16 +179,6 @@ test("Rejected repair restores the complete module, including B produced after A
   });
 });
 
-test("Observe mode records Checker results while the established Judge controls acceptance", async () => {
-  await withModulePipeline(async f => {
-    await attach(f, undefined, async () => "fail");
-    f.options.checker!.mode = "observe";
-    const result = await f.run();
-    assert.equal(result.status, "delivered");
-    assert.deepEqual(result.verifiedRequirementIds.sort(), ["A", "B", "C"]);
-    assert.ok((await f.events()).some(item => item.type === "check_queued"));
-  });
-});
 
 test("Source drift after final snapshot invalidates delivery and its current verification", async () => {
   await withModulePipeline(async f => {
