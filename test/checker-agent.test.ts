@@ -36,6 +36,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   const roles: string[] = [];
   const reviewPrompts: string[] = [];
   const explorationPrompts: string[] = [];
+  const toolSchemas: Array<{ role: string; name: string; parameters: unknown }> = [];
   const adapter: ExecutionAdapter = { binding, async prepare(currentJob) {
     const environment = await typed({ instance: ++environments });
     const jobRef = await store.putJson(currentJob);
@@ -67,6 +68,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   } };
   const model: CheckerModel = { async run(request) {
     roles.push(request.role);
+    for (const tool of request.tools) toolSchemas.push({ role: request.role, name: tool.name, parameters: tool.parameters });
     if (request.role === "semantic_review") reviewPrompts.push(request.prompt);
     else explorationPrompts.push(request.prompt);
     const tool = (name: string, args: unknown) => request.tools.find(item => item.name === name)!.execute(args);
@@ -95,7 +97,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     }
     return { totalTokens: 100 };
   } };
-  return { directory, store, job, adapter, model, roles, reviewPrompts, explorationPrompts, get environments() { return environments; }, get closed() { return closed; }, get replays() { return replays; },
+  return { directory, store, job, adapter, model, roles, reviewPrompts, explorationPrompts, toolSchemas, get environments() { return environments; }, get closed() { return closed; }, get replays() { return replays; },
     checker: createCheckerAgent({ artifacts: store, adapter, model }), cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
 
@@ -118,6 +120,23 @@ test("Checker keeps an unreproduced violation inconclusive", async () => {
     const report = await f.checker.check(f.job, new AbortController().signal);
     assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "inconclusive"]);
     assert.match(report.outcomes[1]!.reason!, /did not reproduce/);
+  } finally { await f.cleanup(); }
+});
+
+test("Checker tool schemas keep an object root because the gateway rejects a root union", async () => {
+  const f = await fixture({ failures: [0] });
+  try {
+    await f.checker.check(f.job, new AbortController().signal);
+    assert.deepEqual([...new Set(f.toolSchemas.map(item => item.role))].sort(), ["exploration", "semantic_review"]);
+    for (const tool of f.toolSchemas) {
+      const schema = tool.parameters as Record<string, unknown>;
+      assert.equal(schema.type, "object", `${tool.role}/${tool.name} must declare an object root`);
+      for (const keyword of ["anyOf", "oneOf", "allOf"]) assert.equal(schema[keyword], undefined, `${tool.role}/${tool.name} must not use a root ${keyword}`);
+    }
+    const save = f.toolSchemas.find(item => item.name === "save_artifact")!;
+    assert.deepEqual(Object.keys((save.parameters as { properties: Record<string, unknown> }).properties).sort(),
+      ["clauses", "contract", "kind", "source"]);
+    assert.deepEqual((save.parameters as { required: string[] }).required, ["kind", "contract"]);
   } finally { await f.cleanup(); }
 });
 

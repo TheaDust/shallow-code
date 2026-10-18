@@ -224,11 +224,13 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 return { output, receipts: result.receipts };
               } },
             { name: "save_artifact", description: "Save acceptance contract or complete reusable program. The host binds requirements, initial state and execution binding.",
-              parameters: Type.Union([Type.Object({ kind: Type.Literal("contract"), contract: Type.Unknown() }),
-                Type.Object({ kind: Type.Literal("program"), contract: refSchema, source: Type.String(), clauses: Type.Array(Type.Object({ clauseId: Type.String(), checkpointId: Type.String() })) })]),
+              // The tool schema root must stay a plain object: the gateway rejects tool parameters declared as a root union.
+              parameters: Type.Object({ kind: Type.Union([Type.Literal("contract"), Type.Literal("program")]), contract: Type.Unknown(),
+                source: Type.Optional(Type.String()),
+                clauses: Type.Optional(Type.Array(Type.Object({ clauseId: Type.String(), checkpointId: Type.String() }))) }),
               async execute(raw) {
                 if (finished) throw new Error("Checker exploration already finished");
-                const args = raw as { kind: string; contract: AcceptanceContract & ContentRef; source: string; clauses: CheckerProgramDescriptor["clauses"] };
+                const args = raw as { kind: string; contract: AcceptanceContract & ContentRef; source?: string; clauses?: CheckerProgramDescriptor["clauses"] };
                 if (args.kind === "contract") {
                   const contract = { ...args.contract, requirements: job.requirements };
                   validateAcceptanceContract(contract, job, discoverySources, input);
@@ -236,9 +238,10 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                   manifest.contracts.push(ref); savedContracts.set(ref.digest, contract);
                   return ref;
                 }
-                if (args.kind !== "program" || !args.source?.trim() || !savedContracts.has(args.contract.digest)) throw new Error("Program must use a saved contract and nonempty source");
+                if (args.kind !== "program") throw new Error("Artifact kind must be contract or program");
+                if (!args.source?.trim() || !args.contract?.digest || !savedContracts.has(args.contract.digest)) throw new Error("Program must use a saved contract and nonempty source");
                 const contract = savedContracts.get(args.contract.digest)!;
-                if (args.clauses.length !== contract.clauses.length || args.clauses.some(mapping => !contract.clauses.some(clause => clause.id === mapping.clauseId && clause.checkpointId === mapping.checkpointId))
+                if (!args.clauses?.length || args.clauses.length !== contract.clauses.length || args.clauses.some(mapping => !contract.clauses.some(clause => clause.id === mapping.clauseId && clause.checkpointId === mapping.checkpointId))
                   || new Set(args.clauses.map(item => item.clauseId)).size !== args.clauses.length) throw new Error("Program must independently map every contract clause");
                 const descriptor: CheckerProgramDescriptor = { source: await store.putBytes(args.source), initialState: job.initialState, clauses: args.clauses };
                 const program: ProgramRef = { descriptor: await store.putTypedJson(descriptor, declaration.programFormat.schema),
