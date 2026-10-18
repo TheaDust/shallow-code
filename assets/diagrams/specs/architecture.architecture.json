@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ShallowCode 架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "cli", "type": "frontend", "label": "CLI / TUI", "sublabel": "run · resume · apply", "pos": [40, 70], "size": [130, 58] },
+    { "id": "pipeline", "type": "backend", "label": "Pipeline Controller", "sublabel": "分组 · 调度 · 修复", "pos": [210, 70], "size": [160, 58] },
+    { "id": "coordinator", "type": "backend", "label": "Checker Coordinator", "sublabel": "队列 · 检查点 · 边界", "pos": [410, 70], "size": [170, 58] },
+    { "id": "state", "type": "database", "label": "运行状态", "sublabel": "快照 · 收据 · Git", "pos": [650, 60], "size": [180, 78] },
+    { "id": "builder", "type": "backend", "label": "Pi Builder Worker", "sublabel": "实现 · 自测 · 修复", "pos": [210, 280], "size": [160, 64] },
+    { "id": "checker", "type": "backend", "label": "Checker Agent", "sublabel": "探索 · 复核 · 重放", "pos": [410, 280], "size": [170, 64] },
+    { "id": "app_adapter", "type": "messagebus", "label": "Web App Adapter", "sublabel": "生命周期 · 脚手架 · 工具", "pos": [210, 440], "size": [160, 64] },
+    { "id": "checker_adapter", "type": "security", "label": "Web Checker Adapter", "sublabel": "QuickJS · Playwright", "pos": [410, 440], "size": [170, 64] },
+    { "id": "target", "type": "external", "label": "目标 Web 应用", "sublabel": "候选进程 + 浏览器", "pos": [650, 440], "size": [180, 64] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "控制面", "wraps": ["cli", "pipeline", "coordinator"] },
+    { "kind": "region", "label": "执行面", "wraps": ["builder", "checker"] },
+    { "kind": "region", "label": "Web 适配器", "wraps": ["app_adapter", "checker_adapter"] },
+    { "kind": "region", "label": "运行状态", "wraps": ["state"] }
+  ],
+  "connections": [
+    { "id": "cli-pipeline", "from": "cli", "to": "pipeline", "variant": "emphasis" },
+    { "id": "pipeline-coordinator", "from": "pipeline", "to": "coordinator", "variant": "emphasis" },
+    { "id": "coordinator-state", "from": "coordinator", "to": "state", "variant": "dashed" },
+    { "id": "pipeline-builder", "from": "pipeline", "to": "builder", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
+    { "id": "coordinator-checker", "from": "coordinator", "to": "checker", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
+    { "id": "builder-app", "from": "builder", "to": "app_adapter", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
+    { "id": "checker-adapter", "from": "checker", "to": "checker_adapter", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
+    { "id": "app-target", "from": "app_adapter", "to": "target", "variant": "emphasis", "fromSide": "bottom", "toSide": "bottom", "via": [[290, 550], [740, 550], [740, 504]] },
+    { "id": "checker-target", "from": "checker_adapter", "to": "target", "variant": "emphasis" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "适配器边界",
+      "items": [
+        "核心只传 ApplicationContract",
+        "Web 解释端口、就绪与浏览器能力",
+        "新增应用类型只注册适配器"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "检查点",
+      "items": [
+        "源码、数据与证据按内容寻址",
+        "producedHead 与 acceptedSha 分离",
+        "修复失败回到可运行版本"
+      ]
+    }
+  ]
+}

@@ -1,18 +1,89 @@
 # ShallowCode
 
-ShallowCode 是面向结构化需求的应用开发与交付智能体，当前提供 Web 适配器。它读取需求树，按依赖和功能分组交给 Pi Builder 实现，再由独立 Checker 验收，管理可运行检查点、修复回归和交付结果。
+**把结构化需求，交付成经过独立验收的可运行应用。**
 
-需求输入沿用 `requirements.yaml` 的 ROOT/FOLDER/ATOMIC、祖先描述、依赖、场景、数据声明、实现指引（`guidance`）和参考图。项目运行方式由独立的 `shallowcode.config.json` 声明。
+ShallowCode 读取 `requirements.yaml`，按依赖和功能分组交给 Pi Builder 实现；再由独立 Checker 在真实浏览器中重放检查程序，逐条核对场景里的 GIVEN / WHEN / THEN。构建成功、Builder 自述和开发测试通过都不会直接让需求通过，只有可复现的行为证据才会标记为 `verified`。
 
-**运行流程**
+输入是一棵需求树或一个已有 Web 项目；输出是可运行的应用、逐条验收报告，以及可写回原项目的补丁。
 
-需求解析与依赖校验 → 功能分组 → 实现与开发检查 → 候选安装、构建和启动 → 模块边界浏览器验收 → 有界修复与回归 → 当前范围最终验收 → 交付检查。
+- **需求驱动**：ROOT / FOLDER / ATOMIC 需求树、场景、依赖、种子数据和参考图都可以进入实现与验收。
+- **独立验收**：Checker 与目标源码、diff、Builder 会话隔离，自己启动应用、准备数据、驱动浏览器。
+- **可恢复**：源码快照、可运行检查点和逐子句证据分开保存，失败修复可以回到最近的可运行版本。
+- **可适配**：核心只依赖 `ApplicationContract`，当前提供 Web 适配器。
 
-Builder 是目标业务代码的唯一实现者。Checker 依据需求及浏览器观察工作，与目标源码、diff、Builder 会话和自述隔离。构建成功、开发测试通过和需求获得 `verified` 分别记账。
+## 工作方式
 
-**安装与网关配置**
+```mermaid
+sequenceDiagram
+    participant B as Builder
+    participant C as 控制器 / 快照
+    participant K1 as Checker 1
+    participant K2 as Checker 2
+    participant Q as 结果队列
 
-需要 Node.js >=22.19.0、npm、Git 和 Playwright Chromium。控制器依赖版本由锁文件固定。clone 后在仓库根运行一键安装脚本（跨平台，Node 实现）：
+    B->>C: 功能组 A 完成
+    C->>C: 封存快照 S1
+    C-->>B: 立即继续下一组
+    C->>K1: 检查 S1（独立环境）
+    B->>C: 功能组 B 完成
+    C->>C: 封存快照 S2
+    C-->>B: 立即继续下一组
+    C->>K2: 检查 S2（独立环境）
+    Note over B,C: 组级检查不阻塞 Builder
+    K1->>Q: 程序 + 观察 + 结论
+    K2->>Q: 程序 + 观察 + 结论
+    B->>C: 模块完成
+    Note over C,Q: 模块边界汇合
+    C->>K1: 在最新快照重放模块用例
+    C->>K2: 补充跨组场景
+    K1->>Q: 模块证据
+    K2->>Q: 模块证据
+    Q-->>B: 可复现缺陷
+    B->>C: 修复完成，封存 Sm2
+    C->>K1: 复验 + 通过路径回归
+    Q-->>C: 当前版本结论
+    C->>C: 最终验收 / 交付检查
+```
+
+1. **解析需求**：读取需求树、场景、依赖、种子和实现指引，建立可执行的需求目录。
+2. **功能分组**：按依赖和功能边界把需求拆成小批次，交给 Builder。
+3. **实现与封存**：Builder 在独立 Worker 中实现、自测和修复；每完成一个功能组，控制器封存源码与数据快照并把检查任务入队，Builder 不等检查完成就继续下一组。
+4. **并行检查与模块汇合**：Checker 在独立应用、数据和浏览器中并行重放检查程序；到模块边界时汇合，回归已通过的路径并处理缺陷。
+5. **有界修复**：只有可复现的失败才进入修复；修复后复验，未改善则回滚到检查点。
+6. **最终验收与交付**：在当前范围上重新检查全部场景，再执行构建、启动、入口和端口等交付检查。
+
+模块修复最多 2 轮，交付修复最多 3 轮；未改善的修复会回滚到最近的可运行检查点。`acceptedSha` 表示可运行检查点，`verified` 表示当前候选的独立行为证据；两者分开记录，历史通过不会自动授予本轮通过。
+
+## 架构
+
+![ShallowCode 架构](assets/diagrams/architecture.svg)
+
+| 层 | 负责什么 |
+| --- | --- |
+| **控制面** | CLI / TUI、Pipeline Controller、Checker Coordinator：分组、调度、检查点、修复和交付。 |
+| **Builder** | Pi Builder Worker：实现目标业务代码、运行开发测试、根据失败观测修复。 |
+| **Checker** | Checker Agent：探索检查程序、全新环境重放、独立语义复核、汇总证据。 |
+| **Web 适配器** | 解释项目运行合同、脚手架、Builder 工具、QuickJS 程序执行和 Playwright 浏览器能力。 |
+| **运行状态** | 快照、收据、检查报告、Git 检查点和可写回的项目副本。 |
+
+控制器只消费 `ApplicationContract`；`src/adapters/index.ts` 与 `src/adapters/checker.ts` 在生产装配处注册 `web` 实现。新增应用类型时，核心流程不需要知道端口、HTTP 就绪或浏览器细节。Builder 与 Checker 各自通过模型网关调用模型，可用 `SHALLOW_BUILDER_*` / `SHALLOW_CHECKER_*` 分开配置。
+
+## Checker 如何独立验收
+
+![Checker 内部流程](assets/diagrams/checker-flow.svg)
+
+Checker 是唯一验收引擎。它不消费 Builder 的结论，只消费自己产生的证据收据。
+
+- **任务绑定**：每个 `CheckJob` 固定快照、需求、初态、执行器版本和提示词摘要。
+- **先复用，再探索**：执行绑定和初态一致时复用已批准程序；覆盖不足时由探索模型调用声明的能力，保存检查程序和验收合同。
+- **宿主重放**：程序在独立进程的 QuickJS 中运行，只能通过受控 Playwright 能力访问应用；每个 GIVEN、WHEN 和结果子句都对应宿主产生的证据收据。
+- **独立语义复核**：复核模型只读需求原文、合同和收据，不接触 Builder 会话或目标源码。
+- **失败必须复现**：业务失败会在另一个全新的应用、数据和浏览器环境中再跑一次；不能复现就降级为 `inconclusive`。
+- **四种结论**：`pass`、`fail`、`blocked`（依赖未满足）、`inconclusive`（执行或解释不足）。全部结果子句为 `pass` 才会把需求标记为 `verified`。
+
+## 快速开始
+
+需要 Node.js >= 22.19.0、npm、Git 和 Playwright Chromium。
 
 ```powershell
 git clone <仓库地址> ShallowCode
@@ -20,117 +91,108 @@ cd ShallowCode
 npm.cmd run setup
 ```
 
-脚本依次安装仓库根与 requirements-agent 的依赖、下载 Playwright Chromium、从 `.env.example` 初始化 `.env`（已存在则保留）并注册全局 `shallow` 命令；`--check` 只检查环境并打印计划，`--skip-browser` 跳过 Chromium 下载。手动执行时依次运行 `npm ci`、`requirements-agent` 目录内的 `npm ci`、`npx playwright install chromium`、复制 `.env.example` 为 `.env` 与 `npm link`。
+Linux / macOS 使用 `npm run setup`。安装脚本会安装仓库与 `requirements-agent` 的依赖、下载 Chromium、从 `.env.example` 初始化 `.env`，并注册全局 `shallow` 命令。
 
-在仓库 `.env` 或进程环境中配置 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，真实环境变量优先。凭证用于控制器和 Pi Worker 的模型请求。Builder 与 Checker（规划/验收）可分别用 `SHALLOW_BUILDER_*`、`SHALLOW_CHECKER_*` 覆盖 API key、地址与模型（字段级回退公共值）；[requirements-agent](requirements-agent/README.md) 读取同一份仓库根 `.env`，用 `REQUIREMENTS_AGENT_*` 单独覆盖。网关为 opencode.ai（Zen/Go）时，控制器与 requirements-agent 会自动附带该网关要求的 `x-opencode-session` 会话头。模型单价（USD / 百万 token）缺省按网关地址与模型 id 匹配 pi-ai 内置目录的标价，可用 `MODEL_COST_INPUT/OUTPUT/CACHE_READ/CACHE_WRITE` 或 `<组件>_COST_*` 按字段覆盖；目录与配置均无价格时只统计 token。
+在 `.env` 中配置模型网关：
 
-Pi 通过 `CodingAgentPort` 在独立 Worker 中执行。[pi-sdk-adapter.ts](src/builder/pi-sdk-adapter.ts) 集中 SDK 导入、工具转换、会话恢复、压缩重试和完成判断；项目工具使用 [tool-contract.ts](src/builder/tool-contract.ts)，运行日志记录实际 SDK 版本。模型描述与上下文窗口配置位于 `pi-model-config.ts`。
-
-Pi SDK 与 TUI 使用 `@earendil-works/*` 包，精确固定为 `1.2.0` 并保留锁文件，按所需功能或修复主动升级。升级时先运行 `npx tsx --test test/pi-*.test.ts test/terminal-presentation.test.ts`，再运行 `npm run test:all`；同步检查 requirements-agent 的类型与测试。真实网关冒烟按下方凭证验证说明启用。
-
-**创建和修改 Web 应用**
-
-```powershell
-npm.cmd start -- --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
-npm.cmd start -- --requirements-dir E:\requirements\demo --project E:\projects\existing-web
-npm.cmd start                                    # 两项参数都省略：按当前目录约定运行
+```dotenv
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=...
+MODEL=...
 ```
 
-`--requirements-dir` 与 `--output-dir` 都可省略：缺省在当前目录及其子目录中查找唯一的 `requirements.yaml`（没有或找到多个都报错），输出目录缺省为当前目录；`--project` 与 `--output-dir` 互斥。已有项目须提供运行配置；控制器把其当前源码复制到独立开发目录，包含 staged 和未跟踪文件，原目录及其 Git index、分支和历史保持不动。已有应用作为增量起点，沿用原技术栈和布局。
+| 变量 | 用途 |
+| --- | --- |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL` | Builder 与 Checker 共用的默认网关。 |
+| `SHALLOW_BUILDER_*` | 单独覆盖 Builder 的 API key、地址和模型。 |
+| `SHALLOW_CHECKER_*` | 单独覆盖 Checker 与功能分组的 API key、地址和模型。 |
+| `REQUIREMENTS_AGENT_*` | 单独覆盖 `shallow req` 使用的网关。 |
 
-空输出目录使用随附的 React/Vite/TypeScript + Node Web 模板，安装时写入可复用的运行配置。`--budget-ms` 是非负毫秒，缺省或 0 表示不限本轮总调度时间，单次调用仍有上限。
+模型单价默认按网关地址和模型 id 匹配内置目录；也可以用 `MODEL_COST_*` 或 `<组件>_COST_*` 覆盖。
 
-**全局命令**
-
-在仓库根执行 `npm.cmd link` 注册一次后，可在任意目录用 `shallow` 调用：
+## 常用命令
 
 ```powershell
-shallow req      # 需求整理（轻量 TUI），在当前目录自动保存并恢复草稿，确认后生成文档
-shallow build    # 在当前目录子树查找 requirements.yaml，并输出到当前目录
+shallow req
 shallow build --requirements-dir E:\requirements\demo --output-dir E:\projects\new-web
 shallow build --requirements-dir E:\requirements\demo --project E:\projects\existing-web
 shallow build resume --run-dir E:\runs\<运行目录>
-shallow build apply --run-dir E:\runs\<运行目录>
+shallow build apply  --run-dir E:\runs\<运行目录>
 ```
 
-`shallow build` 与 `npm.cmd start` 等价，参数原样透传；`shallow` 无参数或 `--help` 显示用法。省略 `--requirements-dir` 时在当前目录及其子目录中查找唯一的 `requirements.yaml`，找不到或找到多个都报错并要求显式指定；省略 `--output-dir`/`--project` 时输出目录缺省为当前目录，当前目录已有项目文件时按增量起点处理，改动经 `apply` 写回（`requirements`、`.requirements-agent`、`.arc`、`shallow-progress`、`shallowcode.config.json` 等由 `src/controller-metadata.ts` 统一声明的控制器元数据不算项目文件，也不再要求填写运行配置）。仓库根 `.env` 与全部提示词按模块位置解析，不随启动目录变化；`--requirements-dir`、`--output-dir`、`--project` 等相对路径参数按启动目录解析。
+| 命令 | 作用 |
+| --- | --- |
+| `shallow req` | 需求整理：对话生成 `requirements/requirements.yaml`，支持草稿恢复。 |
+| `shallow build` | 在当前目录子树查找唯一的 `requirements.yaml`，开发并交付到当前目录。 |
+| `shallow build --output-dir` | 新建项目；空目录会写入随附的 React/Vite + Node Web 模板。 |
+| `shallow build --project` | 接管已有项目：复制当前源码到独立开发目录，原目录和 Git index 保持不动。 |
+| `resume` | 从最近的可运行检查点继续，保留失败尝试历史，本轮重新验收。 |
+| `apply` | 把 `changes.patch` 写回原项目；默认只接受 `delivered`。 |
 
-真实终端中，`req` 与 `build` 使用一致的单列 TUI：进入时清空控制台页面，从全新页面开始渲染。`req` 在输入区上方显示当前模型、草案版本、场景数与待确认问题，`F2` 打开可滚动草案（方向键、PgUp/PgDn 或鼠标滚轮），`v` 切换完整 YAML。`build` 显式标注本轮实际使用的 Builder 与 Checker 模型，并显示当前模块、活动耗时、本轮验收状态，按总计、Builder、Checker 三行显示 token 总量、输入/输出、缓存读写和按标价估算的费用；当前 Builder 快照计入对应分组与总计，调用结束后结算一次。Builder 包含实现、修复、图片预检及降级重试；Checker 包含功能分组、探索和语义复核。未定价调用保留 token，标注“费用未知”；混合计价显示“已知费用（部分未计价）”。`d` 查看详细日志，`?` 查看帮助，`Esc` 返回状态页，`Ctrl+C` 中断。结束后保留报告、产物位置、累计用量、总耗时与适用的恢复或应用命令。`NO_COLOR` 关闭界面配色；管道、重定向与 `TERM=dumb` 使用纯文本构建日志。
+`npm.cmd start -- <参数>` 与 `shallow build` 等价，参数原样透传。
 
-**项目运行配置**
+## 输入与配置
 
-下面是 Windows 上单项目目录布局的配置示例；Linux/macOS 使用 `npm` 替换 `npm.cmd`。
+最小需求示例：
+
+```yaml
+id: ROOT
+name: Demo
+type: FOLDER
+children:
+  - id: REQ-1
+    name: Open homepage
+    type: ATOMIC
+    scenarios:
+      - name: Open homepage
+        steps:
+          - keyword: GIVEN
+            content: The application is running.
+          - keyword: WHEN
+            content: The user opens the application URL.
+          - keyword: THEN
+            content: The homepage is displayed.
+```
+
+项目运行方式由 `shallowcode.config.json` 声明；新项目可省略，脚手架会写入默认配置。
 
 ```json
 {
   "adapter": "web",
-  "install": [{ "executable": "npm.cmd", "args": ["ci"], "cwd": "." }],
-  "build": [{ "executable": "npm.cmd", "args": ["run", "build"], "cwd": "." }],
-  "tests": [{ "id": "unit", "executable": "npm.cmd", "args": ["run", "test", "--"], "cwd": "." }],
-  "start": { "executable": "npm.cmd", "args": ["run", "start"], "cwd": "." },
+  "install": [{ "executable": "npm", "args": ["ci"], "cwd": "." }],
+  "build": [{ "executable": "npm", "args": ["run", "build"], "cwd": "." }],
+  "start": { "executable": "npm", "args": ["run", "start"], "cwd": "." },
   "readyPath": "/health",
   "browserPath": "/",
-  "env": { "APP_MODE": "local" },
-  "dependencyPaths": ["."],
-  "generatedPaths": ["dist"],
   "dataPaths": ["storage"],
   "dataEnvVar": "APP_DATA_DIR"
 }
 ```
 
-命令的 cwd 是项目相对路径，缺省为根目录；可选 `timeoutMs` 覆盖该命令的阶段时限。`start` 必填；install、build、tests 可按项目声明。`adapter` 缺省为 `web`；Web 的 readyPath、browserPath、extraPorts 可沿用顶层写法，也可放入 `adapterConfig`。路径解析拒绝绝对路径及 `..` 越界。
+Windows 上把 `npm` 换成 `npm.cmd`。`start` 必填；`install`、`build`、`tests` 可选。`cwd` 是项目相对路径，解析时拒绝绝对路径和 `..` 越界。`generatedPaths` 声明从源码重建的目录；`dataPaths` 是每个 case 独立复制的数据目录；`extraPorts` 只在交付时预留。
 
-`env` 提供本轮项目进程环境，安装、构建、开发测试和应用启动共享声明。控制器为启动设置本次 `PORT`，并为数据环境变量注入独立目录。`readyPath` 用于 HTTP 就绪检测；`browserPath` 是浏览器入口，缺省 `/`，交付检查要求它返回成功的 HTML 并可在真实浏览器中打开。具体页面内容和角色由需求验收。本轮运行配置固定，交付配置须与其一致；调整运行方式后启动新一轮。
+## 运行结果与恢复
 
-`dependencyPaths` 限定依赖清单的输入目录；`generatedPaths` 声明生成目录，候选从源码重新构建。`dataPaths` 是同一逻辑存储的候选目录，复制唯一存在者；多个同时存在时报告歧义。`dataEnvVar` 缺省为 `SHALLOW_DATA_DIR`，应用须从该变量接受运行数据目录。应用自身负责迁移和种子补充，检查包含空数据与继承数据。
+默认运行目录在 `%TMP%/shallowcode-runs/<run-id>`，可用 `SHALLOW_RUN_DIR` 覆盖。结束时会打印运行目录、补丁位置，以及总计、Builder、Checker 三组模型用量。
 
-`extraPorts` 可声明交付时的额外 HTTP 服务端口。应用通过 `SHALLOW_EXTRA_PORTS=0` 在隔离开发与候选验收时跳过这些固定端口，交付时开启。缺省不预留评测端口；显式 `SHALLOW_EVAL_PORT` 才产生预留约束。开发探针使用独立分配的端口。
+| 产物 | 内容 |
+| --- | --- |
+| `result.json` / `report.md` | 交付状态、逐需求与逐场景结果、模型用量和可读报告。 |
+| `changes.patch` | 本轮改动，包含新增文件和二进制变更。 |
+| `checker/` | 快照、合同、检查程序、证据收据和检查报告；只存在于私有运行目录。 |
+| `shallow-progress/progress.log` | 对外可见的进度日志，保持 untracked。 |
 
-**开发工具与独立验收**
+`resume` 要求需求、运行配置、提示词、Checker 执行绑定和依赖锁文件匹配；已接受的实现通过可运行检查后继续使用，历史 `verified` 不会带入本轮。`apply` 写回前会核对补丁摘要和每个受影响文件的完整输入内容，受影响文件已被修改时拒绝写回。
 
-Checker 是唯一验收引擎，缺省启用 Active；`SHALLOW_CHECKER_CONCURRENCY` 设置 1 或 2 个检查槽。`SHALLOW_CHECKER_MODE` 可省略或设为 `active`。
+## 交付状态
 
-`active` 中，Builder 完成每个功能组后只等待源码封存，随后继续实现。检查任务绑定快照、需求、初态与执行器摘要；两个检查槽拥有各自的应用、数据和浏览器。模块边界在最新完整源码上重放必要场景，已确认的问题才进入修复，修复接受前复验已通过路径。声明固定额外端口的项目在共享资源处串行运行。
+| 状态 | 含义 | 退出码 |
+| --- | --- | --- |
+| `delivered` | 当前范围全部 `verified`，且交付检查通过。 | 0 |
+| `partial` | 有未确认项；可用 `apply --allow-partial` 写回。 | 2 |
+| `failed` | 交付失败或运行异常。 | 1 |
 
-Checker 内核管理内容引用、任务、证据、期限和队列。Web 执行配置、能力 schema、初态、程序格式和提示词通过数据声明绑定可信 Web 执行器。生成的 JavaScript 在独立进程中的 QuickJS 运行，通过受控 Playwright 能力访问应用；循环、条件和数值关系可以组合为完整检查程序。每个 GIVEN、WHEN 和结果子句对应宿主产生的观察与收据。业务失败须在另一个新环境复现；执行或解释不足记为未确认。Builder 与 Checker 的模型用量分别统计；功能分组计入 Checker，运行汇总显示总计及两个分组。
-
-Checker 运行目录包含 `checker/controller.json`（源码产出与可运行检查点）、`checker/state.json`（任务索引）、`checker/snapshots/`（完整输入副本）及 `checker/objects/`（按内容保存的合同、程序、复核和收据）。`result.json` 保存当前逐子句结果，`checker-report.md` 展示原文依据、实际观察、断言与证据链接。`producedHead` 可以领先于 `acceptedSha`；恢复先重建已封存源码并确认运行条件，历史证据用于程序复用。应用运行合同、数据隔离和候选身份由通用应用层管理；Web 的端口、HTTP 就绪和浏览器工具由适配器解释。
-
-当前提供 Web 适配器。本地确定性测试、模拟网关与真实 Chromium 用例分别验证工程合同，模型误报率、耗时和成本需要实测。
-
-Builder 的 `run_tests` 使用声明的目标 ID；`all` 顺序执行全部目标，`filter` 作为一个额外参数传给目标命令。模板目标保留单 worker。默认实际运行，仅在确定性测试与输入未改变时可显式 `reuse=true`。
-
-`app` 按相同合同启动、观察和停止开发应用，返回适配器元数据；Web 元数据包含 `baseUrl`。重建前停止，构建后重新启动。候选验收每个 case 使用隔离数据，同一 case 的刷新和新浏览器会话保留该 case 的服务端状态。
-
-Checker 保留 GIVEN/WHEN/THEN 的准备和结果语义。所有明示结果分别映射断言，定位保持严格唯一，角色和对象身份以需求为准。证据关联候选源码、构建和计划；变更后需要复验。
-
-需求分析按结构化步骤标记 GIVEN/WHEN/THEN，AND/BUT 延续所属阶段，并保留原文与场景步骤来源。分组使用按阶段合并的原文事实，Builder 与 Checker 使用阶段索引；结果覆盖共用字面值与复合结果提取，保留引号内的标点、公式和备选值。节点 `guidance` 记录用户提出但无法独立验收的期望（页面主题、风格、美观等）：它随需求原文进入 Builder 的实现指引并按原文实现，不进入 Checker 的场景断言，也不影响需求状态。
-
-Builder 通过 Pi 显式加载 `prompts/skills/` 和选定适配器的技能目录（Web 为 `prompts/adapters/web/skills/`），先看到名称、description 与路径，根据当前工作按需用 `read` 读取 SKILL.md。技能涵盖持久化、身份权限、关联对象，以及适配器提供的控件、编辑和交付指导，供模型选择适用指导。技能文件只读；目标项目和全局目录的技能自动发现保持关闭。其余提示词提供通用实现与验收合同，具体框架、路由和布局按现有项目及需求决定。
-
-`acceptedSha` 表示可运行检查点；`verified` 表示独立行为证据。`delivered` 要求当前范围全部验证且交付检查通过，退出码 0；`partial` 列出已完成及未确认项，退出码 2；`failed` 表示交付失败，退出码 1。输入错误或运行异常也返回 1。
-
-**运行产物与增量**
-
-`SHALLOW_RUN_DIR` 缺省指向系统临时目录下的 `shallowcode-runs`，每轮建立日志目录。`run-log.txt`、`run-ledger.jsonl`、Checker 合同、程序、证据、Pi 会话和候选构建位于私有运行目录。交互终端展示运行摘要与最近进展，详细视图保留最近 500 条人类可读日志；`run-log.txt` 与 `shallow-progress/progress.log` 持续保存全部人类可读行。纯文本模式直接输出这些日志行；`run-ledger.jsonl` 等原始事件只保留在私有运行目录。
-
-已有项目的开发副本保留在该轮 `workspace` 中。`run.json` 记录需求、配置与控制器合同摘要、来源和输入基线；需求及参考文件保存在私有 `requirements/` 快照中。`changes.patch` 导出本轮改动，包含新增文件和二进制变更。`result.json` 保存交付状态、逐需求状态列表、逐场景结果及本轮 `modelUsage`：顶层为总用量，`builder`、`checker` 为分组用量，`cost` 是已知费用，`unpricedTokens` 是未计价 token 数；`report.md` 提供可读报告。结束时终端打印运行目录、补丁位置与三组模型用量。`shallow-progress/progress.log` 保存可读进度，保持 untracked；Checker 的合同、程序与证据只存于私有运行目录。
-
-恢复和写回使用终端打印的完整运行目录：
-
-```powershell
-npm.cmd start -- resume --run-dir "E:\runs\<运行目录>" --budget-ms 600000
-npm.cmd start -- apply --run-dir "E:\runs\<运行目录>"
-npm.cmd start -- apply --run-dir "E:\runs\<运行目录>" --allow-partial
-```
-
-`resume` 从该轮最后记录的接受检查点继续，保存中断尝试历史，为恢复轮建立新的日志与证据目录。已接受的实现通过可运行检查后继续使用；本轮重新验收，历史 verified 只保留在旧记录。需求目录内容、运行配置、提示词、Checker 执行绑定与依赖锁文件须匹配；可复用匹配执行绑定的 Checker 程序。恢复轮预算独立计算，缺省 0 表示不限总时间。Pi 从当前代码与架构交接开始新会话。同一工作区已有运行进程时拒绝并发恢复。恢复与应用使用版本 3 的运行记录；旧 Judge / observe / active 运行应将其开发副本作为新项目接管并重新验收。
-
-`apply` 无需模型凭证，默认只接受 delivered；partial 需显式 `--allow-partial`。写回前核对补丁摘要及每个受影响文件的完整输入内容，再一次性应用补丁。受影响文件已被用户修改时拒绝写回，补丁和副本仍可检查。同时在 `shallow-progress/requirements.json` 保存已验证及明确沿用的需求合同摘要，供后续增量判断；该文件保持 untracked；未确认项在下一轮仍进入当前范围。原项目的分支、历史和暂存区保持不动，支持未初始化 Git 的项目及仓库中的子项目。新项目直接使用输出目录交付。
-
-保留 Stage/Phase、Evolution 及显式修改描述的输入兼容。新增运行按需求本体、祖先与根合同、场景、依赖、种子和参考文件的摘要识别变化，需求 ID 保持不变也会进入修改范围。运行开始时冻结历史来源，恢复保持原增量范围。旧格式的需求 ID 来源是进度日志中的严格检查点行；输入项目自身已带 `shallow-progress/plans` 时也读取其中的历史计划——本工具新写出的 Checker 合同与程序只存于私有运行目录。前序能力只作上下文，历史记录不授予本轮 verified。`SHALLOW_EVOLUTION_AUDIT_INHERITED=1` 包含沿用项回归；跳过项单列。
-
-**工程验证与源码导航**
+## 开发与验证
 
 ```powershell
 npm.cmd run typecheck
@@ -139,6 +201,15 @@ npm.cmd run test:browser
 npm.cmd run test:all
 ```
 
-真实网关冒烟需要显式 `RUN_CREDENTIAL_SMOKE=1` 和凭证，默认跳过。完整工程检查由 test:all 顺序运行，结果区分本地回归和真实模型任务。
+真实网关冒烟需要显式设置 `RUN_CREDENTIAL_SMOKE=1` 并提供凭证，默认跳过。
 
-项目配置见 `src/project-spec.ts`；副本与补丁见 `src/project-workspace.ts`；恢复与写回见 `src/run-record.ts`；通用应用合同与候选见 `src/application/`，Web 运行与工具见 `src/adapters/web/`；主流程见 `index.ts`、`src/pipeline.ts`、`src/checker-pipeline.ts`；验收见 `src/checker/`。修改流程、约束和测试入口见 [AGENTS.md](AGENTS.md)，适配器在 `src/adapters/index.ts` 与 `src/adapters/checker.ts` 的生产注册处装配。
+| 路径 | 内容 |
+| --- | --- |
+| `index.ts`、`src/cli.ts` | 入口、参数解析、运行目录与恢复。 |
+| `src/checker-pipeline.ts` | 主调度、模块边界、修复回归和交付。 |
+| `src/application/` | `ApplicationContract`、适配器注册表和候选运行。 |
+| `src/adapters/web/` | Web 生命周期、脚手架、Builder 工具和交付检查。 |
+| `src/checker/`、`prompts/checker/` | Checker 内核、Web 执行器、QuickJS 程序和中文提示词。 |
+| `test/` | 控制器、Checker、应用适配与真实 Chromium 用例。 |
+
+当前提供 Web 适配器；Checker 使用受控的 Chromium 桌面环境，不开放 `page.evaluate`、网络拦截或存储直访。总流程使用 Mermaid 时序图；架构与 Checker 内部流程的源规格在 `assets/diagrams/specs/`，生成静态 SVG 嵌入 README。具体合同、修改流程和测试入口见 [AGENTS.md](AGENTS.md)。
