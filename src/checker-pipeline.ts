@@ -96,7 +96,7 @@ export class CheckerCoordinator {
     const job: CheckJob = { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
       packetId: packet.id, attempt: packet.attempt, moduleEpoch: epoch, snapshot: head.snapshot, requirements,
       binding: this.runtime.binding, initialState, requirementIds: packet.requirementIds, mode, programs,
-      budget: { deadlineAt, maxModelTokens: 250_000 } };
+      budget: { deadlineAt } };
     await this.queue.enqueue(job, { priority });
     await this.emit({ at: now(), type: "check_queued", packetId: packet.id, detail: jobDetail(job, head.sourceSha) });
     const monitor = this.monitor(job, head).catch(error => { this.failure = error; });

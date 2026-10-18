@@ -23,7 +23,6 @@ export interface CheckerModelRequest {
   prompt: string;
   tools: CheckerTool[];
   signal: AbortSignal;
-  maxModelTokens: number;
 }
 export interface CheckerModelResult { totalTokens: number }
 export interface CheckerModel { run(request: CheckerModelRequest): Promise<CheckerModelResult> }
@@ -49,16 +48,20 @@ export function createPiCheckerModel(options: {
 }): CheckerModel {
   return { async run(request) {
     request.signal.throwIfAborted();
-    if (request.maxModelTokens <= 0 || Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model budget exhausted");
+    if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
     const cwd = join(options.sessionDir, randomUUID());
     const agentDir = join(cwd, "config");
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
     const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+    // The model's 256k context window is the only per-call token bound; there is no cumulative token budget.
     runtime.registerProvider("checker-gateway", { baseUrl: options.gateway.baseUrl, api: "openai-completions", apiKey: "CHECKER_RUNTIME_CREDENTIAL",
       models: [piProviderModel(options.gateway.model, options.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
         opencodeSessionHeaders(options.gateway.baseUrl, randomUUID()), options.modelCost)] });
     await runtime.setRuntimeApiKey("checker-gateway", options.gateway.apiKey);
-    const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false }, enableInstallTelemetry: false });
+    // Transient gateway drops are retryable; the provider adds no second layer of its own.
+    // Long explorations compact older turns before the model's 256k context window is exhausted.
+    const settingsManager = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
+      provider: { maxRetries: 0 } }, compaction: { enabled: true }, enableInstallTelemetry: false });
     const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true,
       disabledBuiltinExtensions: ["mcp"], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       systemPrompt: request.systemPrompt });
@@ -73,27 +76,16 @@ export function createPiCheckerModel(options: {
       model: runtime.getModel("checker-gateway", options.gateway.model), settingsManager, resourceLoader: resources,
       sessionManager: SessionManager.create(cwd, cwd), noTools: "builtin", tools: customTools.map(tool => tool.name), customTools });
     if (modelFallbackMessage) { session.dispose(); throw new Error(modelFallbackMessage); }
-    let used = 0;
     let reasoning = 0;
     let hasReasoning = false;
-    let budgetError: Error | undefined;
     let providerError: string | undefined;
-    const originalStream = session.agent.streamFunction;
-    // Admission is local to this request. Reserve input from the serialized transcript before each provider call.
-    session.agent.streamFunction = (model, context, streamOptions) => {
-      request.signal.throwIfAborted();
-      const inputReserve = Buffer.byteLength(JSON.stringify(context), "utf8");
-      const remaining = request.maxModelTokens - used - inputReserve;
-      if (remaining <= 0 || Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model budget exhausted");
-      return originalStream(model, context, { ...streamOptions, maxTokens: Math.min(65_536, remaining) });
-    };
     const unsubscribe = session.subscribe(event => {
       if (event.type !== "message_end" || event.message.role !== "assistant") return;
-      used = session.getSessionStats().tokens.total;
       const count = event.message.usage.reasoning;
       if (count !== undefined) { reasoning += count; hasReasoning = true; }
       if (event.message.stopReason === "error" || event.message.stopReason === "aborted") providerError = event.message.errorMessage ?? event.message.stopReason;
-      if (used >= request.maxModelTokens) { budgetError = new Error("Checker model budget exhausted"); void session.abort(); }
+      // A successful retry clears the previous attempt's transient failure.
+      else providerError = undefined;
     });
     const abort = () => { void session.abort(); };
     request.signal.addEventListener("abort", abort, { once: true });
@@ -103,7 +95,6 @@ export function createPiCheckerModel(options: {
       await session.waitForIdle();
       request.signal.throwIfAborted();
       if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
-      if (budgetError) throw budgetError;
       if (providerError) throw new Error(providerError);
       return { totalTokens: session.getSessionStats().tokens.total };
     } finally {

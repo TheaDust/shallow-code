@@ -31,7 +31,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   const input: CheckerRequirements = { requirements: [requirement], implementedRequirementIds: [] };
   const job: CheckJob = { jobId: "job-1", runId: store.runId, moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
     snapshot: await store.putJson({ sha: "source-1" }), requirements: await store.putJson(input), binding, initialState,
-    requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 30_000, maxModelTokens: 100_000 } };
+    requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 30_000 } };
   let environments = 0, closed = 0, replays = 0;
   const roles: string[] = [];
   const reviewPrompts: string[] = [];
@@ -397,6 +397,65 @@ test("Checker cancellation awaits cleanup and returns unconfirmed results", asyn
   } finally { await f.cleanup(); }
 });
 
+test("production Pi Checker retries a transient connection failure before using the model", { timeout: 20_000 }, async () => {
+  const f = await fixture();
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    requests += 1;
+    if (requests === 1) { req.socket.destroy(); return; }
+    const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address(); assert(address && typeof address !== "string");
+    const usage: CheckerModelUsage[] = [];
+    const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" }, sessionDir: join(f.directory, "sessions"), onUsage: item => usage.push(item) });
+    const result = await model.run({ role: "exploration", job: f.job, systemPrompt: "Reply.", prompt: "Hello.", tools: [], signal: new AbortController().signal });
+    assert.equal(requests, 2, "the first transient connection failure must be retried");
+    assert.equal(result.totalTokens, 13);
+    assert.equal(usage.length, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await f.cleanup();
+  }
+});
+
+test("production Pi Checker compacts a long transcript before the context window overflows", { timeout: 30_000 }, async () => {
+  const f = await fixture();
+  const requests: Array<{ summary: boolean }> = [];
+  const server = createServer(async (req, res) => {
+    const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
+    const payload = JSON.parse(Buffer.concat(parts).toString()) as { messages?: Array<{ role?: string; content?: unknown }> };
+    const summary = JSON.stringify(payload.messages?.[0]?.content ?? "").includes("context summarization assistant");
+    requests.push({ summary });
+    const first = !summary && requests.filter(item => !item.summary).length === 1;
+    const content = summary ? "Summary of the earlier exploration." : first ? undefined : "y".repeat(120_000);
+    const delta = first ? { role: "assistant", tool_calls: [{ index: 0, id: "probe-1", type: "function", function: { name: "probe", arguments: "{}" } }] }
+      : { role: "assistant", ...(content ? { content } : {}) };
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: first ? "tool_calls" : "stop" }], usage: { prompt_tokens: summary ? 1_000 : first ? 18_000 : 30_000, completion_tokens: 10, total_tokens: summary ? 1_010 : first ? 18_010 : 30_010 } })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address(); assert(address && typeof address !== "string");
+    const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" },
+      sessionDir: join(f.directory, "sessions"), contextWindow: 40_000 });
+    await model.run({ role: "exploration", job: f.job, systemPrompt: "Reply.", prompt: "x".repeat(120_000),
+      tools: [{ name: "probe", description: "Probe", parameters: Type.Object({}), async execute() { return { ok: true }; } }],
+      signal: new AbortController().signal });
+    assert.ok(requests.some(item => item.summary), `expected a compaction summary request, got ${JSON.stringify(requests)}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await f.cleanup();
+  }
+});
+
 test("production Pi Checker session exposes only declared tools, calls finish and attributes usage", async () => {
   const f = await fixture();
   const payloads: Array<Record<string, unknown>> = [];
@@ -417,7 +476,7 @@ test("production Pi Checker session exposes only declared tools, calls finish an
   try {
     const address = server.address(); assert(address && typeof address !== "string");
     const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" }, sessionDir: join(f.directory, "sessions"), onUsage: item => usage.push(item) });
-    await model.run({ role: "semantic_review", job: f.job, systemPrompt: "Use finish.", prompt: "Review.", maxModelTokens: 10_000,
+    await model.run({ role: "semantic_review", job: f.job, systemPrompt: "Use finish.", prompt: "Review.",
       tools: [{ name: "finish", description: "Submit review", parameters: Type.Object({}), async execute() { finished = true; return {}; } }], signal: new AbortController().signal });
     assert.equal(finished, true); assert.equal(payloads.length, 2);
     for (const payload of payloads) {

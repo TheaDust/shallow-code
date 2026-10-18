@@ -21,7 +21,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const snapshot = await artifacts.putJson({ snapshot: 1 });
   const requirements = await artifacts.putJson({ text: "input" });
   const job = (id: string, patch: Partial<CheckJob> = {}): CheckJob => ({ jobId: id, runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
-    snapshot, requirements, binding, initialState: input, requirementIds: ["r1"], mode: "prepare", programs: [], budget: { deadlineAt: Date.now() + 60_000, maxModelTokens: 100 }, ...patch });
+    snapshot, requirements, binding, initialState: input, requirementIds: ["r1"], mode: "prepare", programs: [], budget: { deadlineAt: Date.now() + 60_000 }, ...patch });
   const report = async (job: CheckJob): Promise<CheckReport> => ({ job: await artifacts.putJson(job), snapshot: job.snapshot, binding: job.binding,
     manifest: await artifacts.putJson({ receipts: [] }), programs: [], outcomes: [] });
   return { root, artifacts, schema, input, binding, job, report };
@@ -116,10 +116,10 @@ test("deadline includes queue time and cancellation retains resource lease throu
     return f.report(job);
   } } });
   try {
-  await queue.enqueue(f.job("slow", { budget: { deadlineAt: Date.now() + 5_000, maxModelTokens: 1 } }));
+  await queue.enqueue(f.job("slow", { budget: { deadlineAt: Date.now() + 5_000 } }));
   await awaitStarted(queue, "slow", started.promise, t.signal);
   await queue.enqueue(f.job("waiting"));
-  await queue.enqueue(f.job("expired", { budget: { deadlineAt: Date.now() - 1, maxModelTokens: 1 } }));
+  await queue.enqueue(f.job("expired", { budget: { deadlineAt: Date.now() - 1 } }));
   await awaitStarted(queue, "slow", aborted.promise, t.signal); assert.deepEqual(order, ["slow"]);
   cleaned.resolve(); await queue.drain(t.signal);
   assert.deepEqual(order, ["slow", "waiting"]);

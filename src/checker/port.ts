@@ -23,7 +23,7 @@ export interface CheckJob {
   requirementIds: string[];
   mode: "prepare" | "discover" | "replay" | "confirm";
   programs: ProgramRef[];
-  budget: { deadlineAt: number; maxModelTokens: number };
+  budget: { deadlineAt: number };
 }
 export interface EvidenceReceipt {
   id: string;

@@ -103,7 +103,6 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
       scenarioId: source.scenarioId, clauseId: source.id, status: "inconclusive", evidence: [], reason: "No reviewed program covered this source result" }]));
     for (const id of job.requirementIds) if (!sources.some(source => source.requirementId === id)) outcomeMap.set(`${id}:missing-source`, {
       requirementId: id, scenarioId: "unknown", clauseId: `${id}:missing-source`, status: "inconclusive", evidence: [], reason: "Requirement has no source result clause" });
-    let remainingTokens = job.budget.maxModelTokens;
     let cleanupFailure: CheckerCleanupError | undefined;
     const sessions = new Set<ExecutionSession>();
     const progress = async (detail: CheckerProgress): Promise<void> => {
@@ -137,9 +136,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     };
     const runModel = async (role: "exploration" | "semantic_review", systemPrompt: string, prompt: string, tools: CheckerTool[]): Promise<void> => {
       signal.throwIfAborted();
-      if (remainingTokens <= 0) throw new Error("Checker model budget exhausted");
-      const result = await model.run({ role, job, systemPrompt, prompt, tools, signal, maxModelTokens: remainingTokens });
-      remainingTokens = Math.max(0, remainingTokens - result.totalTokens);
+      await model.run({ role, job, systemPrompt, prompt, tools, signal });
     };
     try {
       if (!sameRef(adapter.binding, job.binding)) throw new Error("Checker adapter binding mismatch");

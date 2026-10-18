@@ -38,7 +38,7 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
     const input: CheckerRequirements = { requirements: [requirement], implementedRequirementIds: ["r1"] };
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
       snapshot: snapshot.ref, requirements: await artifacts.putJson(input), binding: adapter.binding, initialState,
-      requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 180_000, maxModelTokens: 10_000 } };
+      requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 180_000 } };
     const clauses = checkerSourceClauses(input, job.requirementIds);
     assert.equal(clauses.length, 3);
     const roles: string[] = [];
