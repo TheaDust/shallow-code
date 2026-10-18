@@ -1,8 +1,6 @@
-import {
-  getSelectListTheme,
-  initTheme,
-  type AgentSessionEvent,
-  type AgentSessionEventListener,
+import type {
+  AgentSessionEvent,
+  AgentSessionEventListener,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -18,15 +16,27 @@ import {
   type Component,
   type MarkdownTheme,
   type OverlayHandle,
+  type SelectListTheme,
   type Terminal,
 } from "@earendil-works/pi-tui";
-import { clearTerminalScreen, terminalHeader, terminalTheme } from "../../src/terminal/theme.js";
+import { clearTerminalScreen, terminalHeader, terminalTheme, type TerminalTheme } from "../../src/terminal/theme.js";
 import { setMouseTracking } from "../../src/terminal/mouse-wheel.js";
 import { TextViewer } from "../../src/terminal/text-viewer.js";
 import { formatCostUsd, formatTokenCount } from "../../src/model-usage.js";
 import type { ConversationView } from "./cli.js";
 import { serializeRequirementsYaml, summarizeTree, type RequirementNode } from "./dsl.js";
 const WORKING_MESSAGE = "正在思考…";
+
+/** Keep editor autocomplete on the same restrained palette as the rest of the TUI. */
+function selectListTheme(theme: TerminalTheme): SelectListTheme {
+  return {
+    selectedPrefix: theme.accent,
+    selectedText: theme.accent,
+    description: theme.muted,
+    scrollInfo: theme.muted,
+    noMatch: theme.muted,
+  };
+}
 
 /** 会话统计的最小结构；测试的假会话可以只提供 subscribe。 */
 export interface SessionStatsSource {
@@ -72,7 +82,6 @@ export class RequirementsTui {
 
   constructor(private readonly options: RequirementsTuiOptions, terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal);
-    initTheme();
     const t = this.theme;
     this.markdownTheme = {
       heading: text => t.accent(t.strong(text)), link: t.accent, linkUrl: t.muted,
@@ -81,7 +90,7 @@ export class RequirementsTui {
       bold: t.strong, italic: text => text, strikethrough: text => text, underline: t.accent,
     };
     this.queue = new InputQueue(() => { this.setBusy(false); });
-    this.editor = new Editor(this.tui, { borderColor: this.theme.accent, selectList: getSelectListTheme() }, { paddingX: 1 });
+    this.editor = new Editor(this.tui, { borderColor: this.theme.accent, selectList: selectListTheme(this.theme) }, { paddingX: 1 });
     this.editor.onSubmit = (text) => { this.submit(text); };
     this.tui.addChild({ render: width => terminalHeader("Requirements Agent", width, this.theme), invalidate() {} });
     this.tui.addChild(new Spacer(1));
@@ -124,7 +133,7 @@ export class RequirementsTui {
   present(view: ConversationView): void {
     const t = this.theme;
     if (view.type === "intro") {
-      this.append(new Text(t.strong("从一句想法开始。") + "\n" +
+      this.append(new Text(t.accent(t.strong("从一句想法开始。")) + "\n" +
         "描述你想做的应用，也可以给出现有需求文档或目录的路径。\n" +
         t.muted("需要生成时输入“生成”，也可直接要求更新现有需求文档；程序会先展示供你确认。"), 1, 0));
     } else if (view.type === "draft") {
@@ -146,7 +155,7 @@ export class RequirementsTui {
       if (view.file) this.append(new Text(`将更新原文件：${view.file}`, 1, 0));
       if (view.changes) this.append(new Text(`相较原文件：新增 ${view.changes.added.length} 项 · ` +
         `修改 ${view.changes.changed.length} 项 · 删除 ${view.changes.removed.length} 项`, 1, 0));
-      this.append(new Text(formatRequirementPreview(view.tree), 1, 0));
+      this.append(new Text(formatRequirementPreview(view.tree, t), 1, 0));
       if (view.references.length) this.append(new Text(t.muted("将交接的参考文件") + "\n" +
         view.references.map(ref => `${ref.source} → ${ref.destination}`).join("\n"), 1, 0));
       const action = view.file ? "更新" : "生成";
@@ -209,7 +218,7 @@ export class RequirementsTui {
     if (!this.assistant) {
       const component = new Markdown(text, 1, 0, this.markdownTheme);
       this.assistant = { component, text };
-      this.append(new Text(this.theme.muted("需求助手"), 1, 0));
+      this.append(new Text(this.theme.planner("需求助手"), 1, 0));
       this.append(component);
       return;
     }
@@ -289,18 +298,22 @@ export class RequirementsTui {
   }
 
   private updateContext(): void {
+    const t = this.theme;
     const tree = this.draft?.tree;
     const summary = tree ? summarizeTree(tree) : null;
     const state = summary ? `草案 r${this.draft!.revision} · ${summary.atomics} 个功能 · ${summary.scenarios} 个场景` : "等待第一份草案";
-    const count = `模型 ${this.options.model} · ${state}`;
+    const count = `${t.muted("模型")} ${t.accent(this.options.model)} · ${t.muted(state)}`;
     const next = this.review ? `等待确认 · 回复“是”${this.review.file ? "更新原文件" : "生成"}` : this.draft?.questions.length
       ? `待确认 ${this.draft.questions.length} 个问题` : tree ? "继续补充，或输入“生成”" : "描述你的想法";
     const usage = this.usage ? `模型用量 tokens ${formatTokenCount(this.usage.tokens)}` +
       (this.usage.cost > 0 ? ` · 费用 ${formatCostUsd(this.usage.cost)}` : "") : "";
-    this.context.setText(this.theme.muted(count) + "\n" + (this.review ? this.theme.warning(next) : this.theme.muted(next)) +
-      (usage ? "\n" + this.theme.muted(usage) : ""));
-    this.footer.setText(this.theme.muted(this.busy ? "Esc 中止本轮   F2 草案预览" :
-      "Enter 发送   Shift+Enter 换行   F2 草案预览   Ctrl+C 清空/退出"));
+    const nextText = this.review ? t.warning(next) : this.draft?.questions.length ? t.warning(next)
+      : tree ? t.accent(next) : t.muted(next);
+    this.context.setText(count + "\n" + nextText + (usage ? "\n" + t.muted(usage) : ""));
+    const keyHint = (key: string, label: string) => `${t.accent(key)} ${t.muted(label)}`;
+    this.footer.setText(this.busy
+      ? `${keyHint("Esc", "中止本轮")}   ${keyHint("F2", "草案预览")}`
+      : `${keyHint("Enter", "发送")}   ${keyHint("Shift+Enter", "换行")}   ${keyHint("F2", "草案预览")}   ${keyHint("Ctrl+C", "清空/退出")}`);
     if (this.started && !this.stopped) this.tui.requestRender();
   }
 
@@ -322,10 +335,10 @@ export class RequirementsTui {
     if (!tree) { this.notice("还没有草案；先描述你想做的应用。"); return; }
     let yaml = false;
     const title = `需求草案 · r${this.review?.revision ?? this.draft?.revision}`;
-    const viewer = new TextViewer(this.tui, this.theme, title, formatRequirementPreview(tree), () => this.closePreview());
+    const viewer = new TextViewer(this.tui, this.theme, title, formatRequirementPreview(tree, this.theme), () => this.closePreview());
     viewer.onToggle = () => {
       yaml = !yaml;
-      viewer.setText(title + (yaml ? " · YAML" : ""), yaml ? serializeRequirementsYaml(tree) : formatRequirementPreview(tree));
+      viewer.setText(title + (yaml ? " · YAML" : ""), yaml ? serializeRequirementsYaml(tree) : formatRequirementPreview(tree, this.theme));
     };
     // 审阅层显示期间上报滚轮，关闭后交还终端原生文本选择。
     setMouseTracking(this.tui.terminal, true);
@@ -350,23 +363,29 @@ export class RequirementsTui {
 }
 
 /** Render the same tree used for export, including every scenario clause. */
-export function formatRequirementPreview(tree: RequirementNode): string {
+export function formatRequirementPreview(tree: RequirementNode, theme?: TerminalTheme): string {
   const lines: string[] = [];
+  const label = (text: string) => theme ? theme.muted(text) : text;
   const visit = (node: RequirementNode, depth: number): void => {
     const indent = "  ".repeat(depth);
-    lines.push(`${indent}${node.type === "ATOMIC" ? "◆" : "▸"} ${node.name} · ${node.id}`);
+    const marker = node.type === "ATOMIC" ? "◆" : "▸";
+    const marked = theme ? (node.type === "ATOMIC" ? theme.accent(marker) : theme.planner(marker)) : marker;
+    lines.push(`${indent}${marked} ${node.name} · ${theme ? theme.muted(node.id) : node.id}`);
     if (node.description) lines.push(...node.description.split("\n").map(line => `${indent}  ${line}`));
     if (node.guidance?.length) {
-      lines.push(`${indent}  实现指引（不单独验收）：`);
+      lines.push(`${indent}  ${label("实现指引（不单独验收）：")}`);
       for (const item of node.guidance) lines.push(`${indent}    - ${item}`);
     }
-    if (node.dependencies.length) lines.push(`${indent}  依赖：${node.dependencies.join("、")}`);
-    if (node.visual_reference?.length) lines.push(`${indent}  参考：${node.visual_reference.join("、")}`);
-    for (const data of node.data ?? []) lines.push(`${indent}  初始数据 · ${data.category}`,
+    if (node.dependencies.length) lines.push(`${indent}  ${label("依赖：")}${node.dependencies.join("、")}`);
+    if (node.visual_reference?.length) lines.push(`${indent}  ${label("参考：")}${node.visual_reference.join("、")}`);
+    for (const data of node.data ?? []) lines.push(`${indent}  ${label("初始数据")} · ${data.category}`,
       ...data.items.map(item => `${indent}    ${item}`));
     for (const scenario of node.scenarios) {
-      lines.push(`${indent}  场景：${scenario.name} · ${scenario.id}`);
-      for (const step of scenario.steps) lines.push(`${indent}    ${step.keyword.padEnd(5)} ${step.content}`);
+      lines.push(`${indent}  ${label("场景：")}${scenario.name} · ${theme ? theme.muted(scenario.id) : scenario.id}`);
+      for (const step of scenario.steps) {
+        const keyword = step.keyword.padEnd(5);
+        lines.push(`${indent}    ${theme ? theme.accent(keyword) : keyword} ${step.content}`);
+      }
     }
     lines.push("");
     for (const child of node.children) visit(child, depth + 1);

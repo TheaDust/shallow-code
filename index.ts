@@ -14,6 +14,7 @@ import { ArtifactStore, atomicWrite } from "./src/checker/artifacts.js";
 import type { ContentRef } from "./src/checker/port.js";
 import { createCheckerAgent, createPiCheckerModel, type CheckerModelUsage } from "./src/checker/agent.js";
 import type { CheckerRuntime } from "./src/checker-pipeline.js";
+import type { RequirementNode } from "./src/types.js";
 import { GitCliOps } from "./src/git-ops.js";
 import { HumanRunFormatter } from "./src/human-log.js";
 import { BuildTui, buildResult } from "./src/terminal/build-tui.js";
@@ -49,6 +50,8 @@ import { readHistoricalRequirementIds, requirementDigest, saveRequirementDigests
 
 export interface AgentExecutionContext {
   runRecord: RunRecord;
+  /** 本轮输入需求树；交互终端据此展示子树完成状态。 */
+  requirementTree?: RequirementNode;
   resumeCheckpointSha?: string;
   sourceProjectDir?: string;
   /** Builder 侧网关（SHALLOW_BUILDER_* 覆盖，缺省公共网关）。 */
@@ -195,7 +198,7 @@ export async function main(
   }
   process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
   const summary = await execute({
-    runRecord, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
+    runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
     ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
     builderGateway,
     checkerGateway,
@@ -271,7 +274,7 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, checkerGateway, builderModelCost, checkerModelCost, pipelineOptions, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, checkerGateway, builderModelCost, checkerModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
@@ -282,6 +285,17 @@ async function executeProduction(
   let releaseWorkspace: (() => Promise<void>) | undefined;
   let tui: BuildTui | undefined;
   try {
+    if (interactive) {
+      tui = new BuildTui({
+        requirementIds: Object.keys(context.runRecord.requirementDigests!),
+        requirementTree,
+        models: { builder: builderGateway.model, checker: checkerGateway.model },
+        onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
+      });
+      tui.start();
+      // 先停留在只读状态；用户按 Enter 后才创建 Builder 并进入流水线。
+      await tui.waitForStart();
+    }
     const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined, {
       ...(builderModelCost ? { modelCost: builderModelCost } : {}),
       heartbeat: !interactive,
@@ -312,7 +326,7 @@ async function executeProduction(
       await writeFile(join(dirname(runLogFile), "workspace.json"), JSON.stringify({
         sourceDirectory: sourceProjectDir, directory: pipelineOptions.outputDir, baseline: inputBaseline,
       }, null, 2) + "\n", "utf8");
-      process.stderr.write(`[ShallowCode] 开发副本：${pipelineOptions.outputDir}\n`);
+      if (!tui) process.stderr.write(`[ShallowCode] 开发副本：${pipelineOptions.outputDir}\n`);
     }
     // Git owns rollback from this point onward. Install the generic shell before
     // runPipeline captures its initial baseline, and never touch an existing app.
@@ -329,20 +343,12 @@ async function executeProduction(
         : "unknown" as const;
     context.runRecord.stageStartingPoint = context.resumeCheckpointSha ? context.runRecord.stageStartingPoint : stageStartingPoint;
     await saveRunRecord(dirname(runLogFile), context.runRecord);
-    process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
+    if (!tui) process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
     const promptDir = new URL("./prompts/", import.meta.url);
     const promptHash = createHash("sha256");
     for (const name of (await readdir(promptDir, { recursive: true })).filter((name) => name.endsWith(".md")).sort()) {
       const path = name.replaceAll("\\", "/");
       promptHash.update(path).update("\0").update((await readFile(new URL(path, promptDir), "utf8")).replace(/\r\n/g, "\n"));
-    }
-    if (interactive) {
-      tui = new BuildTui({
-        requirementIds: Object.keys(context.runRecord.requirementDigests!),
-        models: { builder: builderGateway.model, checker: checkerGateway.model },
-        onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
-      });
-      tui.start();
     }
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir), process.stderr,
       tui ? (rawLine, line) => tui!.record(rawLine, line) : undefined);

@@ -1,16 +1,28 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-/** Shared terminal palette; the terminal owns the background and body colour. */
+/**
+ * Shared terminal palette; the terminal owns the background and body colour.
+ * One soft accent carries focus, greys carry structure, and saturated colours
+ * are reserved for real outcomes. The 256-colour values stay quiet on modern
+ * terminals; NO_COLOR and TERM=dumb keep redirects and limited terminals plain.
+ */
 export function terminalTheme(colour = process.env.NO_COLOR === undefined && process.env.TERM !== "dumb") {
   const paint = (code: string) => (text: string): string => colour ? `\x1b[${code}m${text}\x1b[0m` : text;
   return {
-    // Bright variants stay legible on dark terminals; "muted" is intentionally subtle.
-    accent: paint("96"),
-    muted: paint("2"),
+    brand: paint("1;38;5;111"),
+    accent: paint("38;5;111"),
+    builder: paint("38;5;111"),
+    checker: paint("38;5;74"),
+    planner: paint("38;5;141"),
     strong: paint("1"),
-    success: paint("92"),
-    warning: paint("93"),
-    error: paint("91"),
+    label: paint("38;5;244"),
+    muted: paint("38;5;244"),
+    faint: paint("38;5;240"),
+    border: paint("38;5;238"),
+    success: paint("38;5;108"),
+    warning: paint("38;5;179"),
+    error: paint("38;5;167"),
+    blocked: paint("38;5;139"),
   };
 }
 
@@ -32,8 +44,8 @@ export function fitTerminalText(text: string, width: number): string {
 
 export function terminalHeader(mode: string, width: number, theme: TerminalTheme): string[] {
   return [
-    fitTerminalText(` ${theme.accent(theme.strong("Shallow Code"))} ${theme.muted("/ ")}${mode}`, width),
-    theme.muted("─".repeat(Math.max(0, width))),
+    fitTerminalText(` ${theme.brand("Shallow Code")} ${theme.faint("/ ")}${mode}`, width),
+    theme.border("─".repeat(Math.max(0, width))),
   ];
 }
 

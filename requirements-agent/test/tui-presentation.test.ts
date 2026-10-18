@@ -45,9 +45,10 @@ test("Req status and preview keys reflect the draft and leave editing available"
   const value = tree();
   ui.present({ type: "draft", revision: 2, tree: value, questions: ["谁可以创建任务？"], changes: diffRequirements(null, value) });
   const lines = ui.tui.render(80);
-  assert.match(lines.join("\n"), /模型 provider\/requirements-model/);
-  assert.match(lines.join("\n"), /草案 r2 · 1 个功能 · 1 个场景/);
-  assert.match(lines.join("\n"), /待确认 1 个问题/);
+  const text = lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(text, /模型 provider\/requirements-model/);
+  assert.match(text, /草案 r2 · 1 个功能 · 1 个场景/);
+  assert.match(text, /待确认 1 个问题/);
   assert.ok(lines.every(line => visibleWidth(line) <= 80));
   terminal.input("\x1bOQ");
   assert.equal(ui.tui.hasOverlay(), true);

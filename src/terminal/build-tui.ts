@@ -1,9 +1,9 @@
 import { join } from "node:path";
 import { matchesKey, ProcessTerminal, Text, TuiMainScreen, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
 import type { RunSummary } from "../pipeline.js";
-import type { RequirementStatus, RunEvent } from "../types.js";
+import type { RequirementNode, RequirementStatus, RunEvent } from "../types.js";
 import type { PiWorkerProgress } from "../builder/pi-worker-client.js";
-import { ModelUsageTotals, formatModelUsageSummary, type TokenUsage } from "../model-usage.js";
+import { ModelUsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage, type UsageSummary } from "../model-usage.js";
 import { setMouseTracking } from "./mouse-wheel.js";
 import { clearTerminalScreen, elapsedTime, fitTerminalText, shellArgument, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
 import { TextViewer } from "./text-viewer.js";
@@ -18,8 +18,44 @@ const ACTIVITY_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
 /** Render cadence while running; also the spinner frame duration. */
 const RENDER_INTERVAL_MS = 200;
 
+type TreeStatus = RequirementStatus | "skipped";
+interface TreeCounts {
+  total: number;
+  verified: number;
+  failed: number;
+  inconclusive: number;
+  blocked: number;
+  skipped: number;
+}
+
+const TREE_STATUS_LABEL: Record<TreeStatus, string> = {
+  verified: "已验证", failed: "失败", inconclusive: "证据不足", blocked: "阻塞", skipped: "沿用", todo: "未验收",
+};
+const TREE_STATUS_ICON: Record<TreeStatus, string> = {
+  verified: "✓", failed: "✗", inconclusive: "?", blocked: "⊘", skipped: "·", todo: "○",
+};
+
+function treeColour(theme: TerminalTheme, status: TreeStatus): (text: string) => string {
+  switch (status) {
+    case "verified": return theme.success;
+    case "failed": return theme.error;
+    case "inconclusive": return theme.warning;
+    case "blocked": return theme.blocked;
+    case "skipped": return theme.muted;
+    default: return theme.faint;
+  }
+}
+
+function progressBar(done: number, total: number, width: number, theme: TerminalTheme): string {
+  const cells = Math.max(5, width);
+  const filled = total > 0 ? Math.min(cells, Math.floor(cells * done / total)) : 0;
+  return theme.success("█".repeat(filled)) + theme.muted("░".repeat(cells - filled));
+}
+
 export interface BuildTuiOptions {
   requirementIds: string[];
+  /** 原始需求树；交互页面按子树聚合完成状态。 */
+  requirementTree?: RequirementNode;
   /** 本轮实际使用的模型；状态页显式标注来源。 */
   models: { builder: string; checker: string };
   onInterrupt(): void;
@@ -29,7 +65,7 @@ export interface BuildTuiOptions {
 export class BuildView implements Component {
   private readonly statuses: Map<string, RequirementStatus>;
   private scope: Set<string>;
-  private skipped = 0;
+  private readonly skippedIds = new Set<string>();
   private readonly runnable = new Set<string>();
   private readonly recent: string[] = [];
   private phase = "准备运行";
@@ -42,6 +78,8 @@ export class BuildView implements Component {
   private readonly startedAt = Date.now();
   private readonly usage = new ModelUsageTotals();
   private live?: TokenUsage;
+  private usageExpanded = false;
+  private awaitingStart = false;
 
   constructor(
     private readonly options: BuildTuiOptions,
@@ -61,7 +99,7 @@ export class BuildView implements Component {
     }
     if (event.type === "evolution_scope_selected") {
       if (Array.isArray(detail?.auditRequirementIds)) this.scope = new Set(ids("auditRequirementIds"));
-      this.skipped = ids("skippedRequirementIds").length;
+      this.setSkipped(ids("skippedRequirementIds"));
     }
     if (["checkpoint_saved", "module_rescued", "run_resumed"].includes(event.type)) {
       for (const id of ids("requirementIds")) this.runnable.add(id);
@@ -75,7 +113,7 @@ export class BuildView implements Component {
     }
     if (event.type === "pipeline_finished") {
       if (Array.isArray(detail?.auditRequirementIds)) this.scope = new Set(ids("auditRequirementIds"));
-      this.skipped = ids("skippedRequirementIds").length;
+      this.setSkipped(ids("skippedRequirementIds"));
       for (const id of this.scope) this.statuses.set(id, "todo");
       for (const [key, status] of [["verifiedRequirementIds", "verified"], ["failedRequirementIds", "failed"],
         ["inconclusiveRequirementIds", "inconclusive"], ["blockedRequirementIds", "blocked"]] as const) {
@@ -151,53 +189,216 @@ export class BuildView implements Component {
       : undefined;
   }
 
+  toggleUsage(): void { this.usageExpanded = !this.usageExpanded; }
+
+  /** 启动前保持静态画面，避免把等待用户确认表现成正在运行。 */
+  setAwaitingStart(value: boolean): void {
+    this.awaitingStart = value;
+    this.activity = value ? "按 Enter 开始运行" : "正在准备需求与执行环境";
+    this.lastActivityAt = Date.now();
+  }
+
+  /** 需求树页面：按子树聚合状态，新版本结果会直接反映在颜色与计数上。 */
+  requirementTreeText(theme: TerminalTheme = this.theme): string {
+    const root = this.options.requirementTree;
+    const lines: string[] = [];
+    const overall = root ? this.treeCounts(root) : this.flatTreeCounts();
+    lines.push(` ${theme.label("总体")}  ${this.treeSummary(overall, theme)}`);
+    lines.push("");
+    if (root) this.appendTree(root, "", true, lines, theme, true);
+    else {
+      for (const id of [...this.statuses.keys()].sort()) {
+        const status = this.treeStatus(id);
+        lines.push(treeColour(theme, status)(`${TREE_STATUS_ICON[status]} ${id}`) +
+          `  ${theme.muted(`[${TREE_STATUS_LABEL[status]}]`)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
   invalidate(): void {}
+
+  private setSkipped(ids: string[]): void {
+    this.skippedIds.clear();
+    for (const id of ids) this.skippedIds.add(id);
+  }
+
+  private treeStatus(id: string): TreeStatus {
+    const status = this.statuses.get(id) ?? "todo";
+    return status === "todo" && this.skippedIds.has(id) ? "skipped" : status;
+  }
+
+  private emptyCounts(): TreeCounts {
+    return { total: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0, skipped: 0 };
+  }
+
+  private addCounts(target: TreeCounts, source: TreeCounts): void {
+    target.total += source.total;
+    target.verified += source.verified;
+    target.failed += source.failed;
+    target.inconclusive += source.inconclusive;
+    target.blocked += source.blocked;
+    target.skipped += source.skipped;
+  }
+
+  private aggregateStatus(counts: TreeCounts): TreeStatus {
+    if (counts.failed > 0) return "failed";
+    if (counts.blocked > 0) return "blocked";
+    if (counts.inconclusive > 0) return "inconclusive";
+    if (counts.total > 0 && counts.verified === counts.total) return "verified";
+    if (counts.total === 0 && counts.skipped > 0) return "skipped";
+    return "todo";
+  }
+
+  private addStatus(counts: TreeCounts, status: TreeStatus): void {
+    if (status === "skipped") { counts.skipped += 1; return; }
+    counts.total += 1;
+    switch (status) {
+      case "verified": counts.verified += 1; break;
+      case "failed": counts.failed += 1; break;
+      case "inconclusive": counts.inconclusive += 1; break;
+      case "blocked": counts.blocked += 1; break;
+    }
+  }
+
+  private treeCounts(node: RequirementNode): TreeCounts {
+    const counts = this.emptyCounts();
+    if (node.type === "ATOMIC") {
+      this.addStatus(counts, this.treeStatus(node.id));
+      return counts;
+    }
+    for (const child of node.children) this.addCounts(counts, this.treeCounts(child));
+    return counts;
+  }
+
+  private flatTreeCounts(): TreeCounts {
+    const counts = this.emptyCounts();
+    for (const id of this.statuses.keys()) this.addStatus(counts, this.treeStatus(id));
+    return counts;
+  }
+
+  private treeSuffix(counts: TreeCounts, theme: TerminalTheme): string {
+    const parts = [`${counts.verified}/${counts.total}`];
+    if (counts.failed) parts.push(`${theme.error(`失败 ${counts.failed}`)}`);
+    if (counts.inconclusive) parts.push(`${theme.warning(`证据不足 ${counts.inconclusive}`)}`);
+    if (counts.blocked) parts.push(`${theme.blocked(`阻塞 ${counts.blocked}`)}`);
+    if (counts.skipped) parts.push(`${theme.muted(`沿用 ${counts.skipped}`)}`);
+    return parts.join(theme.muted(" · "));
+  }
+
+  private treeSummary(counts: TreeCounts, theme: TerminalTheme): string {
+    return [
+      counts.verified ? theme.success(`已验证 ${counts.verified}/${counts.total}`) : theme.muted(`已验证 0/${counts.total}`),
+      counts.failed ? theme.error(`失败 ${counts.failed}`) : theme.muted("失败 0"),
+      counts.inconclusive ? theme.warning(`证据不足 ${counts.inconclusive}`) : theme.muted("证据不足 0"),
+      counts.blocked ? theme.blocked(`阻塞 ${counts.blocked}`) : theme.muted("阻塞 0"),
+      theme.muted(`未验收 ${counts.total - counts.verified - counts.failed - counts.inconclusive - counts.blocked}`),
+      ...(counts.skipped ? [theme.muted(`沿用 ${counts.skipped}`)] : []),
+    ].join("  ");
+  }
+
+  private appendTree(node: RequirementNode, prefix: string, last: boolean, lines: string[], theme: TerminalTheme, root = false): void {
+    const counts = this.treeCounts(node);
+    const status = this.aggregateStatus(counts);
+    const connector = root ? "" : `${prefix}${last ? "└─ " : "├─ "}`;
+    const icon = node.type === "ATOMIC" ? TREE_STATUS_ICON[status] : status === "todo" ? "○" : TREE_STATUS_ICON[status];
+    const suffix = node.type === "ATOMIC"
+      ? `  ${theme.muted(`[${TREE_STATUS_LABEL[status]}]`)}`
+      : `  ${this.treeSuffix(counts, theme)}`;
+    lines.push(theme.border(connector) + treeColour(theme, status)(`${icon} ${node.name}`) + suffix);
+    const childPrefix = root ? "" : `${prefix}${last ? "   " : "│  "}`;
+    node.children.forEach((child, index) => this.appendTree(child, childPrefix, index === node.children.length - 1, lines, theme));
+  }
+
+  private usageLines(): string[] {
+    const summary = this.usage.summary(this.live);
+    const lines = [`总计  ${formatUsageSummary(summary)}`];
+    if (this.usageExpanded) {
+      const rows: Array<[string, UsageSummary]> = [["Builder", summary.builder], ["Checker", summary.checker], ["Planner", summary.planner]];
+      let details = 0;
+      for (const [label, usage] of rows) if (usage.total > 0) { lines.push(`${label}  ${formatUsageSummary(usage)}`); details += 1; }
+      // 启动前展开时给出明确反馈，避免按键看起来没有响应。
+      if (!details) lines.push("花费明细  尚未产生用量");
+    }
+    return lines;
+  }
+
+  private highlightRole(text: string, t: TerminalTheme): { colour: (value: string) => string; text: string } {
+    const role = ["Builder", "Checker", "Planner"].find(name => text.startsWith(name));
+    if (!role) return { colour: t.accent, text };
+    const colour = role === "Builder" ? t.builder : role === "Checker" ? t.checker : t.planner;
+    return { colour, text: colour(role) + text.slice(role.length) };
+  }
+
+  private progressLines(width: number, counts: { todo: number; verified: number; failed: number; inconclusive: number; blocked: number }, t: TerminalTheme): string[] {
+    const total = this.scope.size;
+    const bar = progressBar(counts.verified, total, Math.max(5, Math.min(18, Math.floor(width / 8))), t);
+    const verified = `已验证 ${counts.verified}/${total}`;
+    const progress = `${t.accent("进度")} ${bar} ${counts.verified ? t.strong(t.success(verified)) : t.accent(t.strong(verified))}`;
+    const summary = [
+      counts.failed ? t.strong(t.error(`失败 ${counts.failed}`)) : t.muted(`失败 ${counts.failed}`),
+      counts.inconclusive ? t.strong(t.warning(`证据不足 ${counts.inconclusive}`)) : t.muted(`证据不足 ${counts.inconclusive}`),
+      `${t.muted(`阻塞 ${counts.blocked} · `)}${counts.todo ? t.accent(`未验收 ${counts.todo}`) : t.muted("未验收 0")}`,
+    ].join("  ");
+    return width >= 60 ? [` ${progress}  ${summary}`] : [` ${progress}`, ` ${summary}`];
+  }
 
   render(width: number): string[] {
     const t = this.theme;
     const counts = { todo: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0 };
     for (const id of this.scope) counts[this.statuses.get(id) ?? "todo"]++;
-    const status = [
-      t.strong(t.success(`已验证 ${counts.verified}/${this.scope.size}`)),
-      counts.failed ? t.strong(t.error(`失败 ${counts.failed}`)) : t.muted(`失败 ${counts.failed}`),
-      counts.inconclusive ? t.strong(t.warning(`证据不足 ${counts.inconclusive}`)) : t.muted(`证据不足 ${counts.inconclusive}`),
-      t.muted(`阻塞 ${counts.blocked} · 未验收 ${counts.todo}`),
-    ].join("  ");
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
-    const activity = ` ${t.accent(frame)} ${this.activity}`;
+    const activityRole = this.highlightRole(this.activity, t);
+    const activity = this.awaitingStart
+      ? ` ${t.accent("◆")} ${t.strong("按 Enter 开始运行")}`
+      : ` ${activityRole.colour(frame)} ${activityRole.text}`;
     const checker = this.builderRunning ? this.checkerActivity() : undefined;
-    const checkerLines = checker ? [` ${t.muted("后台")} ${checker}`] : [];
-    const models = ` ${t.muted("模型")}  Builder ${this.options.models.builder} ${t.muted("·")} Checker ${this.options.models.checker}`;
-    const footer = t.muted(" d 详细日志   ? 帮助   Ctrl+C 中断");
-    const usage = formatModelUsageSummary(this.usage.summary(this.live), { includePlanner: false });
+    const checkerLines = checker ? [` ${t.muted("后台")} ${this.highlightRole(checker, t).text}`] : [];
+    const models = ` ${t.label("模型")}  ${t.builder("Builder")} ${this.options.models.builder} ${t.faint("·")} ` +
+      `${t.checker("Checker")} ${this.options.models.checker}`;
+    const keyHint = (key: string, label: string) => `${t.accent(key)} ${t.label(label)}`;
+    const footer = this.awaitingStart
+      ? ` ${keyHint("Enter", "开始运行")}   ${keyHint("d", "日志")}   ${keyHint("t", "树")}   ` +
+        `${keyHint("c", "花费")}   ${keyHint("?", "帮助")}   ${t.muted("^C 中断")}`
+      : width >= 60
+        ? ` ${keyHint("d", "详细日志")}   ${keyHint("t", "需求树")}   ` +
+          `${keyHint("c", this.usageExpanded ? "收起花费" : "花费明细")}   ${keyHint("?", "帮助")}   ${t.muted("Ctrl+C 中断")}`
+        : ` ${keyHint("d", "日志")}  ${keyHint("t", "树")}  ${keyHint("c", this.usageExpanded ? "收起" : "花费")}  ` +
+          `${keyHint("?", "帮助")}  ${t.muted("^C 中断")}`;
+    const usage = this.usageLines();
+    const progress = this.progressLines(width, counts, t);
     const compact = () => {
       const head = [terminalHeader("Build Agent", width, t)[0], models, activity, ...checkerLines];
-      const tail = [" " + status, footer];
+      const tail = [...progress, footer];
       return [...head, ...usage.slice(0, Math.max(0, this.rows() - head.length - tail.length)).map(line => ` ${line}`), ...tail]
         .slice(0, this.rows()).map(line => fitTerminalText(line, width));
     };
     if (this.rows() < 18) return compact();
     const usageLines = usage.flatMap(line => new Text(line, 1, 0).render(width));
+    const runState = this.awaitingStart ? t.accent("● 等待开始") : t.success("● 运行中");
+    const runnable = [...this.scope].filter(id => this.runnable.has(id)).length;
     const lines = [
       ...terminalHeader("Build Agent", width, t), "",
-      terminalRow(` ${t.strong(this.phase)}`, t.muted(elapsedTime(Date.now() - this.startedAt) + " "), width),
-      ` ${t.muted("模块")}  ${this.module}`,
+      terminalRow(` ${t.strong(t.accent(this.phase))}`, `${runState} ${t.muted(elapsedTime(Date.now() - this.startedAt) + " ")}`, width),
+      ` ${t.label("模块")}  ${this.module}`,
       models,
       ...usageLines,
       activity,
       ...checkerLines,
-      t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),
-      "", " " + status,
-      t.muted(` 可运行检查点覆盖 ${[...this.scope].filter(id => this.runnable.has(id)).length} 条需求` +
-        (this.skipped ? ` · 沿用跳过 ${this.skipped}` : "")),
-      "", t.muted(" 最近进展"),
+      this.awaitingStart
+        ? t.muted(" 尚未开始 · Enter 启动本轮运行，其他按键可先查看日志与需求树")
+        : t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),
+      "", ...progress,
+      ` ${t.label("可运行检查点覆盖")} ${runnable ? t.accent(`${runnable} 条需求`) : t.muted("0 条需求")}` +
+        (this.skippedIds.size ? ` ${t.muted(`· 沿用跳过 ${this.skippedIds.size}`)}` : ""),
+      "", `${t.accent("▌")} ${t.label("最近进展")}`,
     ];
     if (lines.length + 3 > this.rows()) return compact();
     const available = Math.max(0, this.rows() - lines.length - 3);
     for (const message of available ? this.recent.slice(-Math.min(5, available)) : []) {
-      lines.push(` ${t.muted("·")} ${message}`);
+      lines.push(` ${t.accent("·")} ${message}`);
     }
-    lines.push("", t.muted("─".repeat(width)), footer);
+    lines.push("", t.border("─".repeat(width)), footer);
     return lines.map(line => fitTerminalText(line, width));
   }
 
@@ -251,20 +452,29 @@ export class BuildTui {
   private readonly log: string[] = [];
   private overlay?: OverlayHandle;
   private viewer?: TextViewer;
+  private treeViewer?: TextViewer;
   private timer?: ReturnType<typeof setInterval>;
   private started = false;
+  private running = false;
+  private readonly startedRun: Promise<void>;
+  private resolveStart!: () => void;
 
   constructor(private readonly options: BuildTuiOptions, terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal);
     this.tui.setClearOnShrink(true);
     this.view = new BuildView(options, () => terminal.rows, this.theme);
+    this.view.setAwaitingStart(true);
+    this.startedRun = new Promise(resolve => { this.resolveStart = resolve; });
     this.tui.addChild(this.view);
     this.tui.addInputListener(data => {
       if (matchesKey(data, "ctrl+c")) {
         this.stop(); this.options.onInterrupt(); return { consume: true };
       }
       if (this.overlay) return undefined;
+      if (!this.running && matchesKey(data, "enter")) { this.beginRun(); return { consume: true }; }
       if (data === "d") { this.showLog(); return { consume: true }; }
+      if (data === "t") { this.showRequirements(); return { consume: true }; }
+      if (data === "c") { this.view.toggleUsage(); this.tui.requestRender(); return { consume: true }; }
       if (data === "?") { this.showHelp(); return { consume: true }; }
       return undefined;
     });
@@ -278,12 +488,24 @@ export class BuildTui {
     this.timer = setInterval(() => this.tui.requestRender(), RENDER_INTERVAL_MS);
   }
 
+  /** 等待用户在 TUI 中确认开始；确认前不启动 Builder 或 Checker。 */
+  waitForStart(): Promise<void> { return this.startedRun; }
+
+  private beginRun(): void {
+    if (this.running) return;
+    this.running = true;
+    this.view.setAwaitingStart(false);
+    this.resolveStart();
+    this.tui.requestRender();
+  }
+
   record(rawLine: string, line: string): void {
     const event = JSON.parse(rawLine) as RunEvent;
     this.view.receive(event, line);
     this.log.push(line);
     if (this.log.length > 500) this.log.shift();
     this.viewer?.setText("详细日志 · 最近 500 条", this.log.join("\n"), false);
+    this.treeViewer?.setText("需求树 · 完成情况", this.view.requirementTreeText(this.theme), false);
     this.tui.requestRender();
   }
 
@@ -297,6 +519,7 @@ export class BuildTui {
   }
 
   private showLog(): void {
+    this.treeViewer = undefined;
     this.viewer = new TextViewer(this.tui, this.theme, "详细日志 · 最近 500 条",
       this.log.join("\n") || "等待运行事件…", () => this.closeViewer());
     this.viewer.scrollToEnd();
@@ -304,9 +527,18 @@ export class BuildTui {
     this.overlay = this.tui.showOverlay(this.viewer, { width: "100%", anchor: "top-left" });
   }
 
+  private showRequirements(): void {
+    this.viewer = undefined;
+    this.treeViewer = new TextViewer(this.tui, this.theme, "需求树 · 完成情况",
+      this.view.requirementTreeText(this.theme), () => this.closeViewer());
+    setMouseTracking(this.tui.terminal, true);
+    this.overlay = this.tui.showOverlay(this.treeViewer, { width: "100%", anchor: "top-left" });
+  }
+
   private showHelp(): void {
+    this.treeViewer = undefined;
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
-      "d  查看详细日志，包含安装、构建与模型用量\n↑↓ / 滚轮 / PgUp / PgDn  滚动日志\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
+      "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求树与每个需求的完成状态\n   子树按聚合状态着色：已验证 / 失败 / 证据不足 / 阻塞 / 未验收\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
       "已验证：最近一次独立验收通过，交付前仍会复验\n证据不足：本轮验收无法确定行为结果\n未验收：尚未产出完整验收结果，可能正在实现或验收\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Checker：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
@@ -314,7 +546,7 @@ export class BuildTui {
   }
 
   private closeViewer(): void {
-    this.overlay?.hide(); this.overlay = undefined; this.viewer = undefined;
+    this.overlay?.hide(); this.overlay = undefined; this.viewer = undefined; this.treeViewer = undefined;
     setMouseTracking(this.tui.terminal, false);
   }
 }

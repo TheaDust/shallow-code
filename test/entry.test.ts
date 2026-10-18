@@ -158,6 +158,7 @@ test("Agent entry validates paths and passes bounded production context", async 
     assert.equal(received?.pipelineOptions.totalBudgetMs, 600_000);
     assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3100);
     assert.equal(received?.builderContextWindow, 400_000);
+    assert.equal(received?.requirementTree?.id, "ROOT");
     assert.equal(received?.pipelineOptions.auditInheritedRequirements, false);
   });
 });

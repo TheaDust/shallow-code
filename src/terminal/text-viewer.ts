@@ -42,11 +42,11 @@ export class TextViewer implements Component {
     const position = `${this.offset + 1}–${Math.min(lines.length, this.offset + this.pageSize)} / ${lines.length}`;
     const hint = this.onToggle ? "Enter 返回 · v YAML · ↑↓/滚轮 滚动" : "Esc 返回 · ↑↓/滚轮 滚动 · PgUp/Dn 翻页";
     return [
-      new Text(this.theme.accent(this.theme.strong(this.title)), 1, 0).render(width)[0],
-      this.theme.muted("─".repeat(width)),
+      new Text(this.theme.brand(this.title), 1, 0).render(width)[0],
+      this.theme.border("─".repeat(width)),
       ...lines.slice(this.offset, this.offset + this.pageSize),
       ...Array<string>(Math.max(0, this.pageSize - lines.length)).fill(""),
-      this.theme.muted("─".repeat(width)),
+      this.theme.border("─".repeat(width)),
       terminalRow(new Text(this.theme.muted(hint), 1, 0).render(width)[0], this.theme.muted(position), width),
     ];
   }

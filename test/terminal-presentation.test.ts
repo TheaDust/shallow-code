@@ -9,12 +9,25 @@ import { terminalTheme } from "../src/terminal/theme.js";
 import { HumanRunFormatter } from "../src/human-log.js";
 import { ModelUsageTotals } from "../src/model-usage.js";
 import { createRunLogSink } from "../index.js";
-import type { RunEvent } from "../src/types.js";
+import type { RequirementNode, RunEvent } from "../src/types.js";
 import { MemoryTerminal } from "./helpers/terminal.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 const options = { requirementIds: ["A", "B", "C"], models: { builder: "gateway/builder-model", checker: "gateway/checker-model" }, onInterrupt() {} };
 const formatter = new HumanRunFormatter();
+function requirementNode(id: string, name: string, type: RequirementNode["type"], children: RequirementNode[] = []): RequirementNode {
+  return { id, name, type, description: "", dependencies: [], children, visual_reference: [], scenarios: [] };
+}
+const requirementTree = requirementNode("root", "示例产品", "ROOT", [
+  requirementNode("orders", "订单管理", "FOLDER", [
+    requirementNode("A", "创建订单", "ATOMIC"),
+    requirementNode("B", "取消订单", "ATOMIC"),
+  ]),
+  requirementNode("users", "用户管理", "FOLDER", [
+    requirementNode("C", "登录", "ATOMIC"),
+    requirementNode("D", "权限", "ATOMIC"),
+  ]),
+]);
 function receive(view: BuildView, type: RunEvent["type"], detail: Record<string, unknown> = {}, packetId = "packet-a"): void {
   if (type === "module_check_finished") detail = { ...detail, published: true,
     requirementResults: detail.requirementResults ?? Object.fromEntries(((detail.requirementIds ?? []) as string[]).map(id => [id, detail.status])) };
@@ -158,7 +171,7 @@ test("Background Checker progress preserves counts and controls in compact termi
     assert(lines.every(line => visibleWidth(line) <= columns!));
     assert.match(lines.join("\n"), /后台/);
     assert.match(lines.join("\n"), /已验证 0\/3/);
-    assert.match(lines.join("\n"), /详细日志/);
+    assert.match(lines.join("\n"), /日志/);
   }
 });
 
@@ -232,6 +245,34 @@ test("Document viewer fills the terminal so its overlay hides the base UI hints"
   const visible = tui.compose(base, terminal.columns, terminal.rows).slice(-terminal.rows).join("\n");
   assert.match(visible, /Enter 返回 · v YAML/);
   assert.doesNotMatch(visible, /Enter 发送/);
+});
+
+test("Build TUI stays idle until Enter releases the start gate", async (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new BuildTui(options, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  ui.tui.renderNow();
+  const frame = () => (ui.tui as TuiMainScreen).captureRenderState().previousLines.join("\n");
+  assert.match(frame(), /按 Enter 开始运行/);
+  assert.match(frame(), /Enter 开始运行/);
+  terminal.input("c");
+  ui.tui.renderNow();
+  assert.match(frame(), /花费明细  尚未产生用量/);
+  terminal.input("c");
+  ui.tui.renderNow();
+  assert.doesNotMatch(frame(), /花费明细  尚未产生用量/);
+
+  let started = false;
+  const waiting = ui.waitForStart().then(() => { started = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started, false);
+
+  terminal.input("\r");
+  await waiting;
+  assert.equal(started, true);
+  ui.tui.renderNow();
+  assert.doesNotMatch(frame(), /按 Enter 开始运行/);
 });
 
 test("Interactive details and interrupt keys leave the terminal restored", async (t) => {
@@ -371,9 +412,13 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "feature_grouping_usage", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   receive(view, "feature_grouping_usage", { operation: "plan", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
-  assert.match(view.render(80).join("\n"), /总计\s+tokens 240（入 200 \/ 出 40） · 费用 \$0\.0002/);
-  assert.match(view.render(80).join("\n"), /Checker\s+tokens 0/);
-  assert.doesNotMatch(view.render(80).join("\n"), /Planner/);
+  const collapsed = view.render(80).join("\n");
+  assert.match(collapsed, /总计\s+tokens 240（入 200 \/ 出 40） · 费用 \$0\.0002/);
+  assert.doesNotMatch(collapsed, /Builder\s+tokens|Checker\s+tokens|Planner\s+tokens/);
+  view.toggleUsage();
+  const expanded = view.render(80).join("\n");
+  assert.doesNotMatch(expanded, /Builder\s+tokens 0/, "zero groups stay out of the expanded view");
+  assert.match(expanded, /Planner\s+tokens 240/);
   view.liveUsage({ usage: { status: "available", input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } });
   assert.match(view.render(80).join("\n"), /Builder\s+tokens 1\.0k（入 800 \/ 出 200） · 费用 \$0\.0012/);
   assert.match(view.render(80).join("\n"), /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
@@ -383,16 +428,17 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   const text = view.render(80).join("\n");
   assert.match(text, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
   assert.match(text, /Builder\s+tokens 1\.0k/);
-  assert.match(text, /Checker\s+tokens 0/);
-  assert.doesNotMatch(text, /Planner/);
+  assert.doesNotMatch(text, /Checker\s+tokens 0/, "zero groups stay out of the expanded view");
+  assert.match(text, /Planner\s+tokens 240/);
 });
 
 test("Run view attributes verification usage to the Checker group", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "checker_usage", { jobId: "j1", role: "semantic_review", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  view.toggleUsage();
   const text = view.render(80).join("\n");
   assert.match(text, /Checker\s+tokens 120（入 100 \/ 出 20） · 费用 \$0\.0001/);
-  assert.match(text, /Builder\s+tokens 0/);
+  assert.doesNotMatch(text, /Builder\s+tokens 0/, "zero groups stay out of the expanded view");
   assert.match(text, /总计\s+tokens 120/);
 });
 
@@ -401,6 +447,7 @@ test("Run view keeps grouped cache counts and partial cost visible in an 80-colu
   receive(view, "builder_usage", { input: 1_000_000, output: 1_000_000, cacheRead: 1_000_000,
     cacheWrite: 1_000_000, total: 4_000_000, cost: 2 });
   receive(view, "feature_grouping_usage", { operation: "plan", input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, total: 1200 });
+  view.toggleUsage();
   const lines = view.render(80);
   const text = lines.join("\n");
   assert.ok(lines.length <= 24);
@@ -412,6 +459,74 @@ test("Run view keeps grouped cache counts and partial cost visible in an 80-colu
   assert.match(text, /缓存写 1\.00M/);
   assert.match(text, /部分未计价/);
   assert.match(text, /费用未知/);
+});
+
+test("Run view renders verified progress as a bar in full and compact layouts", () => {
+  for (const [columns, rows] of [[80, 24], [40, 18], [24, 8]] as const) {
+    const view = new BuildView(options, () => rows, terminalTheme(false));
+    receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" });
+    const lines = view.render(columns);
+    const text = lines.join("\n");
+    assert.match(text, /进度\s+[█░]+/);
+    assert.match(text, /已验证 1\/3/);
+    assert.ok(lines.length <= rows, `${columns}×${rows}: ${lines.length} rows`);
+    assert.ok(lines.every(line => visibleWidth(line) <= columns), `${columns} columns exceeded`);
+  }
+});
+
+test("Interactive cost key expands grouped spending", (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new BuildTui(options, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  ui.record(JSON.stringify({ at: "2026-10-13T00:00:00Z", type: "builder_usage",
+    detail: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } }), "Builder 用量");
+  ui.tui.renderNow();
+  const frame = () => (ui.tui as TuiMainScreen).captureRenderState().previousLines.join("\n");
+  assert.match(frame(), /总计\s+tokens 1\.0k/);
+  assert.doesNotMatch(frame(), /Builder\s+tokens/);
+  terminal.input("c");
+  ui.tui.renderNow();
+  assert.match(frame(), /Builder\s+tokens 1\.0k/);
+  terminal.input("c");
+  ui.tui.renderNow();
+  assert.doesNotMatch(frame(), /Builder\s+tokens/);
+});
+
+test("Requirement tree page colours subtree states and shows per-node completion", () => {
+  const view = new BuildView({ ...options, requirementIds: ["A", "B", "C", "D"], requirementTree }, () => 30, terminalTheme(false));
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" });
+  receive(view, "module_check_finished", { requirementIds: ["B"], status: "failed" });
+  receive(view, "module_check_finished", { requirementIds: ["C"], status: "inconclusive" });
+  receive(view, "dependency_gate_blocked", { requirementIds: ["D"] });
+  const plain = view.requirementTreeText(terminalTheme(false));
+  assert.match(plain, /订单管理\s+1\/2 · 失败 1/);
+  assert.match(plain, /创建订单\s+\[已验证\]/);
+  assert.match(plain, /用户管理\s+0\/2 · 证据不足 1 · 阻塞 1/);
+  assert.match(plain, /权限\s+\[阻塞\]/);
+  assert.match(plain, /├─|└─/);
+
+  const coloured = view.requirementTreeText(terminalTheme(true));
+  assert.match(coloured, /\x1b\[38;5;108m[^\n]*创建订单/);
+  assert.match(coloured, /\x1b\[38;5;167m[^\n]*取消订单/);
+  assert.match(coloured, /\x1b\[38;5;179m[^\n]*登录/);
+  assert.match(coloured, /\x1b\[38;5;139m[^\n]*用户管理/);
+  assert.match(coloured, /\x1b\[38;5;139m[^\n]*权限/);
+});
+
+test("Interactive tree key opens the requirement page and Esc closes it", (t) => {
+  const terminal = new MemoryTerminal();
+  terminal.rows = 30;
+  const ui = new BuildTui({ ...options, requirementIds: ["A", "B", "C", "D"], requirementTree }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  ui.tui.renderNow();
+  terminal.input("t");
+  ui.tui.renderNow();
+  assert.equal(ui.tui.hasOverlay(), true);
+  assert.ok(terminal.writes.join("").includes("需求树 · 完成情况"));
+  terminal.input("\x1b");
+  assert.equal(ui.tui.hasOverlay(), false);
 });
 
 test("Progress entries drop internal packet ids", () => {
@@ -439,10 +554,27 @@ test("Activity line rotates a spinner frame with wall-clock time", (t) => {
   assert.notEqual(first, second);
 });
 
-test("Semantic colours use bright ANSI variants", () => {
+test("Semantic colours use the restrained 256-colour palette", () => {
   const theme = terminalTheme(true);
-  assert.match(theme.accent("x"), /^\x1b\[96m/);
-  assert.match(theme.success("x"), /^\x1b\[92m/);
-  assert.match(theme.warning("x"), /^\x1b\[93m/);
-  assert.match(theme.error("x"), /^\x1b\[91m/);
+  assert.match(theme.brand("x"), /^\x1b\[1;38;5;111m/);
+  assert.match(theme.accent("x"), /^\x1b\[38;5;111m/);
+  assert.match(theme.builder("x"), /^\x1b\[38;5;111m/);
+  assert.match(theme.checker("x"), /^\x1b\[38;5;74m/);
+  assert.match(theme.planner("x"), /^\x1b\[38;5;141m/);
+  assert.match(theme.success("x"), /^\x1b\[38;5;108m/);
+  assert.match(theme.warning("x"), /^\x1b\[38;5;179m/);
+  assert.match(theme.error("x"), /^\x1b\[38;5;167m/);
+  assert.match(theme.blocked("x"), /^\x1b\[38;5;139m/);
+  assert.match(theme.border("x"), /^\x1b\[38;5;238m/);
+});
+
+test("Role colours distinguish Builder, Checker and Planner activity", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(true));
+  receive(view, "builder_started");
+  assert.match(view.render(100).join("\n"), /\x1b\[38;5;111mBuilder/);
+  receive(view, "feature_grouping_started");
+  assert.match(view.render(100).join("\n"), /\x1b\[38;5;141mPlanner/);
+  receive(view, "builder_started");
+  receive(view, "check_started", { jobId: "j1" });
+  assert.match(view.render(100).join("\n"), /\x1b\[38;5;74mChecker/);
 });

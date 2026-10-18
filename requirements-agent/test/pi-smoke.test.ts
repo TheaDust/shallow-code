@@ -298,10 +298,11 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   assert.match(gateway.requests.at(-1)!.lastUserText, /【当前需求草案（第 1 版）】/,
     "回合消息缺少最新草案上下文");
   if (interactive) {
-    assert.match(stdout, /F2 草案预览/, "草案预览入口缺失");
-    assert.match(stdout, /shallow build --requirements-dir/, "生成后交接命令缺失");
-    assert.match(stdout, /›/, "TUI 未回显用户输入");
-    assert.ok(!stdout.includes("Ctrl+O"), "TUI 不应出现 Pi 命令面板提示");
+    const visibleStdout = stdout.replace(/\x1b\[[0-9;]*m/g, "");
+    assert.match(visibleStdout, /F2 草案预览/, "草案预览入口缺失");
+    assert.match(visibleStdout, /shallow build --requirements-dir/, "生成后交接命令缺失");
+    assert.match(visibleStdout, /›/, "TUI 未回显用户输入");
+    assert.ok(!visibleStdout.includes("Ctrl+O"), "TUI 不应出现 Pi 命令面板提示");
     assert.ok(gateway.requests[0].lastUserText.includes("需求要点都写在 docs 目录里。\n请查看并整理。"),
       "多行编辑未传入同一回合");
   }
