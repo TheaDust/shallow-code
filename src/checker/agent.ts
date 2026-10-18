@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ArtifactStore, atomicWrite, canonicalJson, hashBytes } from "./artifacts.js";
-import type { AdapterDeclaration, CheckOutcome, CheckReport, CheckerPort, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef } from "./port.js";
+import type { AdapterDeclaration, CheckOutcome, CheckReport, CheckerPort, CheckerProgress, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef } from "./port.js";
 import { checkerSourceClauses, evaluateProgramEvidence, sameRef, validateAcceptanceContract,
   type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview } from "./evidence.js";
 import type { CheckerModel, CheckerTool } from "./model.js";
@@ -93,7 +93,7 @@ function reviewReceipt(receipt: EvidenceReceipt, payload: unknown, environment: 
 /** Exploration, semantic review and replay share one immutable task, with separate model sessions. */
 export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter: ExecutionAdapter; model: CheckerModel }): CheckerPort {
   const { artifacts: store, adapter, model } = options;
-  return { async check(job, parentSignal) {
+  return { async check(job, parentSignal, onProgress) {
     const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(Math.max(1, Math.min(2_147_483_647, job.budget.deadlineAt - Date.now())))]);
     const manifest: CheckerManifest = { schemaVersion: 1, contracts: [], reviews: [], receipts: [], diagnostics: [] };
     const programs: ProgramRef[] = [];
@@ -106,8 +106,12 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     let remainingTokens = job.budget.maxModelTokens;
     let cleanupFailure: CheckerCleanupError | undefined;
     const sessions = new Set<ExecutionSession>();
+    const progress = async (detail: CheckerProgress): Promise<void> => {
+      try { await onProgress?.(detail); } catch { /* Presentation failures must not change evidence or prevent cleanup. */ }
+    };
     const prepare = async (): Promise<ExecutionSession> => {
       signal.throwIfAborted();
+      await progress({ stage: "prepare" });
       let session: ExecutionSession;
       try { session = await adapter.prepare(job, signal); }
       catch (error) {
@@ -121,6 +125,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
       return session;
     };
     const close = async (session: ExecutionSession): Promise<void> => {
+      await progress({ stage: "cleanup" });
       try { await session.close(); sessions.delete(session); }
       catch (error) { cleanupFailure = new CheckerCleanupError(error); throw cleanupFailure; }
     };
@@ -183,17 +188,24 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               programs.push(program);
               rejectedPrograms.push({ program, source: (await store.getBytes(descriptor.source)).toString("utf8"),
                 clauseIds: cached.review.clauseIds, reasons: cached.review.reasons });
+              await progress({ stage: "review_rejected", programId: program.descriptor.id, clauseIds: cached.review.clauseIds,
+                cached: true, reason: cached.review.reasons.join("; ") });
               continue;
             }
             if (descriptor.clauses.some(mapping => coveredSources.has(mapping.clauseId))) continue;
             descriptor.clauses.forEach(mapping => coveredSources.add(mapping.clauseId));
             submitted.push(program);
-          } catch (error) { manifest.diagnostics.push(`Reusable program requires rediscovery: ${String(error)}`); }
+          } catch (error) {
+            const reason = `Reusable program requires rediscovery: ${String(error)}`;
+            manifest.diagnostics.push(reason);
+            await progress({ stage: "diagnostic", reason });
+          }
         }
         const discoverySources = eligibleSources.filter(source => !coveredSources.has(source.id));
         if (discoverySources.length) {
           const exploration = await prepare();
           if (!await ready(exploration)) throw new Error("Execution adapter did not establish a ready exploration environment");
+          await progress({ stage: rejectedPrograms.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
           let finished = false;
           const savedPrograms: ProgramRef[] = [];
           const savedContracts = new Map<string, AcceptanceContract>();
@@ -232,7 +244,11 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 const program: ProgramRef = { descriptor: await store.putTypedJson(descriptor, declaration.programFormat.schema),
                   format: `${declaration.programFormat.id}@${declaration.programFormat.version}`, contract: { id: args.contract.id, digest: args.contract.digest }, binding: job.binding };
                 const cached = await cachedReview(program);
-                if (cached.review && !cached.review.approved) throw new Error(`Program was rejected by semantic review; revise its source or contract: ${cached.review.reasons.join("; ")}`);
+                if (cached.review && !cached.review.approved) {
+                  await progress({ stage: "review_rejected", programId: program.descriptor.id, clauseIds: cached.review.clauseIds,
+                    cached: true, reason: cached.review.reasons.join("; ") });
+                  throw new Error(`Program was rejected by semantic review; revise its source or contract: ${cached.review.reasons.join("; ")}`);
+                }
                 savedPrograms.push(program);
                 return program;
               } },
@@ -249,7 +265,11 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               sourceClauses: discoverySources, capabilities, programFormat: declaration.programFormat, initialState: await store.readTypedJson(job.initialState),
               ...(rejectedPrograms.length ? { rejectedPrograms } : {}) }), tools);
             if (!finished) throw new Error("Checker exploration did not finish with saved programs");
-          } catch (error) { manifest.diagnostics.push(error instanceof Error ? error.message : String(error)); }
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            manifest.diagnostics.push(reason);
+            await progress({ stage: "diagnostic", reason });
+          }
           finally { await close(exploration); }
         }
         for (const program of submitted) {
@@ -269,17 +289,21 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           let reviewRef = cached.ref;
           let review = cached.review;
           if (review && !review.approved) {
+            await progress({ stage: "review_rejected", programId: program.descriptor.id, clauseIds: review.clauseIds,
+              cached: true, reason: review.reasons.join("; ") });
             manifest.reviews.push(reviewRef!);
             for (const clause of contract.clauses) outcomeMap.set(clause.id, { requirementId: clause.requirementId, scenarioId: clause.scenarioId,
               clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
             continue;
           }
           const replay = await prepare();
+          await progress({ stage: "replay", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
           let replayRefs = [...replay.readinessEvidence];
           if (await ready(replay)) replayRefs.push(...await replay.replay(program, signal));
           manifest.receipts.push(...replayRefs);
           await close(replay);
           if (!review) {
+            await progress({ stage: "semantic_review", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
             let proposal: { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
             const receipts = await Promise.all(replayRefs.map(async ref => {
                 const receipt = await store.getJson<EvidenceReceipt>(ref);
@@ -296,6 +320,10 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
             review = { key: cached.key, requirements: job.requirements, contract: program.contract, program, binding: job.binding, ...decision };
             reviewRef = await store.putJson(review);
             await atomicWrite(cached.path, canonicalJson(reviewRef));
+            await progress({ stage: review.approved ? "review_approved" : "review_rejected", programId: program.descriptor.id,
+              clauseIds: review.clauseIds, reason: review.reasons.join("; ") });
+          } else {
+            await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
           }
           manifest.reviews.push(reviewRef!);
           if (!review.approved) {
@@ -306,6 +334,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           const outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(replayRefs));
           if (outcomes.some(outcome => outcome.status === "fail")) {
             const confirmation = await prepare();
+            await progress({ stage: "confirmation", programId: program.descriptor.id, clauseIds: outcomes.filter(item => item.status === "fail").map(item => item.clauseId) });
             const confirmationRefs = [...confirmation.readinessEvidence];
             if (await ready(confirmation)) confirmationRefs.push(...await confirmation.replay(program, signal));
             manifest.receipts.push(...confirmationRefs);
@@ -327,7 +356,9 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
         }
       }
     } catch (error) {
-      manifest.diagnostics.push(error instanceof Error ? error.message : String(error));
+      const reason = error instanceof Error ? error.message : String(error);
+      manifest.diagnostics.push(reason);
+      await progress({ stage: "diagnostic", reason });
     } finally {
       for (const session of sessions) {
         try { await close(session); } catch (error) { manifest.diagnostics.push(`Execution cleanup failed: ${String(error)}`); }

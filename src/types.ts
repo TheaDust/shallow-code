@@ -1,3 +1,5 @@
+import type { CheckerProgress } from "./checker/port.js";
+
 export type RequirementStatus = "todo" | "verified" | "blocked" | "failed" | "inconclusive";
 export type InconclusiveKind = "planning" | "coverage" | "preparation" | "locator" | "execution" | "review" | "gateway" | "budget" | "unreproduced";
 
@@ -126,6 +128,7 @@ interface RunEventDetails {
   snapshot_sealed: { snapshotId: string; sourceSha: string; parentSnapshotId?: string; requirementIds: string[]; sequence: number; authoritative?: boolean };
   check_queued: CheckEventDetail;
   check_started: CheckEventDetail;
+  check_progress: CheckEventDetail & CheckerProgress;
   check_completed: CheckEventDetail;
   check_cancelled: CheckEventDetail;
   module_check_started: { moduleId: string; moduleEpoch: number; snapshotId: string; requirementIds: string[] };
@@ -188,6 +191,8 @@ interface RunEventDetails {
   candidate_prepare_failed: { stage: string; message: string; durationMs: number };
   execution_fault: DiagnosticDetail;
   delivery_started: Record<string, never>;
+  delivery_check_started: { snapshotId: string };
+  delivery_check_finished: { snapshotId: string; ok: boolean; stage: string; message: string };
   delivery_repair_started: { stage: string; message: string; round?: number };
   delivery_repair_accepted: { candidate?: CandidateEvidence };
   delivery_repair_restored: { round?: number };

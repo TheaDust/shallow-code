@@ -72,8 +72,18 @@ export interface ExecutionAdapter {
 }
 export interface CheckerPort {
   /** Every exit, including cancellation, awaits execution cleanup. */
-  check(job: Readonly<CheckJob>, signal: AbortSignal): Promise<CheckReport>;
+  check(job: Readonly<CheckJob>, signal: AbortSignal, onProgress?: (progress: CheckerProgress) => Promise<void>): Promise<CheckReport>;
 }
+
+/** Presentation facts only; progress never grants a requirement outcome. */
+export type CheckerProgress = {
+  stage: "prepare" | "exploration" | "rediscovery" | "replay" | "semantic_review" | "review_approved" |
+    "review_rejected" | "review_cached" | "confirmation" | "diagnostic" | "cleanup";
+  programId?: string;
+  clauseIds?: string[];
+  reason?: string;
+  cached?: boolean;
+};
 
 export interface CapabilityDeclaration {
   id: string;

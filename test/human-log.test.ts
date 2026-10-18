@@ -317,6 +317,9 @@ test("Human logs cover Checker queue, module checks and cancellation", () => {
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "completed", archived: true, reason: "版本已收口" } })),
     /历史结果已归档；版本已收口$/);
+  assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
+    detail: { ...job, status: "interrupted", reason: "Execution interrupted" } })),
+    /Checker 检查未完成.*Execution interrupted/);
   assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
     detail: { ...job, status: "cancelled" } })),
     /Checker 任务已结束（g1）；检查范围由模块收口接续$/);
@@ -332,4 +335,22 @@ test("Human logs cover Checker queue, module checks and cancellation", () => {
   assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: false, requirementResults: {} } })),
     /模块集中检查完成；版本 snap-2；结果已归档$/);
+});
+
+test("Human logs explain Checker stages, cache reuse and rejection feedback", () => {
+  const formatter = new HumanRunFormatter();
+  for (const [stage, label] of [
+    ["prepare", "准备隔离环境"], ["exploration", "探索并编写"], ["rediscovery", "按拒绝原因修正"],
+    ["replay", "独立重放"], ["semantic_review", "独立语义复核"], ["review_approved", "验收程序复核通过"],
+    ["review_rejected", "验收程序复核未通过"], ["review_cached", "复用已批准复核"],
+    ["confirmation", "第二个独立环境"], ["diagnostic", "保留诊断"], ["cleanup", "释放本次隔离环境"],
+  ]) {
+    assert.ok(formatLine(formatter, eventLine("2026-10-18T00:00:00Z", "check_progress", {
+      packetId: "p", detail: { stage },
+    })).includes(label!));
+  }
+  const cached = formatLine(formatter, eventLine("2026-10-18T00:00:00Z", "check_progress", {
+    packetId: "p", detail: { stage: "review_rejected", cached: true, archived: true, reason: "Assertion ignores the required actor" },
+  }));
+  assert.match(cached, /跳过已被拒绝的程序.*历史任务.*原因：Assertion ignores/);
 });

@@ -106,6 +106,73 @@ test("Run view preserves foreground activity during background planning and fits
   }
 });
 
+test("Checker stages stay visible beside foreground Builder and take focus when it finishes", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "packet_selected", { names: ["当前模块"] });
+  receive(view, "builder_started");
+  const job = { jobId: "j1", snapshotId: "s1", mode: "replay" };
+  receive(view, "check_started", job, "opaque-audit-packet");
+  receive(view, "check_progress", { ...job, stage: "semantic_review" }, "opaque-audit-packet");
+  let rendered = view.render(100).join("\n");
+  assert.match(rendered, /Builder · 实现当前模块/);
+  assert.match(rendered, /后台.*Checker · 独立语义复核/);
+  assert.match(rendered, /已验证 0\/3/);
+  receive(view, "builder_finished", { outcome: "completed" });
+  rendered = view.render(100).join("\n");
+  assert.match(rendered, /Checker · 独立语义复核/);
+  assert.doesNotMatch(rendered, /后台|Builder · 实现当前模块/);
+  receive(view, "check_progress", { ...job, stage: "review_rejected", cached: true, reason: "INTERNAL-REJECTION-DETAIL" }, "opaque-audit-packet");
+  receive(view, "check_progress", { ...job, stage: "rediscovery" }, "opaque-audit-packet");
+  rendered = view.render(100).join("\n");
+  assert.match(rendered, /按拒绝原因修正验收程序/);
+  assert.doesNotMatch(rendered, /INTERNAL-REJECTION-DETAIL|opaque-audit-packet/);
+  assert.match(rendered, /已验证 0\/3/);
+});
+
+test("Concurrent Checker jobs clear on cancellation and historical progress cannot replace current activity", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "builder_started");
+  receive(view, "check_progress", { jobId: "j1", stage: "replay" }, "audit-1");
+  receive(view, "check_progress", { jobId: "j2", stage: "semantic_review" }, "audit-2");
+  receive(view, "check_queued", { jobId: "j3" }, "audit-3");
+  assert.match(view.render(100).join("\n"), /另 1 项运行 · 1 项排队/);
+  receive(view, "check_cancelled", { jobId: "j2" }, "audit-2");
+  assert.doesNotMatch(view.render(100).filter(line => line.includes("后台")).join("\n"), /另 1 项运行|独立语义复核/);
+  receive(view, "snapshot_sealed", { snapshotId: "s2", authoritative: true });
+  receive(view, "check_progress", { jobId: "j1", stage: "semantic_review", archived: true }, "audit-1");
+  assert.doesNotMatch(view.render(100).filter(line => !line.startsWith(" · ")).join("\n"), /后台|独立语义复核/);
+  receive(view, "check_progress", { jobId: "current", stage: "replay" }, "audit-current");
+  receive(view, "pipeline_finished", { verifiedRequirementIds: ["A"], auditRequirementIds: ["A", "B", "C"] });
+  const rendered = view.render(100).join("\n");
+  assert.doesNotMatch(rendered, /后台|正在重放/);
+  assert.match(rendered, /本轮结束/);
+});
+
+test("Background Checker progress preserves counts and controls in compact terminals", () => {
+  for (const [columns, rows] of [[80, 24], [40, 18], [24, 8]]) {
+    const view = new BuildView(options, () => rows!, terminalTheme(false));
+    receive(view, "builder_started");
+    receive(view, "check_progress", { jobId: "j", stage: "rediscovery" }, "background");
+    const lines = view.render(columns!);
+    assert(lines.length <= rows!);
+    assert(lines.every(line => visibleWidth(line) <= columns!));
+    assert.match(lines.join("\n"), /后台/);
+    assert.match(lines.join("\n"), /已验证 0\/3/);
+    assert.match(lines.join("\n"), /详细日志/);
+  }
+});
+
+test("Delivery checks show their current activity after Checker preparation ends", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "delivery_started", {}, "");
+  receive(view, "check_completed", { jobId: "prepare" }, "delivery");
+  receive(view, "delivery_check_started", { snapshotId: "candidate" }, "");
+  assert.match(view.render(100).join("\n"), /检查交付运行合同/);
+  receive(view, "delivery_check_finished", { snapshotId: "candidate", ok: false }, "");
+  assert.match(view.render(100).join("\n"), /交付运行合同未通过，准备修复/);
+  assert.match(view.render(100).join("\n"), /已验证 0\/3/);
+});
+
 test("Document viewer scrolls wrapped CJK content, preserves reading position and can follow the tail", () => {
   const terminal = new MemoryTerminal();
   terminal.rows = 12;

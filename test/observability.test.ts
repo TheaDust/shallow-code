@@ -37,6 +37,24 @@ test("Gateway wait transport reasons are redacted in both machine and human logs
   });
 });
 
+test("Checker progress redacts rejection reasons and remains separate from requirement outcomes", async () => {
+  await withTempDir("shallow-checker-progress-", async directory => {
+    const chunks: string[] = [];
+    const store = new RunStateStore({ statusByRequirementId: { R: "todo" }, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
+      join(directory, "ledger.jsonl"), { write: chunk => { chunks.push(chunk); } }, ["opaque-credential"]);
+    await store.record({ at: "2026-10-18T00:00:00Z", type: "check_progress", packetId: "p", detail: {
+      jobId: "j", snapshotId: "s", checkedSourceSha: "sha", moduleEpoch: 1, attempt: 1, mode: "replay", requirementIds: ["R"],
+      stage: "review_rejected", cached: true, reason: "opaque-credential\nFORGED", clauseIds: ["R:result"],
+    } });
+    const human = new HumanRunFormatter().format(chunks[0]!)!;
+    assert.match(human, /跳过已被拒绝的程序/);
+    assert.doesNotMatch(human, /\n|opaque-credential/);
+    assert.doesNotMatch(await readFile(join(directory, "ledger.jsonl"), "utf8"), /opaque-credential/);
+    assert.equal(store.snapshot.statusByRequirementId.R, "todo");
+    assert.equal(store.snapshot.ledger[0]!.phase, "checker");
+  });
+});
+
 test("Internal events are correlated; private previews stay out of public logs and usage numbers survive", async () => {
   await withTempDir("shallow-observe-", async (directory) => {
     const chunks: string[] = [];

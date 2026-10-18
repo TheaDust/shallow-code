@@ -53,8 +53,14 @@ export class CheckerCoordinator {
     const queue = await CheckerQueue.open({ directory: runtime.directory, artifacts: runtime.artifacts,
       checker: { check: async (job, signal) => {
         const head = checkpoints.snapshot.snapshots.find(item => sameRef(item.snapshot, job.snapshot));
-        await emit({ at: now(), type: "check_started", packetId: job.packetId, detail: jobDetail(job, head?.sourceSha ?? "") });
-        return runtime.checker.check(job, signal);
+        await emit({ at: now(), type: "check_started", packetId: job.packetId, detail: { ...jobDetail(job, head?.sourceSha ?? ""),
+          archived: checkpoints.snapshot.producedHead?.snapshot.id !== job.snapshot.id || checkpoints.snapshot.epoch !== job.moduleEpoch } });
+        return runtime.checker.check(job, signal, async progress => {
+          const current = checkpoints.snapshot;
+          await emit({ at: now(), type: "check_progress", packetId: job.packetId,
+            detail: { ...jobDetail(job, head?.sourceSha ?? ""), ...progress,
+              archived: current.producedHead?.snapshot.id !== job.snapshot.id || current.epoch !== job.moduleEpoch } });
+        });
       } }, concurrency: options.checker?.concurrency ?? 2, resourceKeys: () => runtime.resourceKeys, startPaused: true });
     const coordinator = new CheckerCoordinator(runtime, queue, checkpoints, options, deps, emit, accepted);
     // A resumed controller creates fresh attempts after checking its current head.
@@ -419,7 +425,10 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       const job = await coordinator.submit(candidate, packet, "prepare", deadline("delivery"), undefined, [], undefined, 0);
       await coordinator.report(job); await coordinator.drain();
       const signal = AbortSignal.timeout(Math.max(1, Math.min(720_000, budget.remaining("delivery"))));
-      return runtime.verifyDelivery(job, signal);
+      await state.record({ at: now(), type: "delivery_check_started", detail: { snapshotId: candidate.snapshot.id } });
+      const report = await runtime.verifyDelivery(job, signal);
+      await state.record({ at: now(), type: "delivery_check_finished", detail: { snapshotId: candidate.snapshot.id, ...report } });
+      return report;
     };
     if (head && budget.remaining("delivery") > 0) delivery = await verifyDelivery(head);
     for (let round = 1; head && !delivery.ok && round <= 3 && budget.remaining("delivery") > 0; round++) {

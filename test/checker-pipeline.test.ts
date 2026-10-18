@@ -30,8 +30,10 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   let instance = 0;
   const runtime: CheckerRuntime = { directory, artifacts, snapshots, binding, initialStates: [input], resourceKeys: [],
     async verifyDelivery() { return { ok: true, stage: "complete", message: "Fake execution readiness" }; },
-    checker: { async check(job, signal): Promise<CheckReport> {
+    checker: { async check(job, signal, onProgress): Promise<CheckReport> {
+      await onProgress?.({ stage: "prepare" });
       await hook?.(job, signal);
+      if (job.mode !== "prepare") await onProgress?.({ stage: "replay" });
       const environment = await artifacts.putTypedJson({ instance: ++instance }, schema);
       const ready = await artifacts.putReceipt(job, { id: `receipt-${instance}`, job: await artifacts.putJson(job),
         snapshot: job.snapshot, binding, environment, sequence: 0, recordedAt: new Date().toISOString(),
@@ -52,6 +54,26 @@ test("Checker configuration declares migration mode and bounded concurrency", ()
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: "agent" }));
   for (const mode of ["legacy", "observe"]) assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: mode }), /only supports active/);
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_CONCURRENCY: "3" }));
+});
+
+test("Checker progress reaches the correlated event ledger without granting verification", async () => {
+  await withModulePipeline(async f => {
+    await attach(f);
+    await f.run();
+    const events = await f.events();
+    const progress = events.filter(item => item.type === "check_progress");
+    assert(progress.length > 0);
+    for (const event of progress) {
+      assert.equal(event.phase, "checker");
+      assert(event.runId && event.eventId && event.sequence);
+      assert(event.detail?.jobId && event.detail.snapshotId && event.detail.checkedSourceSha);
+      assert(events.some(start => start.type === "check_started" && start.detail?.jobId === event.detail?.jobId));
+    }
+    const deliveryStart = events.findIndex(event => event.type === "delivery_check_started");
+    const deliveryEnd = events.findIndex(event => event.type === "delivery_check_finished");
+    assert(deliveryStart >= 0 && deliveryEnd > deliveryStart);
+    assert.equal(events[deliveryStart]!.phase, "delivery");
+  });
 });
 
 test("An incomplete group cannot grant its implementation or dispatch dependent groups", async () => {

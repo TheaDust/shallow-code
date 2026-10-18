@@ -1,6 +1,18 @@
 import type { RunEvent } from "./types.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { formatCostUsd, formatModelUsageSummary, type ModelUsageSummary, type UsageSummary } from "./model-usage.js";
+import type { CheckerProgress } from "./checker/port.js";
+
+export function checkerProgressLabel(progress: CheckerProgress): string {
+  const labels: Record<CheckerProgress["stage"], string> = {
+    prepare: "准备隔离环境", exploration: "探索并编写验收程序", rediscovery: "按拒绝原因修正验收程序",
+    replay: "独立重放当前版本", semantic_review: "独立语义复核", review_approved: "验收程序复核通过",
+    review_rejected: progress.cached ? "跳过已被拒绝的程序" : "验收程序复核未通过",
+    review_cached: "复用已批准复核，跳过该程序的 LLM 复核", confirmation: "在第二个独立环境复现失败",
+    diagnostic: "检查遇到问题，保留诊断", cleanup: "释放本次隔离环境",
+  };
+  return `Checker · ${labels[progress.stage]}`;
+}
 
 export class HumanRunFormatter {
   private firstAtMs: number | null = null;
@@ -10,7 +22,7 @@ export class HumanRunFormatter {
     if (!event) return null;
     const at = typeof event.at === "string" ? Date.parse(event.at) : Number.NaN;
     const elapsed = this.trackElapsed(at);
-    const message = describe(event.type, event);
+    const message = describe(event);
     if (message === null) return null;
     const elapsedSuffix = elapsed === null ? "" : ` +${elapsed}`;
     const context = event.sequence ? ` [#${event.sequence}${event.attempt ? ` 尝试 ${event.attempt}` : ""}]` : "";
@@ -44,29 +56,33 @@ function parseEvent(rawLine: string): RunEvent | null {
   return value as RunEvent;
 }
 
-function describe(type: string, event: RunEvent): string | null {
+function describe(event: RunEvent): string | null {
   const detail: Record<string, unknown> | undefined = event.detail;
   const packetId = event.packetId ?? "";
   const message = pickString(detail, "message");
   const reason = pickString(detail, "reason");
-  switch (type) {
+  switch (event.type) {
+    case "check_progress":
+      return `${checkerProgressLabel(event.detail!)}（${packetId}）${event.detail?.archived ? "；历史任务" : ""}${reason ? `；原因：${reason}` : ""}`;
     case "snapshot_sealed":
       return `源码已封存；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "check_queued":
       return `Checker 已排队（${packetId}）；版本 ${pickString(detail, "snapshotId")}`;
     case "check_started":
-      return `Checker 开始检查（${packetId}）；版本 ${pickString(detail, "snapshotId")}`;
+      return `Checker 开始检查（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史任务" : ""}`;
     case "check_completed":
-      return `Checker 检查完成（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
+      return `Checker 检查${detail?.status === "failed" || detail?.status === "interrupted" ? "未完成" : "完成"}（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
     case "check_cancelled":
       return `Checker 任务已结束（${packetId}）；${reason ?? "检查范围由模块收口接续"}`;
     case "module_check_started":
       return `开始模块集中检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "module_check_finished":
-      return `模块集中检查完成；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}`;
+      return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}`;
     case "checker_usage": {
       const tokens = tokenUsageParts(detail);
-      return tokens.length ? `Checker ${pickString(detail, "role")} 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
+      const role = pickString(detail, "role");
+      const label = role === "exploration" ? "探索" : role === "semantic_review" ? "独立复核" : role;
+      return tokens.length ? `Checker ${label} 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
     case "run_resumed":
       return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
@@ -172,6 +188,10 @@ function describe(type: string, event: RunEvent): string | null {
       }；Builder 尝试 ${pickNumber(detail, "attempt") ?? 0}`;
     case "delivery_started":
       return "进入交付窗口，开始最终验收";
+    case "delivery_check_started":
+      return `检查交付运行合同；版本 ${pickString(detail, "snapshotId")}`;
+    case "delivery_check_finished":
+      return `交付运行合同检查${detail?.ok ? "通过" : "未通过"}；版本 ${pickString(detail, "snapshotId")}${message ? `；${message}` : ""}`;
     case "delivery_repair_started":
       return `最终验收未通过（${pickString(detail, "stage")}），启动交付修复${
         pickNumber(detail, "round") ? `第 ${pickNumber(detail, "round")} 轮` : ""

@@ -9,7 +9,7 @@ import { CheckerCleanupError, createCheckerAgent, createPiCheckerModel } from ".
 import { ArtifactStore } from "../src/checker/artifacts.js";
 import { type AcceptanceContract, type CheckerManifest, type CheckerRequirements, type SourceClause } from "../src/checker/evidence.js";
 import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../src/checker/model.js";
-import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef } from "../src/checker/port.js";
+import type { AdapterDeclaration, CheckerProgress, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef } from "../src/checker/port.js";
 import type { AtomicRequirement } from "../src/types.js";
 
 async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean } = {}) {
@@ -118,6 +118,35 @@ test("Checker keeps an unreproduced violation inconclusive", async () => {
     const report = await f.checker.check(f.job, new AbortController().signal);
     assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "inconclusive"]);
     assert.match(report.outcomes[1]!.reason!, /did not reproduce/);
+  } finally { await f.cleanup(); }
+});
+
+test("Checker reports replay, independent review, confirmation and cached approval at their actual stages", async () => {
+  const f = await fixture({ failures: [0, 1] });
+  const events: CheckerProgress[] = [];
+  try {
+    const first = await f.checker.check(f.job, new AbortController().signal, async progress => { events.push(progress); });
+    const stages = events.map(item => item.stage);
+    assert(stages.indexOf("exploration") < stages.indexOf("replay"));
+    assert(stages.indexOf("replay") < stages.indexOf("semantic_review"));
+    assert(stages.indexOf("review_approved") < stages.indexOf("confirmation"));
+    assert.equal(stages.at(-1), "cleanup");
+    assert.deepEqual(events.find(item => item.stage === "confirmation")!.clauseIds, [first.outcomes[1]!.clauseId]);
+    events.length = 0;
+    await f.checker.check({ ...f.job, jobId: "cached", mode: "replay", programs: first.programs }, new AbortController().signal,
+      async progress => { events.push(progress); });
+    assert(events.some(item => item.stage === "replay"));
+    assert(events.some(item => item.stage === "review_cached" && item.cached && item.programId === first.programs[0]!.descriptor.id));
+    assert(!events.some(item => item.stage === "semantic_review" || item.stage === "exploration"));
+  } finally { await f.cleanup(); }
+});
+
+test("progress sink failures cannot change evidence or prevent environment cleanup", async () => {
+  const f = await fixture();
+  try {
+    const report = await f.checker.check(f.job, new AbortController().signal, async () => { throw new Error("Presentation unavailable"); });
+    assert(report.outcomes.every(item => item.status === "pass"));
+    assert.equal(f.closed, f.environments);
   } finally { await f.cleanup(); }
 });
 
@@ -248,7 +277,13 @@ test("rejected programs survive restart as feedback and cannot be replayed or re
   try {
     const first = await f.checker.check(f.job, new AbortController().signal);
     const checker = createCheckerAgent({ artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model: f.model });
-    const second = await checker.check({ ...f.job, jobId: "job-retry", mode: "replay", programs: first.programs }, new AbortController().signal);
+    const progress: CheckerProgress[] = [];
+    const second = await checker.check({ ...f.job, jobId: "job-retry", mode: "replay", programs: first.programs }, new AbortController().signal,
+      async detail => { progress.push(detail); });
+    assert(progress.some(item => item.stage === "review_rejected" && item.cached && item.reason?.includes("Constant predicate")));
+    assert(progress.some(item => item.stage === "rediscovery"));
+    assert(progress.some(item => item.stage === "diagnostic"));
+    assert(!progress.some(item => item.stage === "replay" || item.stage === "semantic_review"));
     assert.deepEqual(f.roles, ["exploration", "semantic_review", "exploration"]);
     assert.equal(f.replays, 1, "the rejected program is not replayed again");
     assert.equal(f.environments, 3, "retry prepares only an exploration environment");
