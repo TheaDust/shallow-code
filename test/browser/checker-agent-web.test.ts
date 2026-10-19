@@ -29,7 +29,7 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
     const artifacts = new ArtifactStore(join(root, "artifacts"), "run");
     const snapshots = new SnapshotStore(join(root, "snapshots"));
     const snapshot = await snapshots.seal({ sourceDirectory: source, sourceSha: mutant ? "mutant" : "correct", packetId: "packet", dataPaths: ["data"] });
-    const { adapter, initialState } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec });
+    const { adapter, initialState } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: snapshot.ref });
     const requirement: AtomicRequirement = { id: "r1", folderPath: [], declarationIndex: 0, name: "Cancel order", text: "Cancel order and release seats persistently.",
       dependencyIds: [], scenarios: [], scenarioContracts: [{ id: "cancel", name: "Cancel shared order", steps: [{ keyword: "GIVEN", content: "Order O-17 is unpaid" },
         { keyword: "WHEN", content: "Alice clicks button Cancel O-17" }, { keyword: "THEN", content: "Bob sees order O-17 cancelled and Train T-6 has 5 seats" },

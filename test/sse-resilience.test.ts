@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { installSseResilience, tolerateSseStream } from "../src/builder/sse-resilience.js";
+import { acquireSseResilience, installSseResilience, tolerateSseStream } from "../src/builder/sse-resilience.js";
 
 const encoder = new TextEncoder();
 const terminal = 'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n';
@@ -126,6 +126,28 @@ test("SSE resilience installer transforms event-stream responses and leaves JSON
     assert.equal(dropped.length, 1);
   } finally {
     resilience.uninstall();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("Shared SSE resilience stays installed until the last overlapping caller releases it", async () => {
+  const originalFetch = globalThis.fetch;
+  let requests = 0;
+  globalThis.fetch = (async () => {
+    requests += 1;
+    return new Response(terminal, { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as typeof globalThis.fetch;
+  const first = acquireSseResilience();
+  const second = acquireSseResilience();
+  try {
+    const before = await (await globalThis.fetch("http://gateway.local/first")).text();
+    assert.match(before, /\[DONE\]/);
+    first.uninstall();
+    const after = await (await globalThis.fetch("http://gateway.local/second")).text();
+    assert.match(after, /\[DONE\]/, "the wrapper must remain installed while another caller holds it");
+    assert.equal(requests, 2);
+  } finally {
+    second.uninstall();
     globalThis.fetch = originalFetch;
   }
 });

@@ -143,7 +143,7 @@ interface RunEventDetails {
     auditRequirementIds?: string[]; skippedRequirementIds?: string[];
     delivery?: { ok: boolean; stage: string; message: string; candidate?: CandidateEvidence };
     scenarioResults?: RunScenarioResult[] };
-  gateway_wait: { source: "builder" | "planning"; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
+  gateway_wait: { source: "builder" | "planning" | "checker"; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
   builder_work_preserved: { preserved: boolean; requirementIds: string[]; reason?: string };
   implementation_retry: { requirementIds: string[]; timeoutMs: number; reason?: "timeout" | import("./builder/port.js").BuilderResult["terminationReason"] };
   implementation_split: { requirementIds: string[]; reason: string; kind?: "recovery" | "dependency"; packets: Array<{ packetId: string; requirementIds: string[] }> };

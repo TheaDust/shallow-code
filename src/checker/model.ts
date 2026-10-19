@@ -5,6 +5,10 @@ import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { piProviderModel, DEFAULT_CONTEXT_WINDOW } from "../builder/pi-model-config.js";
+import { acquireSseResilience } from "../builder/sse-resilience.js";
+import { GatewayRequestError, observeGatewayFailures, providerGatewayFailure,
+  type GatewayFailure, type GatewayFailureObservation } from "../gateway-failure.js";
+import { GatewayRecovery } from "../gateway-recovery.js";
 import { opencodeSessionHeaders } from "../gateway-headers.js";
 import type { GatewayConfig } from "../runtime-config.js";
 import type { ModelRates } from "../model-usage.js";
@@ -14,6 +18,8 @@ export interface CheckerTool {
   name: string;
   description: string;
   parameters: TSchema;
+  /** Compatibility shim run before schema validation, matching the Pi tool contract. */
+  prepareArguments?(input: unknown): unknown;
   execute(input: unknown): Promise<unknown>;
 }
 export interface CheckerModelRequest {
@@ -45,8 +51,30 @@ export function createPiCheckerModel(options: {
   contextWindow?: number;
   modelCost?: ModelRates;
   onUsage?: (usage: CheckerModelUsage) => void;
+  /** Shared pipeline gateway window; defaults to a model-local recovery window. */
+  recovery?: GatewayRecovery;
 }): CheckerModel {
-  return { async run(request) {
+  const recovery = options.recovery ?? new GatewayRecovery();
+  return {
+    async run(request) {
+      request.signal.throwIfAborted();
+      if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
+      // Install per call so overlapping Checker jobs share fetch observation and
+      // SSE repair without one run uninstalling another run's wrapper.
+      const observation = observeGatewayFailures(options.gateway.baseUrl);
+      const resilience = acquireSseResilience();
+      try {
+        return await recovery.run("checker", request.job.packetId,
+          () => Math.max(0, request.job.budget.deadlineAt - Date.now()),
+          () => attempt(request, observation), request.signal);
+      } finally {
+        resilience.uninstall();
+        observation.uninstall();
+      }
+    },
+  };
+
+  async function attempt(request: CheckerModelRequest, gateway: GatewayFailureObservation): Promise<CheckerModelResult> {
     request.signal.throwIfAborted();
     if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
     const cwd = join(options.sessionDir, randomUUID());
@@ -59,15 +87,17 @@ export function createPiCheckerModel(options: {
         opencodeSessionHeaders(options.gateway.baseUrl, randomUUID()), options.modelCost)] });
     await runtime.setRuntimeApiKey("checker-gateway", options.gateway.apiKey);
     // Transient gateway drops are retryable; the provider adds no second layer of its own.
+    // The provider timeout tracks the Checker job deadline, matching the Builder's call window.
     // Long explorations compact older turns before the model's 256k context window is exhausted.
+    const remainingMs = Math.max(1, Math.min(2_147_483_647, request.job.budget.timeoutMs ?? Infinity, request.job.budget.deadlineAt - Date.now()));
     const settingsManager = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
-      provider: { maxRetries: 0 } }, compaction: { enabled: true }, enableInstallTelemetry: false });
+      provider: { maxRetries: 0, timeoutMs: remainingMs } }, compaction: { enabled: true }, enableInstallTelemetry: false });
     const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true,
       disabledBuiltinExtensions: ["mcp"], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       systemPrompt: request.systemPrompt });
     await resources.reload();
     const customTools: ToolDefinition[] = request.tools.map(tool => ({ name: tool.name, label: tool.name, description: tool.description,
-      parameters: tool.parameters, executionMode: "sequential", async execute(_id, input) {
+      parameters: tool.parameters, prepareArguments: tool.prepareArguments, executionMode: "sequential", async execute(_id, input) {
         request.signal.throwIfAborted();
         const result = await tool.execute(input);
         return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
@@ -89,22 +119,43 @@ export function createPiCheckerModel(options: {
     });
     const abort = () => { void session.abort(); };
     request.signal.addEventListener("abort", abort, { once: true });
-    const timer = setTimeout(abort, Math.max(1, request.job.budget.deadlineAt - Date.now()));
+    const timer = setTimeout(abort, remainingMs);
+    let observed: GatewayFailure | undefined;
     try {
-      await session.prompt(request.prompt, { expandPromptTemplates: false });
-      await session.waitForIdle();
+      return await gateway.track(async () => {
+        try {
+          await session.prompt(request.prompt, { expandPromptTemplates: false });
+          await session.waitForIdle();
+          request.signal.throwIfAborted();
+          if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
+          if (providerError) {
+            const failure = providerGatewayFailure(providerError, gateway.failure());
+            if (failure) throw new GatewayRequestError(failure);
+            throw new Error(providerError);
+          }
+          return { totalTokens: session.getSessionStats().tokens.total };
+        } catch (error) {
+          // Capture scoped metadata before the async scope ends and cleanup runs.
+          observed = gateway.failure();
+          throw error;
+        } finally {
+          clearTimeout(timer);
+          request.signal.removeEventListener("abort", abort);
+          unsubscribe();
+          const stats = session.getSessionStats();
+          session.dispose();
+          options.onUsage?.({ role: request.role, jobId: request.job.jobId, ...stats.tokens,
+            ...(hasReasoning ? { reasoning } : {}), ...(options.modelCost ? { cost: stats.cost } : {}) });
+        }
+      });
+    } catch (error) {
       request.signal.throwIfAborted();
       if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
-      if (providerError) throw new Error(providerError);
-      return { totalTokens: session.getSessionStats().tokens.total };
-    } finally {
-      clearTimeout(timer);
-      request.signal.removeEventListener("abort", abort);
-      unsubscribe();
-      const stats = session.getSessionStats();
-      session.dispose();
-      options.onUsage?.({ role: request.role, jobId: request.job.jobId, ...stats.tokens,
-        ...(hasReasoning ? { reasoning } : {}), ...(options.modelCost ? { cost: stats.cost } : {}) });
+      if (error instanceof GatewayRequestError) throw error;
+      const message = providerError ?? (error instanceof Error ? error.message : String(error));
+      const failure = providerGatewayFailure(message, observed);
+      if (failure) throw new GatewayRequestError(failure, { cause: error });
+      throw error;
     }
-  } };
+  }
 }

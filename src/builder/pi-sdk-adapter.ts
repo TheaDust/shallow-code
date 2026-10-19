@@ -14,6 +14,7 @@ import { BUILDER_SKILLS_DIR } from "./skills.js";
 import { PiExecutionCollector, type ExecutionSummary } from "./pi-execution-stats.js";
 import { piProviderModel } from "./pi-model-config.js";
 import { opencodeSessionHeaders } from "../gateway-headers.js";
+import { providerErrorMessage } from "../gateway-failure.js";
 import type { BuilderCapabilityPack } from "../application/port.js";
 import type { ModelRates } from "../model-usage.js";
 
@@ -47,18 +48,6 @@ export interface PiSession {
   prompt(text: string, images?: ToolImage[]): Promise<PiPromptResult>;
   snapshot(): PiSessionSnapshot;
   dispose(): void;
-}
-
-/** Pi's HTTP error envelope retains the provider message used by gateway classification. */
-function providerErrorMessage(error: string | undefined): string | undefined {
-  const envelope = error?.match(/^\d{3}: (\{[\s\S]*\})$/);
-  if (envelope) {
-    try {
-      const body = JSON.parse(envelope[1]);
-      if (typeof body.message === "string") return body.message;
-    } catch { /* Preserve the SDK error when the body is not valid JSON. */ }
-  }
-  return error;
 }
 
 function toPiTool(tool: BuilderTool): ToolDefinition {

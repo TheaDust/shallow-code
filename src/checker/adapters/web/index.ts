@@ -19,7 +19,7 @@ export interface WebAdapterOptions {
   snapshots: SnapshotStore;
   spec: ProjectSpec;
   workspace: string;
-  initialDataSnapshot?: ContentRef;
+  initialDataSnapshot: ContentRef;
   reservedPorts?: number[];
   promptFragments?: ContentRef[];
   lifecycle?: ApplicationLifecycle;
@@ -52,13 +52,13 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const spec = parseProjectSpec(options.spec);
   const store = options.artifacts;
   const require = createRequire(import.meta.url);
-  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../artifacts.ts", "../../agent.ts", "../../evidence.ts", "../../model.ts"];
+  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../../builder/sse-resilience.ts", "../../../gateway-failure.ts", "../../../gateway-recovery.ts", "../../artifacts.ts", "../../agent.ts", "../../evidence.ts", "../../model.ts"];
   const release = hashBytes(Buffer.concat(await Promise.all(releaseFiles.map((path) => readFile(new URL(path, import.meta.url))))));
   const executor = { id: "shallow.web.quickjs", version: "1", digest: release };
   const objectSchema = await store.putJson(OBJECT);
-  if (options.initialDataSnapshot) await options.snapshots.open(options.initialDataSnapshot);
-  const stateSchema = await store.putJson({ type: "object", required: ["mode"], properties: { mode: { enum: ["empty", "inherited"] }, baseline: REF }, additionalProperties: false });
-  const initialStates = await Promise.all(["inherited", "empty"].map((mode) => store.putTypedJson({ mode, ...(mode === "inherited" && options.initialDataSnapshot ? { baseline: options.initialDataSnapshot } : {}) }, stateSchema)));
+  await options.snapshots.open(options.initialDataSnapshot);
+  const stateSchema = await store.putJson({ type: "object", required: ["baseline"], properties: { baseline: REF }, additionalProperties: false });
+  const initialState = await store.putTypedJson({ baseline: options.initialDataSnapshot }, stateSchema);
   const programSchema = await store.putJson({ type: "object", required: ["source", "initialState", "clauses"], properties: { source: REF, initialState: REF, clauses: { type: "array", minItems: 1, items: { type: "object", required: ["clauseId", "checkpointId"], properties: { clauseId: { type: "string" }, checkpointId: { type: "string" } }, additionalProperties: false } } }, additionalProperties: false });
   const inspectSchema = await store.putJson({ type: "object", properties: { actor: { type: "string" } }, additionalProperties: false });
   const resetSchema = await store.putJson({ type: "object", additionalProperties: false });
@@ -67,7 +67,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const genericPrompts = await Promise.all(["exploration", "review", "tools"].map((name) => readFile(new URL(`../../../../prompts/checker/${name}.md`, import.meta.url), "utf8")));
   const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-case", dataDirectory: "allocated-per-case" }, objectSchema);
   const declaration: AdapterDeclaration = {
-    schemaVersion: 1, id: "shallow.web", version: "1", implementation: executor, execution, initialStates,
+    schemaVersion: 1, id: "shallow.web", version: "1", implementation: executor, execution, initialStates: [initialState],
     resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
@@ -87,7 +87,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const binding: ExecutionBindingRef = { ...await store.putJson(bindingRecord), executor };
   await store.validateBinding(binding);
   const adapter = new WebExecutionAdapter({ ...options, spec }, binding, declaration, { payload: objectSchema, environment: objectSchema, output: objectSchema, initialState: stateSchema });
-  return { adapter, declaration, initialState: initialStates[0]! };
+  return { adapter, declaration, initialState };
 }
 
 /** One session owns each application, data directory, browser and execution realm it creates. */
@@ -97,12 +97,12 @@ export class WebExecutionAdapter implements ExecutionAdapter {
     signal.throwIfAborted();
     if (canonicalJson(job.binding) !== canonicalJson(this.binding)) throw new Error("Web executor binding mismatch");
     await this.options.artifacts.validateBinding(job.binding);
-    const initial = await this.options.artifacts.readTypedJson<{ mode: "empty" | "inherited" }>(job.initialState);
+    const initial = await this.options.artifacts.readTypedJson<{ baseline: ContentRef }>(job.initialState);
     if (!this.declaration.initialStates.some((state) => sameRef(state, job.initialState))) throw new Error("Undeclared Web initial state");
     const snapshot = await this.options.snapshots.open(job.snapshot);
     const actualSpec = await loadProjectSpec(snapshot.sourceDirectory);
     if (canonicalJson(resolveRuntimeContract(actualSpec, { port: 1 })) !== canonicalJson(resolveRuntimeContract(this.options.spec, { port: 1 }))) throw new Error("Project run configuration differs from the Web execution binding");
-    const session = new WebSession(this.options, this.schemas, this.declaration, job, snapshot.sourceDirectory, initial.mode);
+    const session = new WebSession(this.options, this.schemas, this.declaration, job, snapshot.sourceDirectory, initial.baseline);
     try { await session.initialize(signal); return session; }
     catch (error) { await session.close(); throw new WebExecutionError(error instanceof Error ? error.message : String(error), session.readinessEvidence); }
   }
@@ -132,7 +132,7 @@ class WebSession implements ExecutionSession {
   private failed = false;
   private leasedPort?: number;
   constructor(private readonly options: WebAdapterOptions, private readonly schemas: WebSchemas, private readonly declaration: AdapterDeclaration,
-    private readonly job: Readonly<CheckJob>, private readonly source: string, private readonly initialMode: "empty" | "inherited") {}
+    private readonly job: Readonly<CheckJob>, private readonly source: string, private readonly initialDataSnapshot: ContentRef) {}
   async initialize(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     if (this.closed) throw new Error("Web execution session is closed");
@@ -140,19 +140,14 @@ class WebSession implements ExecutionSession {
     const root = join(this.options.workspace, "web-" + randomUUID());
     await mkdir(root, { recursive: true, mode: 0o700 });
     this.caseDirectory = root;
-    let source = this.source;
-    if (this.initialMode === "empty" || this.options.initialDataSnapshot) {
-      source = join(root, "initial");
-      await cp(this.source, source, { recursive: true });
-      for (const path of this.options.spec.dataPaths ?? []) await rm(join(source, path), { recursive: true, force: true });
-      if (this.initialMode === "inherited" && this.options.initialDataSnapshot) {
-        const baseline = await this.options.snapshots.open(this.options.initialDataSnapshot);
-        for (const path of this.options.spec.dataPaths ?? []) {
-          const from = join(baseline.sourceDirectory, path);
-          const exists = await lstat(from).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
-          if (exists) { await mkdir(dirname(join(source, path)), { recursive: true }); await cp(from, join(source, path), { recursive: true }); }
-        }
-      }
+    const source = join(root, "initial");
+    await cp(this.source, source, { recursive: true });
+    for (const path of this.options.spec.dataPaths ?? []) await rm(join(source, path), { recursive: true, force: true });
+    const baseline = await this.options.snapshots.open(this.initialDataSnapshot);
+    for (const path of this.options.spec.dataPaths ?? []) {
+      const from = join(baseline.sourceDirectory, path);
+      const exists = await lstat(from).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
+      if (exists) { await mkdir(dirname(join(source, path)), { recursive: true }); await cp(from, join(source, path), { recursive: true }); }
     }
     const port = await prepareOneAtATime(async () => {
       signal.throwIfAborted();

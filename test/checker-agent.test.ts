@@ -6,23 +6,25 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Type } from "typebox";
 import { CheckerCleanupError, createCheckerAgent, createPiCheckerModel } from "../src/checker/agent.js";
+import { GatewayRecovery } from "../src/gateway-recovery.js";
 import { ArtifactStore } from "../src/checker/artifacts.js";
 import { type AcceptanceContract, type CheckerManifest, type CheckerRequirements, type SourceClause } from "../src/checker/evidence.js";
 import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../src/checker/model.js";
 import type { AdapterDeclaration, CheckerProgress, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef } from "../src/checker/port.js";
 import type { AtomicRequirement } from "../src/types.js";
 
-async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean } = {}) {
+async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; stringifyToolArguments?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "checker-agent-"));
   const store = new ArtifactStore(directory, "run-1");
   const schema = await store.putJson(Type.Unknown());
+  const inputSchema = await store.putJson(Type.Object({}, { additionalProperties: true }));
   const typed = (value: unknown) => store.putTypedJson(value, schema);
   const initialState = await typed({ mode: "empty" });
   const executor = { id: "fake-host", version: "1", digest: "host-v1" };
   const declaration: AdapterDeclaration = { schemaVersion: 1, id: "fake", version: "1", implementation: executor,
-    execution: await typed({}), initialStates: [initialState], resourceKeys: [], capabilities: [{ id: "inspect", version: "1", description: "observe", inputSchema: schema, outputSchema: schema }],
+    execution: await typed({}), initialStates: [initialState], resourceKeys: [], capabilities: [{ id: "inspect", version: "1", description: "observe", inputSchema, outputSchema: schema }],
     programFormat: { id: "fake.javascript", version: "1", schema, mediaType: "text/javascript" }, observations: [], attachments: [], prompts: [] };
-  const bindingContent: ExecutionBinding = { schemaVersion: 1, declaration: await store.putJson(declaration), executor, schemas: [schema], dependencies: {}, promptDigest: "test-prompts" };
+  const bindingContent: ExecutionBinding = { schemaVersion: 1, declaration: await store.putJson(declaration), executor, schemas: [schema, inputSchema], dependencies: {}, promptDigest: "test-prompts" };
   const binding: ExecutionBindingRef = { ...await store.putJson(bindingContent), executor };
   const requirement: AtomicRequirement = { id: "r1", folderPath: [], declarationIndex: 0, name: "Cancel order", text: "Cancellation persists.", guidance: ["Implementation-only guidance"], dependencyIds: config.dependencies ?? [],
     scenarios: [], scenarioContracts: [{ id: "cancel", name: "Cancellation", steps: [{ keyword: "GIVEN", content: "Order is unpaid" },
@@ -71,7 +73,11 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     for (const tool of request.tools) toolSchemas.push({ role: request.role, name: tool.name, parameters: tool.parameters });
     if (request.role === "semantic_review") reviewPrompts.push(request.prompt);
     else explorationPrompts.push(request.prompt);
-    const tool = (name: string, args: unknown) => request.tools.find(item => item.name === name)!.execute(args);
+    const tool = async (name: string, args: unknown) => {
+      const definition = request.tools.find(item => item.name === name)!;
+      return definition.execute(definition.prepareArguments?.(args) ?? args);
+    };
+    const argument = (value: unknown) => config.stringifyToolArguments ? JSON.stringify(value) : value;
     const promptInput = JSON.parse(request.prompt) as { sourceClauses: SourceClause[]; contract?: AcceptanceContract };
     const clauses = (request.role === "semantic_review" ? promptInput.contract!.clauses : promptInput.sourceClauses).slice(0, config.omitSecond ? 1 : undefined);
     if (request.role === "semantic_review") {
@@ -80,7 +86,8 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     } else {
       assert.deepEqual(request.tools.map(item => item.name), ["invoke", "save_artifact", "finish"]);
       await assert.rejects(tool("invoke", { capabilityId: "shell", input: {} }), /Undeclared/);
-      await tool("invoke", { capabilityId: "inspect", input: {} });
+      await assert.rejects(tool("invoke", { capabilityId: "inspect", input: "{not json" }), /not valid JSON/);
+      await tool("invoke", { capabilityId: "inspect", input: argument({}) });
       const contract: AcceptanceContract = { requirements: job.requirements,
         checkpoints: [{ id: "given", kind: "precondition", requirementId: "r1", scenarioId: "cancel", dependsOn: [], basis: "Order is unpaid", expected: { operator: "equal", value: "unpaid" } },
           { id: "when", kind: "action", requirementId: "r1", scenarioId: "cancel", dependsOn: ["given"], basis: "Cancel the order" },
@@ -90,10 +97,10 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
         contract.checkpoints = contract.checkpoints.filter(item => item.kind === "assertion");
         contract.checkpoints.forEach(item => { item.dependsOn = []; });
       }
-      const contractRef = await tool("save_artifact", { kind: "contract", contract });
-      const program = await tool("save_artifact", { kind: "program", contract: contractRef, source: config.source ?? "await check.expect('source-result', [observation.id]);",
+      const contractRef = await tool("save_artifact", { kind: "contract", contract: argument(contract) });
+      const program = await tool("save_artifact", { kind: "program", contract: argument(contractRef), source: config.source ?? "await check.expect('source-result', [observation.id]);",
         clauses: contract.clauses.map(clause => ({ clauseId: clause.id, checkpointId: clause.checkpointId })) });
-      await tool("finish", { programs: [program] });
+      await tool("finish", { programs: argument([program]) });
     }
     return { totalTokens: 100 };
   } };
@@ -137,6 +144,18 @@ test("Checker tool schemas keep an object root because the gateway rejects a roo
     assert.deepEqual(Object.keys((save.parameters as { properties: Record<string, unknown> }).properties).sort(),
       ["clauses", "contract", "kind", "source"]);
     assert.deepEqual((save.parameters as { required: string[] }).required, ["kind", "contract"]);
+    const invoke = f.toolSchemas.find(item => item.name === "invoke")!;
+    assert.equal(((invoke.parameters as { properties: Record<string, { type?: string }> }).properties.input.type), "object");
+    assert.equal(((save.parameters as { properties: Record<string, { type?: string }> }).properties.contract.type), "object");
+  } finally { await f.cleanup(); }
+});
+
+test("Checker accepts JSON-encoded tool arguments from a stringifying gateway", async () => {
+  const f = await fixture({ stringifyToolArguments: true });
+  try {
+    const report = await f.checker.check(f.job, new AbortController().signal);
+    assert(report.outcomes.every(item => item.status === "pass"));
+    assert.equal(f.roles.filter(role => role === "exploration").length, 1);
   } finally { await f.cleanup(); }
 });
 
@@ -418,6 +437,65 @@ test("production Pi Checker retries a transient connection failure before using 
     assert.equal(requests, 2, "the first transient connection failure must be retried");
     assert.equal(result.totalTokens, 13);
     assert.equal(usage.length, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await f.cleanup();
+  }
+});
+
+test("production Pi Checker repairs a truncated terminal SSE trailer instead of discarding the turn", { timeout: 20_000 }, async () => {
+  const f = await fixture();
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    requests += 1;
+    const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "recovered" }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`);
+    res.end('data: {"created":1,"usage":nu');
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address(); assert(address && typeof address !== "string");
+    const usage: CheckerModelUsage[] = [];
+    const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" }, sessionDir: join(f.directory, "sessions"), onUsage: item => usage.push(item) });
+    const result = await model.run({ role: "exploration", job: f.job, systemPrompt: "Reply.", prompt: "Hello.", tools: [], signal: new AbortController().signal });
+    assert.equal(requests, 1, "the completed turn must survive one damaged usage trailer");
+    assert.equal(result.totalTokens, 13);
+    assert.equal(usage.length, 1);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await f.cleanup();
+  }
+});
+
+test("production Pi Checker retries an observed TCP reset reported as HTTP 400", { timeout: 20_000 }, async () => {
+  const f = await fixture();
+  let requests = 0;
+  const server = createServer(async (req, res) => {
+    requests += 1;
+    const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
+    if (requests === 1) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ message: '400 Post "https://api.example/v1/chat/completions": read tcp 127.0.0.1:60000->127.0.0.1:443: read: connection reset by peer (request id: probe)' }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "recovered" }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address(); assert(address && typeof address !== "string");
+    let now = 0;
+    const recovery = new GatewayRecovery({ now: () => now, sleep: async ms => { now += ms; } });
+    const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" },
+      sessionDir: join(f.directory, "sessions"), recovery });
+    const result = await model.run({ role: "exploration", job: f.job, systemPrompt: "Reply.", prompt: "Hello.", tools: [], signal: new AbortController().signal });
+    assert.equal(requests, 2, "the upstream reset hidden behind HTTP 400 must be retried");
+    assert.equal(result.totalTokens, 13);
+    assert.equal(now, 5_000, "the reset must use the unavailable fast schedule");
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await f.cleanup();

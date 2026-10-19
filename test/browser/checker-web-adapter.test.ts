@@ -26,6 +26,8 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     await writeFile(join(source, "data/state.txt"), "snapshot-later");
     const snapshot = await snapshots.seal({ sourceDirectory: source, sourceSha: "sha-original", packetId: "packet", dataPaths: ["data"] });
     const { adapter, declaration, initialState } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: baseline.ref });
+    assert.deepEqual(declaration.initialStates, [initialState]);
+    assert.deepEqual(await artifacts.readTypedJson(initialState), { baseline: baseline.ref });
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
       snapshot: snapshot.ref, requirements: await artifacts.putJson({ requirements: [] }), binding: adapter.binding, initialState,
       requirementIds: ["r"], mode: "replay", programs: [], budget: { deadlineAt: Date.now() + 90_000 } };
@@ -35,7 +37,7 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     const programSource = `const p=await browser.actor('alice');const before=await p.read({role:'status'});await check.precondition('initial',[before.id]);await p.click({role:'button',name:'Change'},'change');const after=await p.read({role:'status'});await check.expect('r:result',[after.id]);`;
     const descriptor = await artifacts.putTypedJson({ source: await artifacts.putBytes(programSource), initialState, clauses: [{ clauseId: "r:result", checkpointId: "result" }] }, declaration.programFormat.schema);
     const program: ProgramRef = { descriptor, format: WEB_PROGRAM_FORMAT, contract, binding: adapter.binding };
-    // Builder changes after sealing do not affect execution or its inherited baseline.
+    // Builder changes after sealing do not affect execution or its input baseline.
     await writeFile(join(source, "data/state.txt"), "builder-later");
     const session = await adapter.prepare(job, new AbortController().signal);
     const firstEnvironment = session.execution;
@@ -72,7 +74,29 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
       assert.equal(await readFile(join(source, "data/state.txt"), "utf8"), "builder-later");
     } finally { await session.close(); }
     assert.deepEqual(await readdir(workspace), []);
-    const broken = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, lifecycle: { start: async () => { throw new Error("actual-startup-diagnostic"); } } });
+    const emptyInput = join(root, "empty-input");
+    await mkdir(emptyInput);
+    const emptyBaseline = await snapshots.seal({ sourceDirectory: emptyInput, sourceSha: "sha-empty-input", packetId: "empty-input", dataPaths: ["data"] });
+    const fresh = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: emptyBaseline.ref });
+    assert.deepEqual(await artifacts.readTypedJson(fresh.initialState), { baseline: emptyBaseline.ref });
+    const freshSession = await fresh.adapter.prepare({ ...job, jobId: "fresh-job", binding: fresh.adapter.binding, initialState: fresh.initialState }, new AbortController().signal);
+    try {
+      const initial = await freshSession.invoke("inspect", { actor: "alice" }, new AbortController().signal);
+      assert.match(JSON.stringify(await artifacts.readTypedJson(initial.output)), /empty/);
+      await freshSession.invoke("run", { source: "const p=await browser.actor('alice');await p.click({role:'button',name:'Change'});" }, new AbortController().signal);
+      const changed = await freshSession.invoke("inspect", { actor: "alice" }, new AbortController().signal);
+      assert.match(JSON.stringify(await artifacts.readTypedJson(changed.output)), /changed/);
+      await freshSession.invoke("reset_case", {}, new AbortController().signal);
+      const reset = await freshSession.invoke("inspect", { actor: "alice" }, new AbortController().signal);
+      assert.match(JSON.stringify(await artifacts.readTypedJson(reset.output)), /empty/);
+      await assert.rejects(readFile(join(emptyBaseline.sourceDirectory, "data/state.txt")), { code: "ENOENT" });
+      assert.equal(await readFile(join(snapshot.sourceDirectory, "data/state.txt"), "utf8"), "snapshot-later");
+    } finally { await freshSession.close(); }
+    assert.deepEqual(await readdir(workspace), []);
+    const broken = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: emptyBaseline.ref,
+      lifecycle: { start: async () => { throw new Error("actual-startup-diagnostic"); } } });
+    assert.deepEqual(broken.declaration.initialStates, [broken.initialState]);
+    assert.deepEqual(await artifacts.readTypedJson(broken.initialState), { baseline: emptyBaseline.ref });
     try { await broken.adapter.prepare({ ...job, binding: broken.adapter.binding, initialState: broken.initialState }, new AbortController().signal); assert.fail("prepare should fail"); }
     catch (error) {
       assert.match(String(error), /actual-startup-diagnostic/);
@@ -82,7 +106,8 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     }
     assert.deepEqual(await readdir(workspace), []);
     await assert.rejects(adapter.prepare({ ...job, binding: { ...job.binding, executor: { ...job.binding.executor, version: "forged" } } }, new AbortController().signal), /binding mismatch/);
-    const { declaration: fixed } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec: { ...spec, adapterConfig: { extraPorts: [3001] } } });
+    const { declaration: fixed } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, initialDataSnapshot: baseline.ref,
+      spec: { ...spec, adapterConfig: { extraPorts: [3001] } } });
     assert.deepEqual(fixed.resourceKeys, ["local-port:3001"]);
   });
 });

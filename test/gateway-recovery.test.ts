@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GatewayRequestError, classifyGatewayFailure, httpGatewayFailure, observeGatewayFailures } from "../src/gateway-failure.js";
+import { GatewayRequestError, classifyGatewayFailure, httpGatewayFailure, observeGatewayFailures,
+  providerErrorMessage, providerGatewayFailure, type GatewayFailure } from "../src/gateway-failure.js";
 import { GatewayRecovery, GatewayUnavailableError } from "../src/gateway-recovery.js";
 
 function fixture() {
@@ -20,6 +21,63 @@ test("Only the observed upstream TCP reset is retryable among HTTP 400 errors", 
   assert.deepEqual(classifyGatewayFailure(badRequest, "Invalid model name"), badRequest);
   assert.deepEqual(classifyGatewayFailure(badRequest, "400 Post something else: connection reset by peer"), badRequest);
   assert.deepEqual(classifyGatewayFailure(httpGatewayFailure(401), reset), httpGatewayFailure(401));
+});
+
+test("Provider error envelopes retain nested messages and classify the observed TCP reset", () => {
+  const reset = '400 Post "https://api.example/v1/chat/completions": read tcp 127.0.0.1:1->127.0.0.1:443: read: connection reset by peer (request id: probe)';
+  assert.equal(providerErrorMessage(`400: ${JSON.stringify({ message: reset })}`), reset);
+  assert.equal(providerErrorMessage(`400: ${JSON.stringify({ error: { message: reset } })}`), reset);
+  assert.equal(providerErrorMessage(`Error: 429: ${JSON.stringify({ message: "rate limited" })}`), "rate limited");
+  assert.equal(providerErrorMessage("plain provider failure"), "plain provider failure");
+  assert.equal(providerErrorMessage(undefined), undefined);
+  assert.deepEqual(providerGatewayFailure(`400: ${JSON.stringify({ message: reset })}`),
+    { kind: "unavailable", retryable: true, status: 400 });
+  assert.deepEqual(providerGatewayFailure(`400: ${JSON.stringify({ message: "Invalid model name" })}`), httpGatewayFailure(400));
+  assert.deepEqual(providerGatewayFailure(`429: ${JSON.stringify({ message: "slow down" })}`, httpGatewayFailure(429, "7")), httpGatewayFailure(429, "7"));
+  assert.deepEqual(providerGatewayFailure("fetch failed", { kind: "unavailable", retryable: true }),
+    { kind: "unavailable", retryable: true });
+  assert.equal(providerGatewayFailure("Provider finish_reason: content_filter"), undefined);
+});
+
+test("Scoped gateway observation keeps concurrent failures separate", async () => {
+  const original = globalThis.fetch;
+  const endpoint = "https://gateway.invalid/v1/chat/completions";
+  let calls = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input) !== endpoint) return new Response("other");
+    calls += 1;
+    return new Response("body", { status: calls === 1 ? 429 : 503,
+      headers: calls === 1 ? { "retry-after": "7" } : {} });
+  }) as typeof globalThis.fetch;
+  const observer = observeGatewayFailures("https://gateway.invalid/v1");
+  try {
+    const seen: GatewayFailure[] = [];
+    await Promise.all([
+      observer.track(async () => { await fetch(endpoint); seen.push(observer.failure()!); }),
+      observer.track(async () => { await fetch(endpoint); seen.push(observer.failure()!); }),
+    ]);
+    seen.sort((left, right) => (left.status ?? 0) - (right.status ?? 0));
+    assert.deepEqual(seen, [httpGatewayFailure(429, "7"), httpGatewayFailure(503)]);
+  } finally {
+    observer.uninstall();
+    globalThis.fetch = original;
+  }
+});
+
+test("Checker recovery retries and authentication stays scoped to auxiliary clients", async () => {
+  const f = fixture();
+  let calls = 0;
+  const result = await f.recovery.run("checker", "a", unlimited, async () => {
+    if (++calls === 1) throw down();
+    return "recovered";
+  });
+  assert.equal(result, "recovered");
+  assert.equal(calls, 2);
+  assert.deepEqual(f.delays, [30_000]);
+  await assert.rejects(f.recovery.run("checker", "b", unlimited, async () => {
+    throw new GatewayRequestError(httpGatewayFailure(401));
+  }));
+  assert.equal(await f.recovery.run("builder", "c", unlimited, async () => "ok"), "ok");
 });
 
 test("Planner gateway waits report the nested transport error and code", async () => {

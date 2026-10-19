@@ -23,7 +23,12 @@ export interface CheckJob {
   requirementIds: string[];
   mode: "prepare" | "discover" | "replay" | "confirm";
   programs: ProgramRef[];
-  budget: { deadlineAt: number };
+  budget: {
+    /** Absolute run limit, including queue admission. */
+    deadlineAt: number;
+    /** Execution allowance starting when the queue grants a slot. */
+    timeoutMs?: number;
+  };
 }
 export interface EvidenceReceipt {
   id: string;

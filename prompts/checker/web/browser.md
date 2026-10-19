@@ -33,4 +33,4 @@ Checkpoint 与期望来自验收合同。用 `await check.precondition(checkpoin
 
 对于复杂关系，把纯函数源码字符串作为第三个参数传入：`check.expect(clauseId, ids, '(observations, expected) => ...')`。其输入限于被引用的真实观察与合同常量。该函数在无宿主能力的环境中运行，必须返回布尔值。把它保存在程序中供独立语义复核。恒定谓词和缺少必要结果的谓词不能支撑一个通过子句。
 
-`run` 能力接受 `{source,program?}`。探索可以省略 program；正式证据要求 source 与已保存 ProgramRef 的源码字节一致。程序描述为 `{source:ContentRef,initialState:TypedRef,clauses:[{clauseId,checkpointId}]}`，格式 `shallow.web.javascript@1`。先用 save_artifact 保存 UTF-8 源码，再保存该描述。`inspect` 接受可选的 actor 名称；`reset_case` 接受 `{}` 并使所有旧句柄失效。重放总是从声明的初始状态启动全新的应用与数据环境。上一个 case 的收据 id 不能在新 case 中用于断言。
+`run` 能力接受 `{source,program?}`。探索可以省略 program；正式证据要求 source 与已保存 ProgramRef 的源码字节一致。只有传入已保存的 `program` 时，`check.precondition` 与 `check.expect` 才从该 program 的合同加载 checkpoint 与 expected；仅探索页面而省略 program 时不要调用 `check.*`。程序描述为 `{source:ContentRef,initialState:TypedRef,clauses:[{clauseId,checkpointId}]}`，格式 `shallow.web.javascript@1`。先用 save_artifact 保存 UTF-8 源码，再保存该描述。`inspect` 接受可选的 actor 名称；`reset_case` 接受 `{}` 并使所有旧句柄失效。重放总是从声明的初始状态启动全新的应用与数据环境。上一个 case 的收据 id 不能在新 case 中用于断言。

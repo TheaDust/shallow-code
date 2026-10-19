@@ -19,6 +19,7 @@ import { GitCliOps } from "./src/git-ops.js";
 import { HumanRunFormatter } from "./src/human-log.js";
 import { BuildTui, buildResult } from "./src/terminal/build-tui.js";
 import { ProgressJournal, PROGRESS_DIR_NAME } from "./src/progress-journal.js";
+import { GatewayRecovery } from "./src/gateway-recovery.js";
 import { LlmFeatureGrouper } from "./src/llm-feature-grouper.js";
 import {
   runPipeline,
@@ -276,6 +277,9 @@ async function executeProduction(
 ): Promise<RunSummary> {
   const { builderGateway, checkerGateway, builderModelCost, checkerModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
+  // Builder, Planner and Checker share one cooldown so a gateway outage pauses
+  // every client instead of letting each one discover it independently.
+  const gatewayRecovery = new GatewayRecovery();
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
   if (sseCaptureDir) process.stderr.write(`[ShallowCode] SSE 抓包已启用（仅诊断用途）：${sseCaptureDir}\n`);
@@ -374,9 +378,10 @@ async function executeProduction(
       await saveRunRecord(dirname(runLogFile), context.runRecord);
       let recordUsage: (item: CheckerModelUsage) => void = () => {};
       const model = createPiCheckerModel({ gateway: checkerGateway, sessionDir: join(directory, "sessions"),
+        recovery: gatewayRecovery,
         ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item) });
       checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model }),
-        binding: execution.adapter.binding, initialStates: execution.declaration.initialStates, resourceKeys: execution.declaration.resourceKeys,
+        binding: execution.adapter.binding, initialState: execution.initialState, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },
         async verifyDelivery(job, signal) {
           try { await execution.adapter.verifyDelivery(job, signal); return { ok: true, stage: "complete", message: "Frozen candidate satisfies its execution binding and delivery checks" }; }
@@ -390,6 +395,7 @@ async function executeProduction(
       git,
       clock: { nowMs: () => Date.now() },
       logSink,
+      gatewayRecovery,
       diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway),
       runMetadata: { model: builderGateway.model, checkerModel: checkerGateway.model,
         builderTimeoutMs: modelTimeouts.builderTimeoutMs,

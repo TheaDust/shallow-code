@@ -432,7 +432,7 @@ export class BuildView implements Component {
       case "builder_started": return `Builder · 实现当前模块${detail?.attempt ? ` · 第 ${detail.attempt} 次尝试` : ""}`;
       case "builder_finished": return this.checkerActivity() ?? (detail?.outcome === "completed" ? "Builder 本轮完成，等待运行检查" : "Builder 本轮结束，检查候选与检查点");
       case "candidate_prepared": return "候选构建完成，准备独立验收";
-      case "gateway_wait": return `${detail?.source === "builder" ? "Builder" : "Planner"} · 等待模型网关恢复`;
+      case "gateway_wait": return `${detail?.source === "builder" ? "Builder" : detail?.source === "checker" ? "Checker" : "Planner"} · 等待模型网关恢复`;
       case "repair_batch_started": return `Builder · 第 ${detail?.round ?? 1} 轮修复`;
       case "delivery_started": this.phase = "最终交付"; return "重新验收当前范围，检查交付入口";
       case "delivery_check_started": return "检查交付运行合同";

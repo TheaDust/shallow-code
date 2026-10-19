@@ -1,16 +1,16 @@
 import { GatewayRequestError, type GatewayFailure } from "./gateway-failure.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
-const MAX_CONCURRENT_PLANNERS = 2;
+const MAX_CONCURRENT_AUXILIARY = 2;
 
-interface PlannerWaiter {
+interface AuxiliaryWaiter {
   resume(): void;
   signal?: AbortSignal;
   abort?: () => void;
 }
 
 export interface GatewayWait {
-  source: "builder" | "planning";
+  source: "builder" | "planning" | "checker";
   packetId: string;
   retry: number;
   delayMs: number;
@@ -21,22 +21,24 @@ export interface GatewayWait {
 export class GatewayUnavailableError extends GatewayRequestError {}
 
 /**
- * One recovery window shared by Builder and Planner, scoped to a pipeline run.
+ * One recovery window shared by Builder, Planner and Checker, scoped to a
+ * pipeline run.
  *
  * Retryable transport failures are retried with capped exponential backoff for
  * as long as the caller's own window (`remainingMs`) lasts; when the window is
  * spent the last failed response is returned as a `GatewayRequestError` so the
  * caller can retry the same work with a fresh window. Waiting never disables
  * later calls. Only Builder authentication failures stop the run, because
- * rejected credentials cannot recover by waiting.
+ * rejected credentials cannot recover by waiting; auxiliary clients (planning
+ * and Checker) leave Builder available.
  */
 export class GatewayRecovery {
   private blockedUntil = 0;
   private failures = 0;
   private version = 0;
   private stopped?: GatewayUnavailableError;
-  private activePlanners = 0;
-  private readonly plannerQueue: PlannerWaiter[] = [];
+  private activeAuxiliary = 0;
+  private readonly auxiliaryQueue: AuxiliaryWaiter[] = [];
   private recorder?: (event: GatewayWait) => Promise<void>;
   private lastFailure?: GatewayFailure;
   private lastReason?: string;
@@ -51,7 +53,7 @@ export class GatewayRecovery {
 
   async run<T>(source: GatewayWait["source"], packetId: string, remainingMs: () => number,
     operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const release = source === "planning" ? await this.acquirePlanner(signal) : undefined;
+    const release = source === "builder" ? undefined : await this.acquireAuxiliary(signal);
     try {
       for (let retry = 0; ; retry++) {
         signal?.throwIfAborted();
@@ -80,13 +82,13 @@ export class GatewayRecovery {
             : (error as { gatewayFailure?: GatewayFailure } | null)?.gatewayFailure;
           if (!failure || error instanceof GatewayUnavailableError) throw error;
           if (!failure.retryable) {
-            // A Planner-specific rejection must not disable a working Builder.
+            // An auxiliary-specific rejection must not disable a working Builder.
             if (failure.kind === "authentication" && source === "builder") this.stopped = new GatewayUnavailableError(failure, { cause: error });
             throw error;
           }
           if (this.lastFailure?.kind !== failure.kind) this.failures = 0;
           this.lastFailure = failure;
-          this.lastReason = source === "planning" ? transportCause(error) : undefined;
+          this.lastReason = source === "builder" ? undefined : transportCause(error);
           const delay = Math.max(failure.retryAfterMs ?? 0, backoffDelay(failure.kind, this.failures));
           this.failures++;
           this.version++;
@@ -96,29 +98,29 @@ export class GatewayRecovery {
     } finally { release?.(); }
   }
 
-  private async acquirePlanner(signal?: AbortSignal): Promise<() => void> {
+  private async acquireAuxiliary(signal?: AbortSignal): Promise<() => void> {
     signal?.throwIfAborted();
-    if (this.activePlanners < MAX_CONCURRENT_PLANNERS) {
-      this.activePlanners++;
+    if (this.activeAuxiliary < MAX_CONCURRENT_AUXILIARY) {
+      this.activeAuxiliary++;
     } else {
       await new Promise<void>((resolve, reject) => {
-        const waiter: PlannerWaiter = { resume: resolve, signal };
+        const waiter: AuxiliaryWaiter = { resume: resolve, signal };
         if (signal) {
           waiter.abort = () => {
-            this.plannerQueue.splice(this.plannerQueue.indexOf(waiter), 1);
+            this.auxiliaryQueue.splice(this.auxiliaryQueue.indexOf(waiter), 1);
             reject(signal.reason);
           };
           signal.addEventListener("abort", waiter.abort, { once: true });
         }
-        this.plannerQueue.push(waiter);
+        this.auxiliaryQueue.push(waiter);
       });
     }
     return () => {
-      const next = this.plannerQueue.shift();
+      const next = this.auxiliaryQueue.shift();
       if (next) {
         if (next.abort) next.signal!.removeEventListener("abort", next.abort);
         next.resume();
-      } else this.activePlanners--;
+      } else this.activeAuxiliary--;
     };
   }
 

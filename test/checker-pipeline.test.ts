@@ -3,7 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { ArtifactStore, contentDigest } from "../src/checker/artifacts.js";
-import { CheckerCheckpoints } from "../src/checker/checkpoints.js";
+import { CheckerCheckpoints, readCheckerCheckpoint } from "../src/checker/checkpoints.js";
 import type { AdapterDeclaration, CheckJob, CheckOutcome, CheckReport, ExecutionBindingRef } from "../src/checker/port.js";
 import { SnapshotStore } from "../src/snapshot-store.js";
 import type { CheckerRuntime } from "../src/checker-pipeline.js";
@@ -28,7 +28,7 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   const binding: ExecutionBindingRef = { ...await artifacts.putJson({ schemaVersion: 1, declaration: await artifacts.putJson(declaration),
     executor, schemas: [schema], dependencies: {}, promptDigest: contentDigest([]) }), executor };
   let instance = 0;
-  const runtime: CheckerRuntime = { directory, artifacts, snapshots, binding, initialStates: [input], resourceKeys: [],
+  const runtime: CheckerRuntime = { directory, artifacts, snapshots, binding, initialState: input, resourceKeys: [],
     async verifyDelivery() { return { ok: true, stage: "complete", message: "Fake execution readiness" }; },
     checker: { async check(job, signal, onProgress): Promise<CheckReport> {
       await onProgress?.({ stage: "prepare" });
@@ -54,6 +54,25 @@ test("Checker configuration declares migration mode and bounded concurrency", ()
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: "agent" }));
   for (const mode of ["legacy", "observe"]) assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: mode }), /only supports active/);
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_CONCURRENCY: "3" }));
+});
+
+test("Gateway transport recovery retries feature grouping before dispatch", async () => {
+  await withModulePipeline(async f => {
+    await attach(f);
+    let calls = 0;
+    f.deps.grouper = { async group(catalog) {
+      if (++calls === 1) throw Object.assign(new Error("gateway temporarily unavailable"), {
+        gatewayFailure: { kind: "unavailable" as const, retryable: true },
+      });
+      return { groups: catalog.requirements.map(item => ({ requirementIds: [item.id], purpose: "Separate groups" })) };
+    } };
+    const result = await f.run();
+    assert.equal(calls, 2);
+    const waits = (await f.events()).filter(event => event.type === "gateway_wait");
+    assert.equal(waits.length, 1);
+    assert.equal(waits[0]!.detail?.source, "planning");
+    assert.notEqual(result.status, "failed");
+  });
 });
 
 test("Checker progress reaches the correlated event ledger without granting verification", async () => {
@@ -112,32 +131,42 @@ test("Current changed requirements are audited while inherited Evolution context
   });
 });
 
-test("Builder continues B while Checker reads sealed A and current final evidence alone publishes", async () => {
+test("Feature groups retain sealed snapshots and Checker starts on the latest module snapshot at closure", async () => {
   await withModulePipeline(async f => {
-    let started!: () => void;
-    const checking = new Promise<void>(resolve => { started = resolve; });
-    let checkingA = false, overlapped = false;
-    const runtime = await attach(f, async (job, signal) => {
-      if (job.requirementIds[0] !== "A" || job.moduleEpoch !== 0) return;
-      checkingA = true; started();
-      await new Promise<void>(resolve => { if (signal.aborted) resolve(); else signal.addEventListener("abort", () => resolve(), { once: true }); });
-      const sealed = await runtime.snapshots.open(job.snapshot);
-      assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), "A");
-      checkingA = false;
-    });
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); });
     const build = f.builder.run.bind(f.builder);
     f.builder.run = async (request, options) => {
-      if (request.mode === "implement" && request.packet.requirementIds[0] === "B") { await checking; overlapped = checkingA; }
+      if (request.mode === "implement" && request.packet.requirementIds[0] === "B") {
+        assert.equal(jobs.length, 0);
+        const checkpoint = await readCheckerCheckpoint(join(runtime.directory, "controller.json"));
+        assert.deepEqual(checkpoint!.producedHead!.implementedRequirementIds, ["A"]);
+        assert.equal(checkpoint!.accepted.ordinal, 0);
+      }
       const result = await build(request, options);
       await writeFile(join(f.options.outputDir, "marker.txt"), request.mode === "implement" ? request.packet.requirementIds[0] : "repair");
       return result;
     };
     const result = await f.run();
-    assert.equal(overlapped, true); assert.equal(result.status, "delivered");
+    assert.equal(result.status, "delivered");
     assert.deepEqual(result.verifiedRequirementIds.sort(), ["A", "B", "C"]);
     assert.equal(f.builder.closeCount, 1);
+    const checkpoint = await readCheckerCheckpoint(join(runtime.directory, "controller.json"));
+    assert.equal(checkpoint!.snapshots.length, 3);
+    for (const [index, marker] of ["A", "B", "C"].entries()) {
+      const sealed = await runtime.snapshots.open(checkpoint!.snapshots[index].snapshot);
+      assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), marker);
+    }
+    assert.ok(!jobs.some(job => job.snapshot.id === checkpoint!.snapshots[0].snapshot.id));
+    const firstModuleJobs = jobs.filter(job => job.moduleEpoch === 1);
+    assert.equal(firstModuleJobs.length, 3);
+    assert.ok(firstModuleJobs.every(job => job.snapshot.id === checkpoint!.snapshots[1].snapshot.id));
+    assert.deepEqual(firstModuleJobs.filter(job => job.mode !== "prepare").flatMap(job => job.requirementIds).sort(), ["A", "B"]);
     const events = await f.events();
-    assert.ok(events.some(item => item.type === "check_cancelled" && item.detail?.archived));
+    assert.ok(!events.some(item => item.type === "check_cancelled"));
+    const boundary = events.findIndex(item => item.type === "module_check_started");
+    assert.ok(boundary >= 0);
+    assert.ok(!events.slice(0, boundary).some(item => item.type === "check_queued" || item.type === "check_started"));
     assert.ok(events.some(item => item.type === "module_check_finished" && item.detail?.moduleId === "<final>"));
     await writeRunReport(dirname(f.options.ledgerFile), result);
     assert.match(await readFile(join(dirname(f.options.ledgerFile), "checker-report.md"), "utf8"), /Checker 验收证据/);
@@ -243,16 +272,15 @@ test("A runnable ancestor can be delivered while newer sealed source remains rec
   });
 });
 
-test("Repair guards keep empty and inherited results separate when accepting partial improvement", async () => {
+test("Repair retains partial improvement and checks each packet once per round from the bound input state", async () => {
   await withModulePipeline(async f => {
-    const runtime = await attach(f, undefined, async job => {
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); }, async job => {
       const snapshot = await runtime.snapshots.open(job.snapshot);
       const repaired = await readFile(join(snapshot.sourceDirectory, "partial-improvement.txt")).then(() => true, () => false);
-      if (job.requirementIds[0] === "A" && job.initialState.id === runtime.initialStates[1].id) return "fail";
+      if (job.requirementIds[0] === "A") return "fail";
       return job.requirementIds[0] === "B" && !repaired ? "fail" : "pass";
     });
-    const schema = await runtime.artifacts.putJson({});
-    runtime.initialStates.push(await runtime.artifacts.putTypedJson({ mode: "empty" }, schema));
     const build = f.builder.run.bind(f.builder);
     f.builder.run = async (request, options) => {
       const result = await build(request, options);
@@ -263,6 +291,26 @@ test("Repair guards keep empty and inherited results separate when accepting par
     assert.equal(result.status, "partial"); assert.deepEqual(result.failedRequirementIds, ["A"]);
     assert.ok(result.verifiedRequirementIds.includes("B"));
     assert.ok((await f.events()).some(item => item.type === "repair_batch_finished" && item.detail?.retained === true));
+    assert.ok(jobs.every(job => job.initialState.id === runtime.initialState.id));
+    assert.ok(jobs.every(job => job.budget.timeoutMs === 1_800_000));
+    const audit = jobs.filter(job => job.mode !== "prepare");
+    // A repair is checked twice for confirmation; the first module audit and final audit each check once.
+    for (const epoch of [1, Math.max(...audit.map(job => job.moduleEpoch))]) {
+      const round = audit.filter(job => job.moduleEpoch === epoch);
+      assert.equal(new Set(round.map(job => job.packetId)).size, round.length);
+    }
+  });
+});
+
+test("Checker execution allowances are independent of queue time and share only the total run limit", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    await attach(f, async job => { jobs.push(job); });
+    f.options.totalBudgetMs = 3_600_000;
+    assert.equal((await f.run()).status, "delivered");
+    assert.ok(jobs.length > 0);
+    assert.ok(jobs.every(job => job.budget.timeoutMs === 1_800_000));
+    assert.ok(jobs.every(job => job.budget.deadlineAt - Date.now() > 1_800_000));
   });
 });
 

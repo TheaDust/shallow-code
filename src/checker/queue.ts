@@ -85,7 +85,8 @@ export class CheckerQueue {
   async setControllerState<T>(value: T): Promise<void> { await this.transaction(state => { state.controller = structuredClone(value); }); }
   async enqueue(job: CheckJob, options: { priority?: number } = {}): Promise<ContentRef> {
     const fixed = immutable(structuredClone(job));
-    if (fixed.runId !== this.options.artifacts.runId || !fixed.jobId || !Number.isFinite(fixed.budget.deadlineAt) || !Number.isInteger(fixed.moduleEpoch) ||
+    if (fixed.runId !== this.options.artifacts.runId || !fixed.jobId || !Number.isFinite(fixed.budget.deadlineAt) ||
+      (fixed.budget.timeoutMs !== undefined && (!Number.isFinite(fixed.budget.timeoutMs) || fixed.budget.timeoutMs <= 0)) || !Number.isInteger(fixed.moduleEpoch) ||
       !Array.isArray(fixed.requirementIds) || new Set(fixed.requirementIds).size !== fixed.requirementIds.length) throw new Error("Invalid Checker job");
     await this.options.artifacts.validateBinding(fixed.binding);
     await this.options.artifacts.getBytes(fixed.requirements);
@@ -205,7 +206,7 @@ export class CheckerQueue {
         .sort((a, b) => a.priority - b.priority || a.ordinal - b.ordinal)[0];
       if (!record) return;
       if (record.job.budget.deadlineAt <= Date.now()) {
-        await this.transaction(state => { const item = state.records.find(item => item.job.jobId === record.job.jobId)!; item.status = "cancelled"; item.error = "Deadline expired while queued"; item.completedAt = Date.now(); });
+        await this.transaction(state => { const item = state.records.find(item => item.job.jobId === record.job.jobId)!; item.status = "cancelled"; item.error = "Run budget exhausted before Checker execution"; item.completedAt = Date.now(); });
         continue;
       }
       await this.transaction(state => { const item = state.records.find(item => item.job.jobId === record.job.jobId)!; if (item.status === "queued") { item.status = "running"; item.startedAt = Date.now(); } });
@@ -222,7 +223,9 @@ export class CheckerQueue {
     }
   }
   private async execute(record: QueueRecord, abort: AbortController): Promise<void> {
-    const timer = setTimeout(() => abort.abort(new Error("Checker job deadline exceeded")), Math.min(2_147_483_647, Math.max(1, record.job.budget.deadlineAt - Date.now())));
+    const deadlineAt = Math.min(record.job.budget.deadlineAt, Date.now() + (record.job.budget.timeoutMs ?? Infinity));
+    const timer = setTimeout(() => abort.abort(new Error("Checker job deadline exceeded")), Math.min(2_147_483_647,
+      Math.max(1, deadlineAt - Date.now())));
     let report: ContentRef | undefined, error: string | undefined, cleanupFailure: unknown;
     try {
       const result = await this.options.checker.check(immutable(structuredClone(record.job)), abort.signal);
@@ -237,7 +240,7 @@ export class CheckerQueue {
     finally { clearTimeout(timer); }
     await this.transaction(state => {
       const item = state.records.find(item => item.job.jobId === record.job.jobId)!;
-      const late = item.status === "cancelled" || abort.signal.aborted || Date.now() >= item.job.budget.deadlineAt;
+      const late = item.status === "cancelled" || abort.signal.aborted || Date.now() >= deadlineAt;
       item.status = cleanupFailure ? "interrupted" : late ? "cancelled" : "completed";
       item.completedAt = Date.now();
       if (report) { if (late) item.lateReport = report; else item.report = report; }

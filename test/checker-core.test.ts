@@ -104,7 +104,7 @@ test("cancellation waits for cleanup and late reports never publish", { timeout:
   } finally { cleanup.resolve(); await queue.cancel(job.jobId).catch(() => {}); }
 });
 
-test("deadline includes queue time and cancellation retains resource lease through cleanup", { timeout: 30_000 }, async t => {
+test("the absolute run limit includes queue time and cancellation retains the resource lease through cleanup", { timeout: 30_000 }, async t => {
   const f = await fixture(t), started = deferred(), cleaned = deferred();
   const order: string[] = [];
   const aborted = deferred();
@@ -126,6 +126,48 @@ test("deadline includes queue time and cancellation retains resource lease throu
   assert.equal(queue.records().find(record => record.job.jobId === "slow")?.status, "cancelled");
   assert.equal(queue.records().find(record => record.job.jobId === "expired")?.status, "cancelled");
   } finally { cleaned.resolve(); await queue.cancel("slow").catch(() => {}); await queue.drain(t.signal).catch(() => {}); }
+});
+
+test("queued work receives its full execution allowance after slot and resource admission", { timeout: 30_000 }, async t => {
+  const f = await fixture(t), began = deferred(), release = deferred(), waiting = deferred();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  let executionSignal: AbortSignal | undefined;
+  const queue = await CheckerQueue.open({ directory: join(f.root, "queue"), artifacts: f.artifacts, concurrency: 2,
+    resourceKeys: () => ["singleton"], checker: { async check(job, signal) {
+      if (job.jobId === "busy") { began.resolve(); await release.promise; }
+      else {
+        executionSignal = signal;
+        waiting.resolve();
+        await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      return f.report(job);
+    } } });
+  try {
+    await queue.enqueue(f.job("busy"));
+    await awaitStarted(queue, "busy", began.promise, t.signal);
+    const job = f.job("waiting", { budget: { deadlineAt: Date.now() + 60_000, timeoutMs: 1_000 } });
+    await queue.enqueue(job);
+    t.mock.timers.tick(5_000);
+    assert.equal(queue.records().find(record => record.job.jobId === "waiting")?.status, "queued");
+    release.resolve();
+    await awaitStarted(queue, "waiting", waiting.promise, t.signal);
+    assert.equal(executionSignal!.aborted, false);
+    t.mock.timers.tick(999);
+    assert.equal(executionSignal!.aborted, false);
+    t.mock.timers.tick(1);
+    assert.equal(executionSignal!.aborted, true);
+    await queue.drain(t.signal);
+    const record = queue.records().find(record => record.job.jobId === "waiting")!;
+    assert.equal(record.startedAt! - record.queuedAt, 5_000);
+    assert.equal(record.completedAt! - record.startedAt!, 1_000);
+    assert.ok(record.lateReport);
+    assert.equal(record.report, undefined);
+    assert.deepEqual(record.job, job);
+  } finally {
+    release.resolve();
+    await queue.cancel("waiting").catch(() => {});
+    await queue.drain(t.signal).catch(() => {});
+  }
 });
 
 test("recovery marks active work interrupted and refuses missing completed evidence", async t => {

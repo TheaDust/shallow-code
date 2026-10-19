@@ -76,6 +76,56 @@ export function installSseResilience(onRepair?: (raw: string) => void): SseResil
   };
 }
 
+interface SharedSseResilience {
+  resilience: SseResilience;
+  listeners: Set<(raw: string) => void>;
+  users: number;
+}
+
+let sharedSseResilience: SharedSseResilience | undefined;
+
+export interface AcquiredSseResilience {
+  repairedEvents(): number;
+  uninstall(): void;
+}
+
+/**
+ * Reference-counted installer for in-process clients whose gateway calls may
+ * overlap, such as Checker exploration and semantic review. The fetch wrapper
+ * stays installed until the last caller releases it.
+ */
+export function acquireSseResilience(onRepair?: (raw: string) => void): AcquiredSseResilience {
+  if (!sharedSseResilience) {
+    const listeners = new Set<(raw: string) => void>();
+    sharedSseResilience = {
+      listeners,
+      users: 0,
+      resilience: installSseResilience(raw => {
+        for (const listener of [...listeners]) {
+          try { listener(raw); } catch { /* Diagnostics must never break a repaired stream. */ }
+        }
+      }),
+    };
+  }
+  const shared = sharedSseResilience;
+  if (onRepair) shared.listeners.add(onRepair);
+  shared.users++;
+  let released = false;
+  return {
+    repairedEvents: () => shared.resilience.repairedEvents(),
+    uninstall() {
+      if (released) return;
+      released = true;
+      if (onRepair) shared.listeners.delete(onRepair);
+      shared.users--;
+      if (shared.users === 0) {
+        if (sharedSseResilience === shared) sharedSseResilience = undefined;
+        shared.resilience.uninstall();
+      }
+    },
+  };
+}
+
 /**
  * Rewrites an SSE byte stream. Valid `data:` events and `[DONE]` are forwarded;
  * malformed events are tolerated only after finish_reason and only when they
