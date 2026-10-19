@@ -9,6 +9,8 @@ interface DraftState {
   tree: RequirementNode | null;
   questions: string[];
   pendingInputs: string[];
+  /** undefined: no decision; null: explicitly remove an existing intent. */
+  projectIntent?: string | null;
 }
 
 export interface DraftStore {
@@ -17,11 +19,13 @@ export interface DraftStore {
   readonly tree: RequirementNode | null;
   readonly questions: string[];
   readonly pendingInputs: string[];
+  readonly projectIntent: string | null | undefined;
   /** 校验并保存完整候选草案；校验或保存失败不改变已有草案。 */
   submit(
     treeInput: unknown,
     questionsInput: unknown,
   ): { ok: true; revision: number } | { ok: false; errors: string[] };
+  setProjectIntent(intent: string | null): void;
   recordInput(text: string): void;
   finishTurn(): void;
   clearSavedDraft(): void;
@@ -60,6 +64,14 @@ export function createDraftStore(baseDir?: string): DraftStore {
     get tree() { return state.tree; },
     get questions() { return state.questions; },
     get pendingInputs() { return state.pendingInputs; },
+    get projectIntent() { return state.projectIntent; },
+    setProjectIntent(intent) {
+      if (intent !== null && (!intent.trim() || Buffer.byteLength(intent) > 32 * 1024)) {
+        throw new Error("技术意图必须是非空文本且不超过 32 KiB");
+      }
+      commit({ ...state, revision: state.revision + 1,
+        projectIntent: intent === null ? null : intent.replace(/\r\n/g, "\n").trim() });
+    },
     submit(treeInput, questionsInput) {
       const tree = normalizeDraft(treeInput);
       const questions = normalizeQuestions(questionsInput);
@@ -100,11 +112,17 @@ function readDraft(file: string): DraftState | null {
     }
     const tree = saved.tree === null ? null : normalizeDraft(saved.tree);
     const questions = normalizeQuestions(saved.questions);
-    if ((tree && !tree.ok) || !questions.ok || (saved.tree === null && saved.revision !== 0)) {
+    if (saved.projectIntent !== undefined && saved.projectIntent !== null &&
+      (typeof saved.projectIntent !== "string" || !saved.projectIntent.trim() || Buffer.byteLength(saved.projectIntent) > 32 * 1024)) {
+      throw new Error("技术意图草稿格式不正确");
+    }
+    if ((tree && !tree.ok) || !questions.ok ||
+      (saved.tree === null && saved.revision !== 0 && saved.projectIntent === undefined)) {
       throw new Error("草稿内容未通过校验");
     }
     return { revision: saved.revision, tree: tree?.ok ? tree.tree : null,
-      questions: questions.questions, pendingInputs: saved.pendingInputs };
+      questions: questions.questions, pendingInputs: saved.pendingInputs,
+      ...(saved.projectIntent !== undefined ? { projectIntent: saved.projectIntent } : {}) };
   } catch (error) {
     throw new Error(`无法恢复需求草稿（${file}）：${error instanceof Error ? error.message : String(error)}。原文件已保留。`, { cause: error });
   }

@@ -18,7 +18,7 @@ import { providerErrorMessage } from "../gateway-failure.js";
 import type { BuilderCapabilityPack } from "../application/port.js";
 import type { ModelRates } from "../model-usage.js";
 
-type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "applicationContract"> & {
+type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "applicationContract" | "toolMode"> & {
   gateway: GatewayConfig;
   sessionDir: string;
   sessionFile?: string;
@@ -69,6 +69,7 @@ function createTools(input: PiSessionOptions, skillFiles: readonly string[], cap
     },
   });
   const files = [guard(createReadToolDefinition(cwd)), guard(createEditToolDefinition(cwd)), guard(createWriteToolDefinition(cwd))];
+  if (input.toolMode === "read_only") return [files[0] as unknown as ToolDefinition];
   const shell = createBashToolDefinition(cwd, { operations: { exec: createShellExecutor(cwd, contract, privateDirectory) } });
   shell.name = "shell";
   shell.description = `Run a short ${process.platform === "win32" ? "PowerShell" : "Bash"} command in the application. Use this for file searches, builds and type checks; run tests with the run_tests tool instead. ${contract ? "Use the app tool to manage application checks." : "Do not leave persistent application processes running."}`;

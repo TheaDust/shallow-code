@@ -30,7 +30,11 @@ export function compileBuilderPrompt(
 ): CompiledBuilderPrompt {
   return {
     systemPrompt: SYSTEM_PROMPT,
-    taskPrompt: buildBuilderTaskPrompt(request),
+    taskPrompt: buildBuilderTaskPrompt(request) + (request.initialization ? "\n\n" + fillTemplate(
+      loadPrompt("system", "initialization-context"), {
+        INITIALIZATION_PATH: request.initialization.path,
+        PROJECT_INTENT: request.initialization.intent ?? "未指定；采用与现有工程兼容的简单方案",
+      }) : ""),
   };
 }
 

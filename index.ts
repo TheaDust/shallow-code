@@ -1,4 +1,4 @@
-import { access, copyFile, cp, mkdir, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { access, copyFile, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,14 +42,19 @@ import {
   type GatewayConfig,
 } from "./src/runtime-config.js";
 import { loadProjectSpec, type ProjectSpec } from "./src/project-spec.js";
+import { initializeProject, readProjectIntent, selectInitializationPath, type InitializationResult } from "./src/project-initialization.js";
+import { verifyInitializedWebProject } from "./src/adapters/web/initialization.js";
+import { RunStateStore } from "./src/run-state.js";
 import { applications } from "./src/adapters/index.js";
 import { checkerAdapters } from "./src/adapters/checker.js";
 import { copyProjectWorkspace, hasProjectFiles, writeProjectPatch } from "./src/project-workspace.js";
-import { applyRun, digest, loadRunRecord, lockWorkspace, readResumeCheckpoint, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
+import { applyRun, digest, loadPendingInitialization, loadRunRecord, lockWorkspace, readResumeCheckpoint,
+  savePendingInitialization, saveRunRecord, snapshotFiles, writeRunReport, type PendingInitialization, type RunRecord } from "./src/run-record.js";
 import { loadRequirementCatalog } from "./src/catalog.js";
 import { readHistoricalRequirementIds, requirementDigest, saveRequirementDigests } from "./src/evolution.js";
 
 export interface AgentExecutionContext {
+  tui?: BuildTui;
   runRecord: RunRecord;
   /** 本轮输入需求树；交互终端据此展示子树完成状态。 */
   requirementTree?: RequirementNode;
@@ -104,9 +109,23 @@ export async function main(
     process.stderr.write(`[ShallowCode] 已应用项目改动：${directory}\n`);
     return 0;
   }
-  const prior = invocation.command === "resume" ? await loadRunRecord(invocation.runDirectory) : undefined;
+  let pending = invocation.command === "resume" ? await loadPendingInitialization(invocation.runDirectory) : null;
+  let prior: RunRecord | undefined;
+  if (invocation.command === "resume") {
+    if (pending) {
+      // A crash can leave the pending marker behind after Checker binding was saved.
+      try {
+        const frozen = await loadRunRecord(invocation.runDirectory);
+        if (frozen.bindingDigest) { prior = frozen; pending = null; }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    } else prior = await loadRunRecord(invocation.runDirectory);
+  }
   const cli: CliOptions = invocation.command === "run" ? invocation.options : {
-    requirementsDir: prior!.requirementsDir, outputDir: prior!.outputDir, budgetMs: invocation.budgetMs,
+    requirementsDir: pending?.requirementsDir ?? prior!.requirementsDir,
+    outputDir: pending?.sourceProjectDir ?? pending?.outputDir ?? prior!.outputDir,
+    budgetMs: invocation.budgetMs,
   };
   const mergedEnv = await mergeGatewayEnv(env, envFile);
   const requestedChecker = parseCheckerConfig(mergedEnv);
@@ -131,97 +150,186 @@ export async function main(
   }
   if (cli.projectDir) await access(cli.projectDir);
   await mkdir(cli.outputDir, { recursive: true });
-  const runId = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  // An existing Web project declares how it runs; a blank output directory gets
-  // the shipped minimal-web template's declared contract.
-  const spec = prior?.projectSpec ?? await loadProjectSpecOrDefault(cli.outputDir);
   const requirementFiles = await snapshotFiles(cli.requirementsDir);
   const requirementsDigest = digest(JSON.stringify(requirementFiles));
-  const contractDigest = await controllerContractDigest(spec);
-  if (prior && (prior.requirementsDigest !== requirementsDigest || prior.contractDigest !== contractDigest)) {
-    throw new Error("Resume inputs changed (requirements, project contract, prompts or engine); start a new run for the updated inputs");
+  if (prior && prior.requirementsDigest !== requirementsDigest) {
+    throw new Error("Resume inputs changed (requirements); start a new run for the updated inputs");
   }
-  const checkpoint = prior && invocation.command === "resume" ? await readResumeCheckpoint(invocation.runDirectory, prior) : undefined;
-  const applicationContract = await applications.get(spec.adapter ?? "web").configure(spec, mergedEnv);
-  const runDir = parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs");
-  const sseCaptureDir = resolveSseCaptureDir(mergedEnv, join(runDir, runId, "sse-capture"));
-  const referenceImages = referenceImagesEnabled(mergedEnv);
-  const runDirectory = join(runDir, runId);
+  if (pending && pending.requirementsDigest !== requirementsDigest) {
+    throw new Error("Resume requirements changed during initialization; start a new run");
+  }
+  const runId = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const runDir = pending && invocation.command === "resume" ? dirname(invocation.runDirectory)
+    : parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs");
+  const runDirectory = pending && invocation.command === "resume" ? invocation.runDirectory : join(runDir, runId);
   await assertPrivateRunDirectory(cli.outputDir, runDirectory);
   await assertPrivateRunDirectory(cli.requirementsDir, runDirectory);
   const requirementSnapshot = join(runDirectory, "requirements");
-  for (const path of Object.keys(requirementFiles)) {
+  if (!pending) for (const path of Object.keys(requirementFiles)) {
     const destination = join(requirementSnapshot, path);
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(join(cli.requirementsDir, path), destination);
   }
   if (digest(JSON.stringify(await snapshotFiles(requirementSnapshot))) !== requirementsDigest) throw new Error("Requirements changed while copying the run inputs");
-  const inheritedProject = prior ? prior.sourceProjectDir !== undefined || prior.stageStartingPoint === "inherited_application" : cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
-  const workingDirectory = inheritedProject && !prior
-    ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), spec.generatedPaths,
-      spec.dataPaths)
-    : cli.outputDir;
+  const intent = await readProjectIntent(requirementSnapshot);
+  const inheritedProject = pending ? pending.sourceProjectDir !== undefined : prior
+    ? prior.sourceProjectDir !== undefined || prior.stageStartingPoint === "inherited_application"
+    : cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
+  // Preserve injected entry tests: production alone owns project initialization.
+  // No provisional default contract is constructed for a custom project.
+  let initialSpec: ProjectSpec | undefined = prior?.projectSpec;
+  if (!initialSpec && !pending) {
+    try { initialSpec = await loadProjectSpec(cli.outputDir, undefined, (raw, origin) =>
+      applications.get((raw as { adapter?: string })?.adapter ?? "web").parseSpec(raw, origin)); }
+    catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith("Missing project run configuration:")) {
+        throw error;
+      }
+    }
+  }
+  const sourceInputFiles = pending?.inputFiles ?? (inheritedProject && !prior
+    ? await snapshotFiles(cli.outputDir, initialSpec?.generatedPaths) : undefined);
+  const workingDirectory = pending?.outputDir ?? (inheritedProject && !prior
+    ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), initialSpec?.generatedPaths,
+      initialSpec?.dataPaths)
+    : cli.outputDir);
   const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
   const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
-  const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME)) : undefined;
-  const historicalRequirements = prior?.historicalRequirements ?? (sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined);
-  const pipelineOptions: PipelineOptions = {
-    checker,
-    requirementDigests,
-    historicalRequirements,
-    requirementsFile: join(requirementSnapshot, "requirements.yaml"),
-    outputDir: workingDirectory,
-    ledgerFile: join(runDir, runId, "run-ledger.jsonl"),
-    totalBudgetMs: cli.budgetMs,
-    applicationContract,
-    progressDir: join(workingDirectory, PROGRESS_DIR_NAME),
-    ...(inheritedProject ? { historicalProgressDir: join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
-    auditInheritedRequirements: prior?.auditInheritedRequirements ?? parseEvolutionAuditInherited(mergedEnv),
-    ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
-  };
-  const runRecord: RunRecord = {
-    version: 3, checker,
-    checkerRunId: prior?.checkerRunId ?? runId,
-    ...(prior?.bindingDigest ? { bindingDigest: prior.bindingDigest } : {}),
-    requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
-    outputDir: workingDirectory,
-    ...(prior?.sourceProjectDir ? { sourceProjectDir: prior.sourceProjectDir } : inheritedProject && !prior ? { sourceProjectDir: cli.outputDir } : {}),
-    inputFiles: prior?.inputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
-    requirementDigests,
-    historicalRequirements,
-    ...(prior ? { inputBaseline: prior.inputBaseline, stageStartingPoint: prior.stageStartingPoint, resumedFrom: invocation.command === "resume" ? invocation.runDirectory : undefined } : {}),
-    auditInheritedRequirements: pipelineOptions.auditInheritedRequirements ?? false,
-  };
-  await saveRunRecord(runDirectory, runRecord);
-  if (invocation.command === "resume") {
-    await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
-      filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
+  const initializationTui = execute === executeProduction && !prior && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb"
+    ? new BuildTui({ requirementIds: Object.keys(requirementDigests), requirementTree: inputCatalog.tree,
+      models: { builder: builderGateway.model, checker: checkerGateway.model },
+      onInterrupt: () => { process.kill(process.pid, "SIGINT"); } }) : undefined;
+  let initialization: InitializationResult | undefined;
+  let initializationBaseline: string | undefined = pending?.inputBaseline;
+  if (execute === executeProduction && !prior) {
+    initializationTui?.start();
+    await initializationTui?.waitForStart();
+    let release: (() => Promise<void>) | undefined;
+    try {
+      const git = await GitCliOps.open(workingDirectory, { allowExisting: Boolean(pending) || inheritedProject || initialSpec !== undefined,
+        generatedPaths: initialSpec?.generatedPaths ?? [] });
+      release = await lockWorkspace(workingDirectory);
+      initializationBaseline ??= await git.captureAccepted("shallow: input before initialization");
+      const pendingRecord: PendingInitialization = pending ?? {
+        version: 1, requirementsDir: cli.requirementsDir, requirementsDigest,
+        outputDir: workingDirectory,
+        ...(inheritedProject ? { sourceProjectDir: cli.outputDir } : {}),
+        inputBaseline: initializationBaseline, inputFiles: sourceInputFiles ?? {},
+        path: selectInitializationPath(await hasProjectFiles(workingDirectory), initialSpec !== undefined, intent), modelUsage: [],
+        ...(initialSpec ? { existingConfigContent: await readFile(join(workingDirectory, "shallowcode.config.json"), "utf8") } : {}),
+      };
+      await savePendingInitialization(runDirectory, pendingRecord);
+      const initState = new RunStateStore({ statusByRequirementId: {}, acceptedSha: initializationBaseline,
+        startedAtMs, totalBudgetMs: cli.budgetMs }, join(runDirectory, "run-ledger.jsonl"),
+        createRunLogSink(join(runDirectory, "run-log.txt"), undefined, process.stderr,
+          initializationTui ? (raw, line) => initializationTui.record(raw, line) : undefined),
+        gatewaySecrets(builderGateway, checkerGateway));
+      initialization = await initializeProject({ outputDir: workingDirectory, privateDir: runDirectory,
+        verify: verifyInitializedWebProject,
+        requirementsContext: await readFile(join(requirementSnapshot, "requirements.yaml"), "utf8"), intent,
+        resumePath: pendingRecord.path, previousUsage: pendingRecord.modelUsage,
+        existingConfigContent: pendingRecord.existingConfigContent,
+        env: mergedEnv, startedAtMs, budgetMs: cli.budgetMs, applications,
+        diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway),
+        createBuilder: () => new PiWorkerClient(builderGateway, join(runDirectory, "pi-sessions"), undefined,
+          { ...(builderModelCost ? { modelCost: builderModelCost } : {}), applications }),
+        onEvent: (type, detail) => initState.record({ at: new Date().toISOString(), type, detail } as import("./src/types.js").RunEvent),
+        onUsage: async usage => {
+          pendingRecord.modelUsage = [...usage];
+          await savePendingInitialization(runDirectory, pendingRecord);
+          const item = usage.at(-1);
+          if (item) await initState.record({ at: new Date().toISOString(), type: "builder_usage", packetId: "initialization",
+            detail: { ...item, total: item.input + item.output + item.cacheRead + item.cacheWrite } });
+        },
+      });
+      const initializedSha = await git.captureAccepted("shallow: runnable initialization baseline");
+      initState.setAcceptedSha(initializedSha);
+      await initState.record({ at: new Date().toISOString(), type: "initialization_finished",
+        detail: { path: initialization.path, adapterId: initialization.contract.adapterId } });
+    } catch (error) { initializationTui?.stop(); throw error; }
+    finally { await release?.(); }
   }
-  process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
-  const summary = await execute({
-    runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
-    ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
-    builderGateway,
-    checkerGateway,
-    builderModelCost,
-    checkerModelCost,
-    pipelineOptions,
-    modelTimeouts: deriveModelTimeouts(cli.budgetMs),
-    builderContextWindow: parseBuilderContextWindow(mergedEnv),
-    sseCaptureDir,
-    referenceImages,
-  }).catch((error: unknown) => {
-    throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, checkerGateway)));
-  });
-  const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
-  await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
-    [...summary.verifiedRequirementIds, ...(summary.skippedRequirementIds ?? [])]);
-  if (patch) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
-  await writeRunReport(runDirectory, summary, patch);
-  process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
-    Date.now() - startedAtMs,
-    Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
-  return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
+  try {
+    const spec = initialization?.spec ?? prior?.projectSpec ?? await loadProjectSpecOrDefault(cli.outputDir);
+    const contractDigest = await controllerContractDigest(spec);
+    if (prior && (prior.requirementsDigest !== requirementsDigest || prior.contractDigest !== contractDigest)) {
+      throw new Error("Resume inputs changed (requirements, project contract, prompts or engine); start a new run for the updated inputs");
+    }
+    const checkpoint = prior && invocation.command === "resume" ? await readResumeCheckpoint(invocation.runDirectory, prior) : undefined;
+    const applicationContract = initialization?.contract ?? await applications.get(spec.adapter ?? "web").configure(spec, mergedEnv);
+    const sseCaptureDir = resolveSseCaptureDir(mergedEnv, join(runDirectory, "sse-capture"));
+    const referenceImages = referenceImagesEnabled(mergedEnv);
+    const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME)) : undefined;
+    const historicalRequirements = prior?.historicalRequirements ?? (sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined);
+    const pipelineOptions: PipelineOptions = {
+      checker,
+      requirementDigests,
+      historicalRequirements,
+      requirementsFile: join(requirementSnapshot, "requirements.yaml"),
+      outputDir: workingDirectory,
+      ledgerFile: join(runDirectory, "run-ledger.jsonl"),
+      totalBudgetMs: cli.budgetMs,
+      startedAtMs,
+      initializationUsage: initialization?.modelUsage,
+      ...(initialization || prior?.initializationPath ? { initialization: {
+        path: initialization?.path ?? prior!.initializationPath!, intent,
+      } } : {}),
+      applicationContract,
+      progressDir: join(workingDirectory, PROGRESS_DIR_NAME),
+      ...(inheritedProject ? { historicalProgressDir: join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
+      auditInheritedRequirements: prior?.auditInheritedRequirements ?? parseEvolutionAuditInherited(mergedEnv),
+      ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
+    };
+    const runRecord: RunRecord = {
+      version: 3, checker,
+      checkerRunId: prior?.checkerRunId ?? runId,
+      ...(prior?.bindingDigest ? { bindingDigest: prior.bindingDigest } : {}),
+      requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
+      ...(initialization ? { initializationPath: initialization.path }
+        : prior?.initializationPath ? { initializationPath: prior.initializationPath } : {}),
+      outputDir: workingDirectory,
+      ...(prior?.sourceProjectDir ? { sourceProjectDir: prior.sourceProjectDir } : inheritedProject && !prior ? { sourceProjectDir: cli.outputDir } : {}),
+      inputFiles: prior?.inputFiles ?? sourceInputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
+      requirementDigests,
+      historicalRequirements,
+      ...(prior ? { inputBaseline: prior.inputBaseline, stageStartingPoint: prior.stageStartingPoint, resumedFrom: invocation.command === "resume" ? invocation.runDirectory : undefined } : {}),
+      auditInheritedRequirements: pipelineOptions.auditInheritedRequirements ?? false,
+    };
+    if (initializationBaseline) runRecord.inputBaseline = initializationBaseline;
+    if (initialization) runRecord.stageStartingPoint = initialization.path === "default_scaffold" ? "blank_template"
+      : initialization.path === "existing" || initialization.path === "complete_existing" ? "inherited_application" : "unknown";
+    await saveRunRecord(runDirectory, runRecord);
+    if (invocation.command === "resume" && prior) {
+      await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
+        filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
+    }
+    process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
+    const summary = await execute({
+      ...(initializationTui ? { tui: initializationTui } : {}),
+      runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
+      ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
+      builderGateway,
+      checkerGateway,
+      builderModelCost,
+      checkerModelCost,
+      pipelineOptions,
+      modelTimeouts: deriveModelTimeouts(cli.budgetMs),
+      builderContextWindow: parseBuilderContextWindow(mergedEnv),
+      sseCaptureDir,
+      referenceImages,
+    }).catch((error: unknown) => {
+      throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, checkerGateway)));
+    });
+    const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
+    await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
+      [...summary.verifiedRequirementIds, ...(summary.skippedRequirementIds ?? [])]);
+    if (patch) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
+    await writeRunReport(runDirectory, summary, patch);
+    process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
+      Date.now() - startedAtMs,
+      Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
+    return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
+  } finally { initializationTui?.stop(); }
 }
 
 async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
@@ -235,11 +343,7 @@ async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
   return hash.digest("hex");
 }
 
-/**
- * An existing Web project declares how it runs. A directory this run creates
- * from scratch has nothing to declare yet, so it starts from the shipped
- * minimal-web template's spec; the scaffold written into it matches.
- */
+/** Legacy and injected entry paths keep their previous default-spec behavior. */
 async function loadProjectSpecOrDefault(outputDir: string): Promise<ProjectSpec> {
   try {
     return await loadProjectSpec(outputDir, undefined, (raw, origin) => {
@@ -287,9 +391,9 @@ async function executeProduction(
   const applicationAdapter = applications.get(pipelineOptions.applicationContract.adapterId);
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
   let releaseWorkspace: (() => Promise<void>) | undefined;
-  let tui: BuildTui | undefined;
+  let tui: BuildTui | undefined = context.tui;
   try {
-    if (interactive) {
+    if (interactive && !tui) {
       tui = new BuildTui({
         requirementIds: Object.keys(context.runRecord.requirementDigests!),
         requirementTree,
@@ -332,13 +436,14 @@ async function executeProduction(
       }, null, 2) + "\n", "utf8");
       if (!tui) process.stderr.write(`[ShallowCode] 开发副本：${pipelineOptions.outputDir}\n`);
     }
-    // Git owns rollback from this point onward. Install the generic shell before
-    // runPipeline captures its initial baseline, and never touch an existing app.
-    const starterScaffold = await applicationAdapter.installScaffold(
-      pipelineOptions.outputDir,
-      pipelineOptions.applicationContract,
-    );
-    const stageStartingPoint = context.resumeCheckpointSha && context.runRecord.stageStartingPoint
+    // Initialization already chose and validated the project shape. Legacy runs
+    // retain the previous scaffold behavior when they have no initialization path.
+    const starterScaffold = context.runRecord.initializationPath
+      ? context.runRecord.initializationPath === "default_scaffold"
+        ? { status: "installed" as const, reason: "installed and validated during initialization", files: [] }
+        : { status: "skipped_existing_application" as const, reason: "initialized project", files: [] }
+      : await applicationAdapter.installScaffold(pipelineOptions.outputDir, pipelineOptions.applicationContract);
+    const stageStartingPoint = context.runRecord.stageStartingPoint
       ? context.runRecord.stageStartingPoint
       : sourceProjectDir !== undefined ? "inherited_application" as const : starterScaffold.status === "skipped_existing_application"
       ? "inherited_application" as const
@@ -376,6 +481,7 @@ async function executeProduction(
       if (context.runRecord.bindingDigest && context.runRecord.bindingDigest !== execution.adapter.binding.digest) throw new Error("Checker execution binding changed; start a new run");
       context.runRecord.bindingDigest = execution.adapter.binding.digest;
       await saveRunRecord(dirname(runLogFile), context.runRecord);
+      await rm(join(dirname(runLogFile), "initialization.json"), { force: true });
       let recordUsage: (item: CheckerModelUsage) => void = () => {};
       const model = createPiCheckerModel({ gateway: checkerGateway, sessionDir: join(directory, "sessions"),
         recovery: gatewayRecovery,
@@ -397,6 +503,13 @@ async function executeProduction(
       logSink,
       gatewayRecovery,
       diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway),
+      assertContractUnchanged: async () => {
+        const actual = await loadProjectSpec(pipelineOptions.outputDir, undefined, (raw, origin) =>
+          applications.get((raw as { adapter?: string })?.adapter ?? "web").parseSpec(raw, origin));
+        if (await controllerContractDigest(actual) !== context.runRecord.contractDigest) {
+          throw new Error("Project run configuration changed after initialization; start a new run for the updated contract");
+        }
+      },
       runMetadata: { model: builderGateway.model, checkerModel: checkerGateway.model,
         builderTimeoutMs: modelTimeouts.builderTimeoutMs,
         builderContextWindow,

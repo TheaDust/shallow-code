@@ -7,7 +7,7 @@
   "engines": { "node": ">=22.19.0" },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test --test-concurrency=2 test/*.test.ts",
     "test:browser": "tsx --test --test-concurrency=1 test/browser/*.test.ts",
     "test:all": "npm run typecheck && npm test && npm run test:browser",
     "setup": "node scripts/setup.mjs",

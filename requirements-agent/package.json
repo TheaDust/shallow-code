@@ -6,7 +6,7 @@
   "engines": { "node": ">=22.19.0" },
   "scripts": {
     "start": "tsx src/main.ts",
-    "test": "tsx --test test/*.test.ts",
+    "test": "tsx --test --test-concurrency=2 test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

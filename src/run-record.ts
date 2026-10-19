@@ -19,6 +19,7 @@ export interface RunRecord {
   requirementsDigest: string;
   contractDigest: string;
   projectSpec: ProjectSpec;
+  initializationPath?: import("./project-initialization.js").InitializationPath;
   outputDir: string;
   sourceProjectDir?: string;
   inputBaseline?: string;
@@ -31,6 +32,42 @@ export interface RunRecord {
   checker: CheckerConfig;
   bindingDigest?: string;
   checkerRunId?: string;
+}
+
+/** Durable state before a runnable project contract exists. */
+export interface PendingInitialization {
+  version: 1;
+  requirementsDir: string;
+  requirementsDigest: string;
+  outputDir: string;
+  sourceProjectDir?: string;
+  inputBaseline: string;
+  inputFiles: Record<string, string>;
+  path: import("./project-initialization.js").InitializationPath;
+  existingConfigContent?: string;
+  modelUsage: import("./model-usage.js").UsageSummary[];
+}
+
+export async function savePendingInitialization(runDirectory: string, record: PendingInitialization): Promise<void> {
+  await mkdir(runDirectory, { recursive: true, mode: 0o700 });
+  const file = join(runDirectory, "initialization.json");
+  await writeFile(file + ".tmp", JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
+  await rename(file + ".tmp", file);
+}
+
+export async function loadPendingInitialization(runDirectory: string): Promise<PendingInitialization | null> {
+  let content: string;
+  try { content = await readFile(join(runDirectory, "initialization.json"), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const record = JSON.parse(content) as PendingInitialization;
+  if (record.version !== 1 || !isAbsolute(record.outputDir) || !isAbsolute(record.requirementsDir) ||
+    !/^[0-9a-f]{40,64}$/i.test(record.inputBaseline) || !Array.isArray(record.modelUsage)) {
+    throw new Error("Initialization record is invalid");
+  }
+  return record;
 }
 
 export function digest(content: string | Buffer): string {

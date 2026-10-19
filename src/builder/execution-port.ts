@@ -8,6 +8,8 @@ export interface CodingAgentRequest {
   outputDir: string;
   timeoutMs: number;
   sessionKey?: string;
+  /** Initialization compatibility inspection cannot edit the project. */
+  toolMode?: "normal" | "read_only";
   applicationContract?: ApplicationContract;
   requirementsDir?: string;
   references?: string[];

@@ -159,12 +159,13 @@ export class CheckerCoordinator {
 
 export async function runCheckerPipeline(options: PipelineOptions, deps: PipelineDeps, runtime: CheckerRuntime): Promise<RunSummary> {
   const catalog = await loadRequirementCatalog(options.requirementsFile, { inheritedApplication: options.stageStartingPoint === "inherited_application" });
-  const started = deps.clock.nowMs();
+  const started = options.startedAtMs ?? deps.clock.nowMs();
   const budget = new RunBudget(options.totalBudgetMs, started, () => deps.clock.nowMs());
   const initialSha = await deps.git.captureAccepted("shallow: initial Checker state");
   const state = new RunStateStore({ statusByRequirementId: catalog.statusById, acceptedSha: initialSha,
     startedAtMs: started, totalBudgetMs: options.totalBudgetMs }, options.ledgerFile, deps.logSink ?? null, deps.diagnosticSecrets);
   const usage = new ModelUsageTotals();
+  for (const item of options.initializationUsage ?? []) usage.add("builder", item);
   const gateway = deps.gatewayRecovery ?? new GatewayRecovery();
   gateway.setRecorder(({ packetId, ...detail }) => state.record({ at: now(), type: "gateway_wait", packetId, detail }));
   runtime.setUsageRecorder?.(item => {
@@ -213,7 +214,13 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     try {
       result = await gateway.run("builder", packetId, () => budget.remaining(phase), async () => {
         reported = false;
-        result = await deps.builder.run(request, { timeoutMs: budget.callTimeout(phase, resumeInterrupted ? 2_700_000 : 5_400_000), resumeInterrupted, onUsage });
+        result = await deps.builder.run({ ...request, ...(options.initialization ? { initialization: options.initialization } : {}) },
+          { timeoutMs: budget.callTimeout(phase, resumeInterrupted ? 2_700_000 : 5_400_000), resumeInterrupted, onUsage });
+        try { await deps.assertContractUnchanged?.(); }
+        catch (error) {
+          await deps.git.restoreAccepted(coordinator.checkpoints.snapshot.accepted.sha);
+          throw new ExecutionFault("builder", "builder_cleanup", false, { cause: error });
+        }
         if (!reported && result.execution?.usage.status === "available") await onUsage(result.execution.usage);
         await state.record({ at: now(), type: "builder_finished", packetId, detail: { ...result } });
         if (result.gatewayFailure && result.outcome !== "completed") throw new GatewayRequestError(result.gatewayFailure);

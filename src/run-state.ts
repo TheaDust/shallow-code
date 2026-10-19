@@ -116,6 +116,7 @@ function redactEvent(event: RunEvent, secrets: readonly string[]): RunEvent {
 }
 
 function eventPhase(event: RunEvent): RunEvent["phase"] {
+  if (event.type.startsWith("initialization_")) return "application";
   if (event.type.startsWith("check_") || event.type.startsWith("module_check") || event.type === "checker_usage") return "checker";
   if (event.type.startsWith("evidence_")) return "evidence";
   if (event.type.startsWith("builder_")) return "builder";

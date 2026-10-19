@@ -51,7 +51,7 @@ export interface DeliveryFailureObservation {
   actual: string;
 }
 
-export type BuilderPromptInput =
+export type BuilderPromptInput = (
   | {
       mode: "implement";
       packet: WorkPacket;
@@ -72,4 +72,4 @@ export type BuilderPromptInput =
       deliveryFailure: DeliveryFailureObservation;
       outputDir: string;
       applicationContract: ApplicationContract;
-    };
+    }) & { initialization?: { path: import("../project-initialization.js").InitializationPath; intent: string | null } };

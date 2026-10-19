@@ -422,6 +422,12 @@ export class BuildView implements Component {
 
   private describeActivity(event: RunEvent, detail: Record<string, unknown> | undefined): string | undefined {
     switch (event.type) {
+      case "initialization_started": this.phase = "初始化工程"; return "选择工程初始化方式";
+      case "initialization_attempt": this.phase = "初始化工程"; return `Builder · 初始化工程（第 ${detail?.attempt ?? 1} 次）`;
+      case "initialization_verification_started": this.phase = "验证运行"; return "检查工程安装、构建与浏览器入口";
+      case "initialization_validation_failed": this.phase = "验证运行"; return "工程运行验证失败，准备修正";
+      case "initialization_verified": this.phase = "验证运行"; return "工程运行验证通过，保存基线";
+      case "initialization_finished": this.phase = "开始功能开发"; return "工程可运行，准备功能分组与独立验收";
       case "snapshot_sealed": return "源码已封存，Builder 继续下一功能组";
       case "module_check_started": return "Checker · 模块集中重放与确认";
       case "module_check_finished": return detail?.moduleId === "<final>" ? "当前交付范围验收完成" : "模块当前版本检查完成";

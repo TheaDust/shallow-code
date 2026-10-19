@@ -156,6 +156,8 @@ export class RequirementsTui {
       if (view.changes) this.append(new Text(`相较原文件：新增 ${view.changes.added.length} 项 · ` +
         `修改 ${view.changes.changed.length} 项 · 删除 ${view.changes.removed.length} 项`, 1, 0));
       this.append(new Text(formatRequirementPreview(view.tree, t), 1, 0));
+      if (view.projectIntent !== undefined) this.append(new Text(
+        `${view.intentChanged ? "将更新" : "沿用"}技术意图 project-intent.md：\n${view.projectIntent ?? "移除文件"}`, 1, 0));
       if (view.references.length) this.append(new Text(t.muted("将交接的参考文件") + "\n" +
         view.references.map(ref => `${ref.source} → ${ref.destination}`).join("\n"), 1, 0));
       const action = view.file ? "更新" : "生成";

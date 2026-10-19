@@ -79,6 +79,20 @@ export function createRequirementsTool(store: DraftStore) {
   };
 }
 
+/** Explicit user technology requirements stay separate from business scenarios. */
+export function createProjectIntentTool(store: DraftStore) {
+  return {
+    name: "update_project_intent",
+    label: "更新技术意图",
+    description: "用户明确指定或撤销技术栈、工程形态、数据存储或部署要求时调用。完整替换技术意图文本；intent 为 null 表示用户明确撤销。不要根据业务类别、页面风格或参考图推断技术选型。",
+    parameters: Type.Object({ intent: Type.Union([Type.String(), Type.Null()]) }),
+    async execute(_toolCallId: string, params: { intent: string | null }) {
+      store.setProjectIntent(params.intent);
+      return { content: [{ type: "text" as const, text: params.intent === null ? "已移除技术意图草案。" : "已更新技术意图草案。" }] };
+    },
+  };
+}
+
 /** 模型表达文件操作意图；这里只请求审阅，确认与写入仍由对话程序执行。 */
 export function createReviewTool(request: (mode: RequirementsOutputMode) => void) {
   return {
@@ -140,6 +154,7 @@ export function buildTurnMessage(text: string, store: DraftStore, outputFile?: s
       ? `【未决问题】\n${numberList(store.questions)}`
       : "【未决问题】无。",
   );
+  if (store.projectIntent !== undefined) sections.push(`【当前技术意图】\n${store.projectIntent ?? "用户已明确撤销"}`);
   if (outputFile) sections.push(`【需求文档路径】\n${outputFile}\n更新现有需求文档时使用此路径；创建新文档由程序选择新目录。`);
   // 最后一项是本轮输入；前面的项来自中断或失败的回合。
   const unfinished = store.pendingInputs.slice(0, -1);
@@ -185,7 +200,7 @@ export type ConversationView =
   | { type: "draft"; revision: number; tree: RequirementNode | null; questions: string[];
       changes: ReturnType<typeof diffRequirements>; restored?: boolean }
   | { type: "review"; revision: number; tree: RequirementNode; references: ReferenceCopy[];
-      file?: string; changes?: ReturnType<typeof diffRequirements> }
+      file?: string; changes?: ReturnType<typeof diffRequirements>; projectIntent?: string | null; intentChanged?: boolean }
   | { type: "edit" };
 
 export type ConversationOutcome =
@@ -220,8 +235,8 @@ export async function runConversation(options: ConversationOptions): Promise<Con
         const action = reviewedOutput.update ? "更新" : "生成";
         try {
           const file = reviewedOutput.update
-            ? await writeRequirementsUpdate(reviewedOutput.tree, reviewedOutput.update, reviewedOutput.references)
-            : await writeRequirementsOutput(reviewedOutput.tree, baseDir, reviewedOutput.references);
+            ? await writeRequirementsUpdate(reviewedOutput.tree, reviewedOutput.update, reviewedOutput.references, reviewedOutput.intent)
+            : await writeRequirementsOutput(reviewedOutput.tree, baseDir, reviewedOutput.references, reviewedOutput.intent?.content);
           try {
             store.clearSavedDraft();
           } catch (error) {
@@ -280,19 +295,22 @@ export async function runConversation(options: ConversationOptions): Promise<Con
       continue;
     }
     try {
-      reviewedOutput = await prepareRequirementsOutput(store.tree, baseDir, outputMode);
+      reviewedOutput = await prepareRequirementsOutput(store.tree, baseDir, outputMode, store.projectIntent);
     } catch (error) {
       out(`还不能${action}这份需求文档：${error instanceof Error ? error.message : String(error)}。请修正后重新请求审阅。\n\n`);
       continue;
     }
     if (options.onView) options.onView({ type: "review", revision: store.revision,
       tree: reviewedOutput.tree, references: reviewedOutput.references,
+      ...(reviewedOutput.intent ? { projectIntent: reviewedOutput.intent.content,
+        intentChanged: reviewedOutput.intent.content !== reviewedOutput.intent.previous } : {}),
       ...(reviewedOutput.update ? { file: reviewedOutput.update.file, changes: reviewedOutput.changes } : {}) });
     else out(
       `──────── 需求审阅（第 ${store.revision} 版）────────\n` +
         (reviewedOutput.update ? `【将更新原文件】${reviewedOutput.update.file}\n` +
           `【相较原文件】${formatChanges(reviewedOutput.changes!)}\n` : "") +
         `${serializeRequirementsYaml(reviewedOutput.tree)}` +
+        (reviewedOutput.intent ? `【技术意图${reviewedOutput.intent.content !== reviewedOutput.intent.previous ? "将更新" : "保持"}】\n${reviewedOutput.intent.content ?? "无"}\n` : "") +
         (reviewedOutput.references.length
           ? `【将交接的参考文件】\n${numberList(reviewedOutput.references.map((reference) => `${reference.source} → ${reference.destination}`))}\n`
           : "") +
@@ -315,6 +333,7 @@ interface PreparedRequirementsOutput {
   references: ReferenceCopy[];
   update?: { file: string; content: string };
   changes?: ReturnType<typeof diffRequirements>;
+  intent?: { content: string | null; previous: string | null };
 }
 
 /** 在审阅前核对本地参考文件，审阅视图与最终 YAML 使用同一份树。 */
@@ -322,6 +341,7 @@ export async function prepareRequirementsOutput(
   tree: RequirementNode,
   baseDir: string,
   mode: RequirementsOutputMode = "create",
+  projectIntent?: string | null,
 ): Promise<PreparedRequirementsOutput> {
   const file = resolve(baseDir, "requirements", "requirements.yaml");
   const update = mode === "update" ? { file, content: await readFile(file, "utf8").catch((error) => {
@@ -330,6 +350,12 @@ export async function prepareRequirementsOutput(
   }) } : undefined;
   const previous = update ? normalizeDraft(parse(update.content)) : undefined;
   if (previous && !previous.ok) throw new Error(`现有需求文档格式无效：${previous.errors.join("；")}`);
+  const intentFile = join(dirname(file), "project-intent.md");
+  const previousIntent = update ? await readFile(intentFile, "utf8").catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }) : null;
+  const nextIntent = projectIntent === undefined ? previousIntent : projectIntent === null ? null : `${projectIntent.trim()}\n`;
   const referenceDirectory = update ? `references/update-${randomUUID()}` : "references";
   const outputTree = structuredClone(tree);
   const references = new Map<string, ReferenceCopy>();
@@ -359,6 +385,7 @@ export async function prepareRequirementsOutput(
   };
   await visit(outputTree);
   return { tree: outputTree, references: [...references.values()],
+    ...(nextIntent !== null || previousIntent !== null ? { intent: { content: nextIntent, previous: previousIntent } } : {}),
     ...(update && previous?.ok ? { update, changes: diffRequirements(previous.tree, outputTree) } : {}) };
 }
 
@@ -367,6 +394,7 @@ async function writeRequirementsUpdate(
   tree: RequirementNode,
   target: { file: string; content: string },
   references: ReferenceCopy[],
+  intent?: { content: string | null; previous: string | null },
 ): Promise<string> {
   const directory = dirname(target.file);
   const temporary = join(directory, `.requirements-${randomUUID()}.tmp`);
@@ -384,7 +412,25 @@ async function writeRequirementsUpdate(
     if (await readFile(target.file, "utf8") !== target.content) {
       throw new Error("原文件在审阅后已改变，请重新请求审阅");
     }
+    const intentFile = join(directory, "project-intent.md");
+    if (intent && await readFile(intentFile, "utf8").catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }) !== intent.previous) throw new Error("技术意图文件在审阅后已改变，请重新请求审阅");
     await rename(temporary, target.file);
+    if (intent && intent.content !== intent.previous) {
+      try {
+        if (intent.content === null) await rm(intentFile, { force: true });
+        else {
+          const intentTemporary = join(directory, `.project-intent-${randomUUID()}.tmp`);
+          try { await writeFile(intentTemporary, intent.content, { encoding: "utf8", flag: "wx" }); await rename(intentTemporary, intentFile); }
+          finally { await rm(intentTemporary, { force: true }); }
+        }
+      } catch (error) {
+        await writeFile(target.file, target.content, "utf8");
+        throw error;
+      }
+    }
     written = true;
     return target.file;
   } finally {
@@ -397,6 +443,7 @@ export async function writeRequirementsOutput(
   tree: RequirementNode,
   baseDir: string,
   references: ReferenceCopy[] = [],
+  projectIntent?: string | null,
 ): Promise<string> {
   for (let index = 1; ; index += 1) {
     const directory = join(baseDir, index === 1 ? "requirements" : `requirements-${index}`);
@@ -411,6 +458,7 @@ export async function writeRequirementsOutput(
       if (references.length) await mkdir(join(directory, "references"));
       for (const reference of references) await copyFile(reference.source, join(directory, reference.destination));
       await writeFile(file, serializeRequirementsYaml(tree), { encoding: "utf8", flag: "wx" });
+      if (projectIntent) await writeFile(join(directory, "project-intent.md"), projectIntent, { encoding: "utf8", flag: "wx" });
       return file;
     } catch (error) {
       await rm(directory, { recursive: true, force: true });

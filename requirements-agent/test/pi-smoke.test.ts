@@ -286,7 +286,7 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
     assert.equal(existsSync(join(base, ".requirements-agent", "draft.json")), false);
   }
   for (const request of gateway.requests) {
-    assert.deepEqual([...request.toolNames].sort(), ["ls", "read", "review_requirements", "update_requirements"], "工具白名单异常");
+    assert.deepEqual([...request.toolNames].sort(), ["ls", "read", "review_requirements", "update_project_intent", "update_requirements"], "工具白名单异常");
     assert.ok(request.hasSystemPrompt, "系统提示词缺失");
   }
   assert.ok(gateway.requests.some((request) => request.hasToolResult), "工具结果未回传给模型");

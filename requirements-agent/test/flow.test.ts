@@ -11,6 +11,7 @@ import {
   assembleInputLines,
   createDraftStore,
   createRequirementsTool,
+  createProjectIntentTool,
   isAffirmative,
   requestsGeneration,
   runConversation,
@@ -140,6 +141,53 @@ test("普通回合展示草案摘要与最多三个优先问题，后续回合�
   assert.match(agent.sends[1], /第 1 版/);
   assert.match(agent.sends[1], /create-task/);
   assert.match(agent.sends[1], /刷新后是否保留任务？/);
+});
+
+test("technical intent is reviewed and saved next to requirements, while absent intent creates no file", async () => {
+  const base = await tempBase();
+  try {
+    const store = createDraftStore(base);
+    assert.equal(store.submit(validTree(), []).ok, true);
+    await createProjectIntentTool(store).execute("intent", { intent: "前端使用 Vue，后端使用 FastAPI。" });
+    let reviewIntent: string | null | undefined;
+    const result = await runConversation({ agent: new FakeAgent(store), store, baseDir: base,
+      input: scripted(["生成", "是"]), out() {}, onView: view => {
+        if (view.type === "review") reviewIntent = view.projectIntent;
+      } });
+    assert.equal(result.status, "generated");
+    assert.match(reviewIntent ?? "", /FastAPI/);
+    assert.match(await readFile(join(base, "requirements", "project-intent.md"), "utf8"), /FastAPI/);
+
+    const plain = createDraftStore();
+    assert.equal(plain.submit(validTree(), []).ok, true);
+    const second = await runConversation({ agent: new FakeAgent(plain), store: plain, baseDir: base,
+      input: scripted(["生成", "是"]), out() {} });
+    assert.equal(second.status, "generated");
+    await assert.rejects(readFile(join(base, "requirements-2", "project-intent.md")));
+  } finally { await rm(base, { recursive: true, force: true }); }
+});
+
+test("technical intent update checks the reviewed source before replacing it", async () => {
+  const base = await tempBase();
+  try {
+    const file = await existingDocument(base);
+    const intentFile = join(base, "requirements", "project-intent.md");
+    await writeFile(intentFile, "使用 Vue。\n");
+    const originalYaml = await readFile(file, "utf8");
+    const store = createDraftStore();
+    assert.equal(store.submit(validTree(), []).ok, true);
+    store.setProjectIntent("使用 Vue 和 FastAPI。");
+    const agent = new FakeAgent(store, [], [{ ok: true, output: "update" }]);
+    async function* input() {
+      yield "更新现有需求";
+      await writeFile(intentFile, "外部已修改。\n");
+      yield "是";
+    }
+    const result = await runConversation({ agent, store, baseDir: base, input: input(), out() {} });
+    assert.equal(result.status, "ended");
+    assert.equal(await readFile(file, "utf8"), originalYaml);
+    assert.equal(await readFile(intentFile, "utf8"), "外部已修改。\n");
+  } finally { await rm(base, { recursive: true, force: true }); }
 });
 
 test("生成请求在草案不完整时被拦下并继续对话", async (t) => {
