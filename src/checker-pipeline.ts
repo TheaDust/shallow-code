@@ -174,7 +174,8 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     void state.record({ at: now(), type: "checker_usage", detail: item });
   });
   runtime.setUsageProgressRecorder?.(item => {
-    void state.record({ at: now(), type: "checker_usage_progress", detail: item });
+    // 进行中用量只服务交互终端的实时展示，不进入账本或日志。
+    state.present({ at: now(), type: "checker_usage_progress", detail: item });
   });
   const coordinator = await CheckerCoordinator.open(runtime, options, deps, initialSha, event => state.record(event), async head => {
     state.setAcceptedSha(head.sourceSha);

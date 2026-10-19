@@ -95,9 +95,11 @@ test("Checker progress reaches the correlated event ledger without granting veri
   });
 });
 
-test("In-flight Checker usage reaches the ledger but not the settled report", async () => {
+test("In-flight Checker usage reaches only the live view, not the ledger or settled report", async () => {
   await withModulePipeline(async f => {
     const runtime = await attach(f);
+    const presented: string[] = [];
+    f.deps.logSink = { write() {}, present: chunk => { presented.push(chunk); } };
     let progressRecorder: Parameters<NonNullable<CheckerRuntime["setUsageProgressRecorder"]>>[0] | undefined;
     runtime.setUsageProgressRecorder = recorder => { progressRecorder = recorder; };
     const check = runtime.checker.check.bind(runtime.checker);
@@ -107,10 +109,13 @@ test("In-flight Checker usage reaches the ledger but not the settled report", as
       return check(job, signal, onProgress);
     };
     const result = await f.run();
-    const progress = (await f.events()).filter(event => event.type === "checker_usage_progress");
-    assert.ok(progress.length > 0);
-    assert.equal(progress[0]!.phase, "checker");
-    assert.equal(progress[0]!.detail?.total, 12);
+    const live = presented.map(chunk => JSON.parse(chunk) as { type: string; phase?: string; detail?: { total?: number } })
+      .filter(event => event.type === "checker_usage_progress");
+    assert.ok(live.length > 0);
+    assert.equal(live[0]!.phase, "checker");
+    assert.equal(live[0]!.detail?.total, 12);
+    assert.equal((await f.events()).some(event => event.type === "checker_usage_progress"), false,
+      "display-only usage never enters the ledger");
     assert.equal(result.modelUsage?.checker.total, 0, "in-flight usage is display-only");
   });
 });

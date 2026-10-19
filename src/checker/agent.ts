@@ -241,7 +241,15 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 const output = await store.readTypedJson(result.output);
                 await store.validateSchema(capability.outputSchema, output);
                 manifest.receipts.push(...result.receipts);
-                return { output, receipts: result.receipts };
+                const checks = [];
+                for (const ref of result.receipts) {
+                  const receipt = await store.getJson<EvidenceReceipt>(ref);
+                  if (receipt.kind === "assertion" || receipt.kind === "precondition") {
+                    checks.push({ receipt: ref, kind: receipt.kind, checkpointId: receipt.checkpointId,
+                      ...(receipt.assertion ? { assertion: receipt.assertion } : {}), payload: await store.readTypedJson(receipt.payload) });
+                  }
+                }
+                return { output, receipts: result.receipts, ...(checks.length ? { checks } : {}) };
               } },
             { name: "save_artifact", description: "Save acceptance contract or complete reusable program. The host binds requirements, initial state and execution binding.",
               // The tool schema root must stay a plain object: the gateway rejects tool parameters declared as a root union.

@@ -19,7 +19,9 @@ async function application(mutant: boolean, run: (url: string) => Promise<void>)
       <form action="/cancel"><button>Cancel O-17</button></form>
       <a href="/" target="_blank">Open order</a><a href="/download" download>Export order</a>
       <a href="/source.js">Source</a><a href="/source-download" download>Download source</a>
-      <iframe name="details" src="/frame"></iframe></main>`);
+      <iframe name="details" src="/frame"></iframe>
+      <textarea aria-label="Hidden editor" data-testid="hidden-editor" hidden>draft</textarea>
+      <textarea aria-label="Aria hidden editor" data-testid="aria-hidden-editor" aria-hidden="true">draft</textarea></main>`);
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -93,6 +95,45 @@ test("Checker proxy reads named frames, new windows and actual download content"
       `, { signal: new AbortController().signal, timeoutMs: 15_000 });
       assert.deepEqual(result, ["frame-ready", "unpaid", "Order O-17: unpaid"]);
       assert.ok(events.some((event) => event.kind === "observation" && event.payload.kind === "download"));
+    } finally { await runtime.close(); await browser.close(); }
+  });
+});
+
+test("Checker supports relational GIVEN checks and role counts that exclude retained hidden DOM", async () => {
+  await application(false, async baseUrl => {
+    const browser = await chromium.launch({ headless: true });
+    const events: WebRuntimeEvent[] = [];
+    const runtime = new WebProgramRuntime(browser, baseUrl, async event => { events.push(event); return `host-${events.length}`; }, [], 5_000, [
+      { id: "given", kind: "precondition", expected: { operator: "relation", value: { order: "unpaid", seats: 4 } } },
+      { id: "scalar", kind: "precondition", expected: { operator: "equal", value: "unpaid" } },
+      { id: "pattern", kind: "precondition", expected: { operator: "match", value: "unpaid" } },
+    ]);
+    try {
+      const result = await runtime.run(`
+        const p=await browser.actor('alice');
+        const order=await p.read({role:'status',name:'Order O-17'});
+        const seats=await p.read({role:'status',name:'Train T-6 seats'});
+        const given=await check.precondition('given',[order.id,seats.id],
+          '(values,expected)=>values[0]===expected.order && Number(values[1])===expected.seats');
+        const hiddenRoles=await p.count({role:'textbox',name:'Hidden editor'});
+        const retainedDom=await p.count({testId:'hidden-editor'});
+        const visible=await p.read({testId:'hidden-editor'},'visible');
+        const ariaHiddenRoles=await p.count({role:'textbox',name:'Aria hidden editor'});
+        const ariaHiddenVisible=await p.read({testId:'aria-hidden-editor'},'visible');
+        return {passed:given.passed,roleCount:hiddenRoles.value,domCount:retainedDom.value,visible:visible.value,
+          ariaHiddenRoleCount:ariaHiddenRoles.value,ariaHiddenVisible:ariaHiddenVisible.value};
+      `, { signal: new AbortController().signal, timeoutMs: 5_000 });
+      assert.deepEqual(result, { passed: true, roleCount: 0, domCount: 1, visible: false, ariaHiddenRoleCount: 0, ariaHiddenVisible: true });
+      const given = events.find(event => event.kind === "precondition")!;
+      assert.deepEqual(given.payload.actual, ["unpaid", "4"]);
+      assert.equal(given.payload.result, "satisfied");
+      for (const checkpoint of ["scalar", "pattern"]) await assert.rejects(runtime.run(`
+        const p=await browser.actor('alice');
+        const order=await p.read({role:'status',name:'Order O-17'});
+        const seats=await p.read({role:'status',name:'Train T-6 seats'});
+        await check.precondition('${checkpoint}',[order.id,seats.id]);
+      `, { signal: new AbortController().signal, timeoutMs: 5_000 }), /requires one observation/);
+      assert.equal(events.filter(event => event.kind === "precondition").length, 1, "invalid test wiring does not emit a business violation");
     } finally { await runtime.close(); await browser.close(); }
   });
 });

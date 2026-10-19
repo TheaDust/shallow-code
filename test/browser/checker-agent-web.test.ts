@@ -67,6 +67,14 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
           await alice.reload();const persisted=await alice.read({role:'status',name:'Order O-17'});await check.expect('${clauses[2]!.id}',[persisted.id]);`;
         const program = await invoke("save_artifact", { kind: "program", contract: contractRef, source: programSource,
           clauses: contract.clauses.map(clause => ({ clauseId: clause.id, checkpointId: clause.checkpointId })) });
+        await invoke("invoke", { capabilityId: "reset_case", input: {} });
+        const preview = await invoke("invoke", { capabilityId: "run", input: { program } }) as {
+          checks: Array<{ receipt: { digest: string }; kind: string; checkpointId: string; payload: { result: string; actual: unknown } }>;
+        };
+        assert.equal(preview.checks.length, 4, "exploration sees each GIVEN and result check before submission");
+        assert.equal(preview.checks[0]!.payload.result, "satisfied");
+        assert.deepEqual(preview.checks.slice(1).map(check => check.payload.result), mutant ? ["satisfied", "violated", "satisfied"] : ["satisfied", "satisfied", "satisfied"]);
+        assert(preview.checks.every(check => check.receipt.digest.length === 64));
         await invoke("finish", { programs: [program] });
       }
       return { totalTokens: 100 };

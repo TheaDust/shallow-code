@@ -163,7 +163,7 @@ const PRELUDE = String.raw`
     frame: name => page(actor, window, name),
   });
   globalThis.browser = Object.freeze({ actor: async name => {await call('actor', {actor:name}); return page(name);} });
-  globalThis.check = Object.freeze({ expect: (clauseId, observationIds, predicate) => call('expect', {clauseId, observationIds, predicate}), precondition: (checkpointId, observationIds) => call('precondition', {checkpointId, observationIds}) });
+  globalThis.check = Object.freeze({ expect: (clauseId, observationIds, predicate) => call('expect', {clauseId, observationIds, predicate}), precondition: (checkpointId, observationIds, predicate) => call('precondition', {checkpointId, observationIds, predicate}) });
 })();`;
 
 export interface WebLocator { role?: string; name?: string; label?: string; text?: string; testId?: string; within?: WebLocator }
@@ -434,6 +434,10 @@ export class WebProgramRuntime {
     let passed: boolean;
     const actual = values.length === 1 ? values[0] : values;
     const operator = expectation.expected.operator;
+    if (values.length > 1 && (operator === "match" || operator === "greaterThan" || operator === "lessThan"
+      || operator === "equal" && !Array.isArray(expected))) {
+      throw new Error(`${operator} with a scalar expectation requires one observation; received ${values.length}. Use a relation predicate for multiple values. Predicates receive raw values, not {id,value} objects.`);
+    }
     if (operator === "equal") passed = JSON.stringify(actual) === JSON.stringify(expected);
     else if (operator === "contains") passed = typeof actual === "string" && typeof expected === "string" ? actual.includes(expected) : Array.isArray(actual) && actual.some((value) => JSON.stringify(value) === JSON.stringify(expected));
     else if (operator === "greaterThan") passed = Number(actual) > Number(expected);

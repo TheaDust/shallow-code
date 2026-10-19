@@ -561,6 +561,12 @@ export function createRunLogSink(
       if (present) present(chunk, line);
       else stream.write(`${line}\n`);
     },
+    // 瞬时展示事件只进入交互终端，不写 run-log.txt 或进度记录。
+    present: (chunk) => {
+      if (!present) return;
+      const line = formatter.format(chunk);
+      if (line !== null) present(chunk, line);
+    },
   };
 }
 

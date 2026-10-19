@@ -31,7 +31,7 @@ interface WebSchemas { payload: ContentRef; environment: ContentRef; output: Con
 const REF = { type: "object", required: ["id", "digest"], properties: { id: { type: "string" }, digest: { type: "string" } } };
 const OBJECT = { type: "object", additionalProperties: true };
 const PROGRAM_REF = { type: "object", required: ["descriptor", "format", "contract", "binding"], properties: { descriptor: REF, format: { type: "string" }, contract: REF, binding: REF }, additionalProperties: false };
-const RUN_SCHEMA = { type: "object", required: ["source"], properties: { source: { type: "string", minLength: 1, maxLength: 256_000 }, program: PROGRAM_REF }, additionalProperties: false };
+const RUN_SCHEMA = { type: "object", anyOf: [{ required: ["source"] }, { required: ["program"] }], properties: { source: { type: "string", minLength: 1, maxLength: 256_000 }, program: PROGRAM_REF }, additionalProperties: false };
 let preparationQueue: Promise<void> = Promise.resolve();
 const leasedPorts = new Set<number>();
 async function prepareOneAtATime<T>(operation: () => Promise<T>): Promise<T> {
@@ -226,12 +226,15 @@ class WebSession implements ExecutionSession {
       await this.runtime!.invoke("actor", { actor }, signal);
       value = await this.runtime!.invoke("inspect", { actor }, signal);
     } else {
+      let source = data.source as string | undefined;
       if (data.program) {
         const descriptor = await this.loadProgram(data.program as ProgramRef);
         const savedSource = (await this.options.artifacts.getBytes(descriptor.source)).toString("utf8");
-        if (data.source !== savedSource) throw new Error("Execution source differs from the bound program artifact");
+        if (source !== undefined && source !== savedSource) throw new Error("Execution source differs from the bound program artifact");
+        source = savedSource;
       }
-      try { value = await this.run(String(data.source), signal); }
+      if (!source?.trim() || source.length > 256_000) throw new Error("Web program must contain bounded JavaScript source");
+      try { value = await this.run(source, signal); }
       catch (error) { const message = error instanceof Error ? error.message : String(error); await this.record("diagnostic", { category: error instanceof CandidatePreparationError ? "candidate" : "execution", message }); if (error instanceof CandidatePreparationError) throw error; value = { error: message }; }
     }
     return { output: await this.options.artifacts.putTypedJson({ result: value ?? null }, this.schemas.output), receipts: this.receipts.slice(start) };

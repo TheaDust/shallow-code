@@ -533,6 +533,11 @@ export class BuildTui {
   record(rawLine: string, line: string): void {
     const event = JSON.parse(rawLine) as RunEvent;
     this.view.receive(event, line);
+    // 进行中用量只刷新费用面板，不进入“详细日志”或在屏日志。
+    if (event.type === "checker_usage_progress") {
+      this.tui.requestRender();
+      return;
+    }
     this.log.push(line);
     if (this.log.length > 500) this.log.shift();
     this.viewer?.setText("详细日志 · 最近 500 条", this.log.join("\n"), false);

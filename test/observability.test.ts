@@ -55,6 +55,25 @@ test("Checker progress redacts rejection reasons and remains separate from requi
   });
 });
 
+test("Display-only usage reaches the presenter without entering the ledger or run log", async () => {
+  await withTempDir("shallow-live-usage-", async directory => {
+    const written: string[] = [];
+    const presented: string[] = [];
+    const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
+      join(directory, "ledger.jsonl"), { write: chunk => { written.push(chunk); }, present: chunk => { presented.push(chunk); } });
+    await store.record({ at: "2026-10-19T00:00:00Z", type: "phase_started", detail: { phase: "audit" } });
+    store.present({ at: "2026-10-19T00:00:01Z", type: "checker_usage_progress", detail: {
+      jobId: "j", role: "exploration", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12,
+    } });
+    assert.equal(store.snapshot.ledger.length, 1);
+    assert.equal(written.length, 1);
+    assert.equal(presented.length, 1);
+    assert.equal(JSON.parse(presented[0]!).type, "checker_usage_progress");
+    assert.equal(JSON.parse(presented[0]!).phase, "checker");
+    assert.doesNotMatch(await readFile(join(directory, "ledger.jsonl"), "utf8"), /checker_usage_progress/);
+  });
+});
+
 test("Internal events are correlated; private previews stay out of public logs and usage numbers survive", async () => {
   await withTempDir("shallow-observe-", async (directory) => {
     const chunks: string[] = [];

@@ -142,7 +142,7 @@ interface RunEventDetails {
     requirementResults: Record<string, RequirementStatus>; published: boolean };
   checker_usage: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
     total: number; cost?: number; reasoning?: number };
-  /** 进行中 Checker 会话的累计用量；只用于实时展示，最终以 checker_usage 结算。 */
+  /** 进行中 Checker 会话的累计用量；仅投递交互终端实时展示，不写账本或日志，最终以 checker_usage 结算。 */
   checker_usage_progress: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
     total: number; cost?: number; reasoning?: number };
   evolution_scope_selected: { historicalPlans: number; ignoredPlans: number;

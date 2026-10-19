@@ -54,9 +54,10 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
       await session.invoke("reset_case", {}, new AbortController().signal);
       const reset = await session.invoke("inspect", { actor: "alice" }, new AbortController().signal);
       assert.match(JSON.stringify(await artifacts.readTypedJson(reset.output)), /original/);
-      const formal = await session.invoke("run", { source: programSource, program }, new AbortController().signal);
+      const formal = await session.invoke("run", { program }, new AbortController().signal);
       const formalReceipts = await Promise.all(formal.receipts.map((ref) => artifacts.getJson<EvidenceReceipt>(ref)));
       assert.equal(formalReceipts.find((receipt) => receipt.kind === "assertion")?.assertion?.result, "satisfied");
+      await assert.rejects(session.invoke("run", {}, new AbortController().signal), /schema/);
       await assert.rejects(session.invoke("run", { source: "return true", program }, new AbortController().signal), /differs from the bound program/);
       await assert.rejects(session.invoke("evaluate", {}, new AbortController().signal), /Unknown Web capability/);
       const failedContract = await artifacts.putJson({ clauses: [{ id: "r:result", checkpointId: "result", expected: { operator: "equal", value: "deliberately absent expected result" } }], checkpoints: [

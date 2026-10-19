@@ -367,7 +367,7 @@ test("Interactive presentation clears the console page and reports the wheel onl
   assert.equal(off(), 2);
 });
 
-test("Interactive presentation keeps complete, colour-free logs on disk", async () => {
+test("Interactive presentation keeps human-readable logs on disk and routes live usage to the terminal", async () => {
   await withTempDir("shallow-terminal-log-", async directory => {
     const file = join(directory, "run-log.txt");
     const received: string[] = [];
@@ -381,6 +381,14 @@ test("Interactive presentation keeps complete, colour-free logs on disk", async 
     const log = await readFile(file, "utf8");
     assert.match(log, /tokens.*42.*8/);
     assert.doesNotMatch(log, /\x1b\[/);
+
+    sink.present?.(JSON.stringify({ at: "2026-10-13T00:00:01Z", type: "checker_usage_progress",
+      detail: { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120 } }));
+    assert.equal(received.at(-2), "checker_usage_progress", "live usage still reaches the interactive presenter");
+    assert.equal(plain.length, 0, "live usage never reaches the console or log file");
+    const after = await readFile(file, "utf8");
+    assert.match(after, /tokens.*42.*8/, "persistent human log is unchanged");
+    assert.doesNotMatch(after, /进行中用量/);
   });
 });
 
@@ -505,6 +513,26 @@ test("Interactive cost key expands grouped spending", (t) => {
   terminal.input("c");
   ui.tui.renderNow();
   assert.doesNotMatch(frame(), /Builder\s+tokens/);
+});
+
+test("Live Checker usage updates the cost panel without flooding the detailed log", (t) => {
+  const terminal = new MemoryTerminal();
+  const ui = new BuildTui(options, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  for (let index = 1; index <= 12; index++) {
+    ui.record(JSON.stringify({ at: "2026-10-13T00:00:00Z", type: "checker_usage_progress",
+      detail: { jobId: "j1", role: "exploration", input: index * 100, output: index * 20,
+        cacheRead: 0, cacheWrite: 0, total: index * 120 } }), `Checker 探索 进行中用量 ${index}`);
+  }
+  ui.tui.renderNow();
+  const frame = (ui.tui as TuiMainScreen).captureRenderState().previousLines.join("\n");
+  assert.match(frame, /总计\s+tokens 1\.4k/);
+  terminal.input("d");
+  ui.tui.renderNow();
+  const rendered = terminal.writes.join("");
+  assert.match(rendered, /详细日志/);
+  assert.doesNotMatch(rendered, /进行中用量/);
 });
 
 test("Requirement tree page colours subtree states and shows per-node completion", () => {

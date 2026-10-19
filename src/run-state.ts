@@ -27,6 +27,8 @@ export interface InitialRunState {
 
 export interface LogSink {
   write(chunk: string): void;
+  /** 仅投递到交互终端展示的瞬时事件；实现方不得写入持久日志。 */
+  present?(chunk: string): void;
 }
 
 export class RunStateStore {
@@ -75,16 +77,19 @@ export class RunStateStore {
     this.state.attemptsByPacketId[packetId] = attempt;
   }
 
+  /** 只投递到交互展示；瞬时事件不占用账本序号，也不写日志文件。 */
+  present(event: RunEvent): void {
+    if (!this.logSink?.present) return;
+    try {
+      this.logSink.present(`${JSON.stringify(this.envelope(event),
+        (key, value: unknown) => key === "contentPreview" ? undefined : value)}\n`);
+    } catch {
+      // 展示通道故障不改变决策路径。
+    }
+  }
+
   async record(event: RunEvent): Promise<void> {
-    const sequence = this.state.ledger.length + 1;
-    const atMs = Date.parse(event.at);
-    this.firstEventAtMs ??= atMs;
-    const safeEvent = redactEvent({ ...event, runId: this.runId,
-      eventId: `${this.runId}:${sequence}`, sequence, phase: eventPhase(event),
-      elapsedMs: Math.max(0, atMs - this.firstEventAtMs),
-      acceptedSha: this.state.acceptedSha,
-      ...(event.packetId ? { attempt: this.state.attemptsByPacketId[event.packetId] } : {}),
-    }, this.secrets);
+    const safeEvent = this.envelope(event);
     this.state.ledger.push(safeEvent);
     try {
       // Planner response previews are private controller diagnostics, not public stderr.
@@ -103,6 +108,19 @@ export class RunStateStore {
       }
     });
     await this.ledgerWrites;
+  }
+
+  /** 统一事件信封与脱敏；实时展示与持久账本保持同一字段语义。 */
+  private envelope(event: RunEvent): RunEvent {
+    const sequence = this.state.ledger.length + 1;
+    const atMs = Date.parse(event.at);
+    this.firstEventAtMs ??= atMs;
+    return redactEvent({ ...event, runId: this.runId,
+      eventId: `${this.runId}:${sequence}`, sequence, phase: eventPhase(event),
+      elapsedMs: Math.max(0, atMs - this.firstEventAtMs),
+      acceptedSha: this.state.acceptedSha,
+      ...(event.packetId ? { attempt: this.state.attemptsByPacketId[event.packetId] } : {}),
+    }, this.secrets);
   }
 }
 
