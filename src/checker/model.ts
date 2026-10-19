@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -51,6 +51,8 @@ export function createPiCheckerModel(options: {
   contextWindow?: number;
   modelCost?: ModelRates;
   onUsage?: (usage: CheckerModelUsage) => void;
+  /** 会话进行中的累计用量；仅供实时展示，最终结算仍以 onUsage 为准。 */
+  onProgress?: (usage: CheckerModelUsage) => void;
   /** Shared pipeline gateway window; defaults to a model-local recovery window. */
   recovery?: GatewayRecovery;
 }): CheckerModel {
@@ -96,10 +98,13 @@ export function createPiCheckerModel(options: {
       disabledBuiltinExtensions: ["mcp"], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       systemPrompt: request.systemPrompt });
     await resources.reload();
+    const requiresFinish = request.tools.some(tool => tool.name === "finish");
+    let finished = false;
     const customTools: ToolDefinition[] = request.tools.map(tool => ({ name: tool.name, label: tool.name, description: tool.description,
       parameters: tool.parameters, prepareArguments: tool.prepareArguments, executionMode: "sequential", async execute(_id, input) {
         request.signal.throwIfAborted();
         const result = await tool.execute(input);
+        if (tool.name === "finish") finished = true;
         return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
       } }));
     const { session, modelFallbackMessage } = await createAgentSession({ cwd, agentDir, modelRuntime: runtime,
@@ -109,10 +114,24 @@ export function createPiCheckerModel(options: {
     let reasoning = 0;
     let hasReasoning = false;
     let providerError: string | undefined;
+    // 当前 attempt 的累计用量：每次助手消息结束后上报一次，供 TUI 实时展示。
+    const live = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
     const unsubscribe = session.subscribe(event => {
       if (event.type !== "message_end" || event.message.role !== "assistant") return;
       const count = event.message.usage.reasoning;
       if (count !== undefined) { reasoning += count; hasReasoning = true; }
+      const usage = event.message.usage;
+      live.input += usage.input; live.output += usage.output;
+      live.cacheRead += usage.cacheRead; live.cacheWrite += usage.cacheWrite;
+      live.cost += usage.cost?.total ?? 0;
+      const total = live.input + live.output + live.cacheRead + live.cacheWrite;
+      if (total > 0) {
+        try {
+          options.onProgress?.({ role: request.role, jobId: request.job.jobId,
+            input: live.input, output: live.output, cacheRead: live.cacheRead, cacheWrite: live.cacheWrite,
+            total, ...(hasReasoning ? { reasoning } : {}), ...(options.modelCost ? { cost: live.cost } : {}) });
+        } catch { /* 用量展示不影响检查结果。 */ }
+      }
       if (event.message.stopReason === "error" || event.message.stopReason === "aborted") providerError = event.message.errorMessage ?? event.message.stopReason;
       // A successful retry clears the previous attempt's transient failure.
       else providerError = undefined;
@@ -124,16 +143,21 @@ export function createPiCheckerModel(options: {
     try {
       return await gateway.track(async () => {
         try {
-          await session.prompt(request.prompt, { expandPromptTemplates: false });
-          await session.waitForIdle();
-          request.signal.throwIfAborted();
-          if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
-          if (providerError) {
-            const failure = providerGatewayFailure(providerError, gateway.failure());
-            if (failure) throw new GatewayRequestError(failure);
-            throw new Error(providerError);
+          let prompt = request.prompt;
+          for (let reminders = 0; ; reminders++) {
+            await session.prompt(prompt, { expandPromptTemplates: false });
+            await session.waitForIdle();
+            request.signal.throwIfAborted();
+            if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Checker model deadline exhausted");
+            if (providerError) {
+              const failure = providerGatewayFailure(providerError, gateway.failure());
+              if (failure) throw new GatewayRequestError(failure);
+              throw new Error(providerError);
+            }
+            if (!requiresFinish || finished) return { totalTokens: session.getSessionStats().tokens.total };
+            if (reminders === 2) throw new Error(`Checker ${request.role} did not call finish successfully after 2 submission reminders`);
+            prompt = (await readFile(new URL("../../prompts/checker/submission.md", import.meta.url), "utf8")).trimEnd();
           }
-          return { totalTokens: session.getSessionStats().tokens.total };
         } catch (error) {
           // Capture scoped metadata before the async scope ends and cleanup runs.
           observed = gateway.failure();

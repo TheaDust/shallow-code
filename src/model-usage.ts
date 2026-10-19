@@ -125,19 +125,22 @@ export class ModelUsageTotals {
     this[source].add(usage);
   }
 
-  /** 展示时可合入当前 Builder 快照；不改变已经结算的用量。 */
-  summary(builderProgress?: TokenUsage): ModelUsageSummary {
+  /** 展示时可合入当前 Builder/Checker 快照；不改变已经结算的用量。 */
+  summary(builderProgress?: TokenUsage, checkerProgress?: TokenUsage): ModelUsageSummary {
     const builder = new UsageTotals();
     builder.add(this.builder.summary());
     if (builderProgress) builder.add(builderProgress);
     const builderSummary = builder.summary();
-    const checker = this.checker.summary();
+    const checker = new UsageTotals();
+    checker.add(this.checker.summary());
+    if (checkerProgress) checker.add(checkerProgress);
+    const checkerSummary = checker.summary();
     const planner = this.planner.summary();
     const total = new UsageTotals();
     total.add(builderSummary);
-    total.add(checker);
+    total.add(checkerSummary);
     total.add(planner);
-    return { ...total.summary(), builder: builderSummary, checker, planner };
+    return { ...total.summary(), builder: builderSummary, checker: checkerSummary, planner };
   }
 }
 

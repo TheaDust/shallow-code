@@ -87,6 +87,10 @@ test("Model totals separate Builder, Checker and Planner, preserve partial price
   assert.equal(live.builder.total, 147);
   assert.equal(live.total, 257);
   assert.equal(live.unpricedTokens, 110);
+  const liveBoth = totals.summary({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    { input: 5, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  assert.equal(liveBoth.checker.total, 94);
+  assert.equal(liveBoth.total, 263);
   assert.deepEqual(totals.summary(), settled, "显示实时快照不会重复累计用量");
 });
 

@@ -95,6 +95,26 @@ test("Checker progress reaches the correlated event ledger without granting veri
   });
 });
 
+test("In-flight Checker usage reaches the ledger but not the settled report", async () => {
+  await withModulePipeline(async f => {
+    const runtime = await attach(f);
+    let progressRecorder: Parameters<NonNullable<CheckerRuntime["setUsageProgressRecorder"]>>[0] | undefined;
+    runtime.setUsageProgressRecorder = recorder => { progressRecorder = recorder; };
+    const check = runtime.checker.check.bind(runtime.checker);
+    runtime.checker.check = async (job, signal, onProgress) => {
+      progressRecorder?.({ jobId: job.jobId, role: "exploration", input: 10, output: 2,
+        cacheRead: 0, cacheWrite: 0, total: 12, cost: 0.0001 });
+      return check(job, signal, onProgress);
+    };
+    const result = await f.run();
+    const progress = (await f.events()).filter(event => event.type === "checker_usage_progress");
+    assert.ok(progress.length > 0);
+    assert.equal(progress[0]!.phase, "checker");
+    assert.equal(progress[0]!.detail?.total, 12);
+    assert.equal(result.modelUsage?.checker.total, 0, "in-flight usage is display-only");
+  });
+});
+
 test("An incomplete group cannot grant its implementation or dispatch dependent groups", async () => {
   await withModulePipeline(async f => {
     await attach(f);

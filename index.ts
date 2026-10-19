@@ -303,7 +303,8 @@ export async function main(
       await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
         filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
     }
-    process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
+    // 初始化 TUI 已接管终端时直接写 stderr 会破坏主屏的差量重绘定位。
+    if (!initializationTui) process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
     const summary = await execute({
       ...(initializationTui ? { tui: initializationTui } : {}),
       runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
@@ -385,9 +386,6 @@ async function executeProduction(
   // every client instead of letting each one discover it independently.
   const gatewayRecovery = new GatewayRecovery();
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
-  process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
-  if (sseCaptureDir) process.stderr.write(`[ShallowCode] SSE 抓包已启用（仅诊断用途）：${sseCaptureDir}\n`);
-  process.stderr.write(`[ShallowCode] 参考图片：${referenceImages ? "已开启（首次附带前预探测模型视觉能力）" : "已关闭"}\n`);
   const applicationAdapter = applications.get(pipelineOptions.applicationContract.adapterId);
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
   let releaseWorkspace: (() => Promise<void>) | undefined;
@@ -403,6 +401,13 @@ async function executeProduction(
       tui.start();
       // 先停留在只读状态；用户按 Enter 后才创建 Builder 并进入流水线。
       await tui.waitForStart();
+    }
+    // TUI 独占终端时主屏靠行差量重绘定位光标；直接写 stderr 会让后续帧错位，
+    // 把旧状态留在画面上，因此这些启动信息只在无 TUI 时输出。
+    if (!tui) {
+      process.stderr.write(`[ShallowCode] 运行日志文件：${runLogFile}\n`);
+      if (sseCaptureDir) process.stderr.write(`[ShallowCode] SSE 抓包已启用（仅诊断用途）：${sseCaptureDir}\n`);
+      process.stderr.write(`[ShallowCode] 参考图片：${referenceImages ? "已开启（首次附带前预探测模型视觉能力）" : "已关闭"}\n`);
     }
     const builder = new PromptBuilder(new PiWorkerClient(builderGateway, join(dirname(runLogFile), "pi-sessions"), sseCaptureDir ?? undefined, {
       ...(builderModelCost ? { modelCost: builderModelCost } : {}),
@@ -483,12 +488,15 @@ async function executeProduction(
       await saveRunRecord(dirname(runLogFile), context.runRecord);
       await rm(join(dirname(runLogFile), "initialization.json"), { force: true });
       let recordUsage: (item: CheckerModelUsage) => void = () => {};
+      let recordUsageProgress: (item: CheckerModelUsage) => void = () => {};
       const model = createPiCheckerModel({ gateway: checkerGateway, sessionDir: join(directory, "sessions"),
         recovery: gatewayRecovery,
-        ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item) });
+        ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item),
+        onProgress: item => recordUsageProgress(item) });
       checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model }),
         binding: execution.adapter.binding, initialState: execution.initialState, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },
+        setUsageProgressRecorder: recorder => { recordUsageProgress = recorder; },
         async verifyDelivery(job, signal) {
           try { await execution.adapter.verifyDelivery(job, signal); return { ok: true, stage: "complete", message: "Frozen candidate satisfies its execution binding and delivery checks" }; }
           catch (error) { return { ok: false, stage: "readiness", message: error instanceof Error ? error.message : String(error) }; }

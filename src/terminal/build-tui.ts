@@ -3,7 +3,7 @@ import { matchesKey, ProcessTerminal, Text, TuiMainScreen, type TUI, type Compon
 import type { RunSummary } from "../pipeline.js";
 import type { RequirementNode, RequirementStatus, RunEvent } from "../types.js";
 import type { PiWorkerProgress } from "../builder/pi-worker-client.js";
-import { ModelUsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage, type UsageSummary } from "../model-usage.js";
+import { ModelUsageTotals, UsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage, type UsageSummary } from "../model-usage.js";
 import { setMouseTracking } from "./mouse-wheel.js";
 import { clearTerminalScreen, elapsedTime, fitTerminalText, shellArgument, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
 import { TextViewer } from "./text-viewer.js";
@@ -78,6 +78,7 @@ export class BuildView implements Component {
   private readonly startedAt = Date.now();
   private readonly usage = new ModelUsageTotals();
   private live?: TokenUsage;
+  private readonly checkerLive = new Map<string, TokenUsage>();
   private usageExpanded = false;
   private awaitingStart = false;
 
@@ -124,7 +125,15 @@ export class BuildView implements Component {
       this.addUsage("planner", detail);
       return;
     }
+    if (event.type === "checker_usage_progress") {
+      const jobId = typeof detail?.jobId === "string" ? detail.jobId : undefined;
+      const usage = this.usageFromDetail(detail);
+      if (jobId && usage) this.checkerLive.set(jobId, usage);
+      return;
+    }
     if (event.type === "checker_usage") {
+      const jobId = typeof detail?.jobId === "string" ? detail.jobId : undefined;
+      if (jobId) this.checkerLive.delete(jobId);
       this.addUsage("checker", detail);
       return;
     }
@@ -146,7 +155,10 @@ export class BuildView implements Component {
     const checkEvent = event.type.startsWith("check_");
     const jobId = typeof detail?.jobId === "string" ? detail.jobId : undefined;
     if (checkEvent && jobId) {
-      if (event.type === "check_completed" || event.type === "check_cancelled") this.checkerTasks.delete(jobId);
+      if (event.type === "check_completed" || event.type === "check_cancelled") {
+        this.checkerTasks.delete(jobId);
+        this.checkerLive.delete(jobId);
+      }
       if (detail?.archived) return;
       if (event.type === "check_queued") this.checkerTasks.set(jobId, { queued: true, label: "Checker · 等待执行" });
       if (event.type === "check_started" || event.type === "check_progress") {
@@ -311,7 +323,7 @@ export class BuildView implements Component {
   }
 
   private usageLines(): string[] {
-    const summary = this.usage.summary(this.live);
+    const summary = this.usage.summary(this.live, this.checkerProgressUsage());
     const lines = [`总计  ${formatUsageSummary(summary)}`];
     if (this.usageExpanded) {
       const rows: Array<[string, UsageSummary]> = [["Builder", summary.builder], ["Checker", summary.checker], ["Planner", summary.planner]];
@@ -402,13 +414,26 @@ export class BuildView implements Component {
     return lines.map(line => fitTerminalText(line, width));
   }
 
-  private addUsage(source: "builder" | "checker" | "planner", usage: Record<string, unknown> | undefined): void {
-    if (!usage || typeof usage.input !== "number" || typeof usage.output !== "number") return;
+  private usageFromDetail(usage: Record<string, unknown> | undefined): TokenUsage | undefined {
+    if (!usage || typeof usage.input !== "number" || typeof usage.output !== "number") return undefined;
     const number = (key: string) => typeof usage[key] === "number" ? usage[key] as number : 0;
     const cost = typeof usage.cost === "number" ? usage.cost : undefined;
-    this.usage.add(source, { input: number("input"), output: number("output"), cacheRead: number("cacheRead"),
+    return { input: number("input"), output: number("output"), cacheRead: number("cacheRead"),
       cacheWrite: number("cacheWrite"), ...(cost === undefined ? {} : { cost }),
-      ...(typeof usage.unpricedTokens === "number" ? { unpricedTokens: usage.unpricedTokens } : {}) });
+      ...(typeof usage.unpricedTokens === "number" ? { unpricedTokens: usage.unpricedTokens } : {}) };
+  }
+
+  private addUsage(source: "builder" | "checker" | "planner", usage: Record<string, unknown> | undefined): void {
+    const parsed = this.usageFromDetail(usage);
+    if (parsed) this.usage.add(source, parsed);
+  }
+
+  /** 并发 Checker 任务各自上报累计值，显示时汇总但不写入结算用量。 */
+  private checkerProgressUsage(): TokenUsage | undefined {
+    if (!this.checkerLive.size) return undefined;
+    const totals = new UsageTotals();
+    for (const usage of this.checkerLive.values()) totals.add(usage);
+    return totals.summary();
   }
 
   private checkerActivity(): string | undefined {
@@ -417,7 +442,7 @@ export class BuildView implements Component {
     const active = tasks.filter(task => !task.queued);
     const queued = tasks.length - active.length;
     return (active.at(-1)?.label ?? "Checker · 等待执行") +
-      (active.length > 1 ? ` · 另 ${active.length - 1} 项运行` : "") + (queued ? ` · ${queued} 项排队` : "");
+      (active.length > 1 ? ` · ${active.length} 项运行` : "") + (queued ? ` · ${queued} 项排队` : "");
   }
 
   private describeActivity(event: RunEvent, detail: Record<string, unknown> | undefined): string | undefined {

@@ -84,6 +84,12 @@ function describe(event: RunEvent): string | null {
       const label = role === "exploration" ? "探索" : role === "semantic_review" ? "独立复核" : role;
       return tokens.length ? `Checker ${label} 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
+    case "checker_usage_progress": {
+      const tokens = tokenUsageParts(detail);
+      const role = pickString(detail, "role");
+      const label = role === "exploration" ? "探索" : role === "semantic_review" ? "独立复核" : role;
+      return tokens.length ? `Checker ${label} 进行中用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
+    }
     case "run_resumed":
       return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
     case "initialization_started":

@@ -33,6 +33,7 @@ export interface CheckerRuntime {
   initialState: TypedRef;
   resourceKeys: string[];
   setUsageRecorder?(recorder: (usage: CheckerModelUsage) => void): void;
+  setUsageProgressRecorder?(recorder: (usage: CheckerModelUsage) => void): void;
   verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<DeliveryReport>;
 }
 type ScopedOutcome = CheckOutcome & { initialState?: TypedRef };
@@ -171,6 +172,9 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   runtime.setUsageRecorder?.(item => {
     usage.add("checker", item);
     void state.record({ at: now(), type: "checker_usage", detail: item });
+  });
+  runtime.setUsageProgressRecorder?.(item => {
+    void state.record({ at: now(), type: "checker_usage_progress", detail: item });
   });
   const coordinator = await CheckerCoordinator.open(runtime, options, deps, initialSha, event => state.record(event), async head => {
     state.setAcceptedSha(head.sourceSha);
@@ -524,7 +528,11 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     throw error;
   } finally {
     try { await coordinator.cancelOutstanding(); }
-    finally { runtime.setUsageRecorder?.(() => {}); await deps.builder.close(); }
+    finally {
+      runtime.setUsageRecorder?.(() => {});
+      runtime.setUsageProgressRecorder?.(() => {});
+      await deps.builder.close();
+    }
   }
 }
 

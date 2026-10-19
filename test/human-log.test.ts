@@ -341,6 +341,15 @@ test("Human logs cover Checker queue, module checks and cancellation", () => {
     /模块集中检查完成；版本 snap-2；结果已归档$/);
 });
 
+test("Human logs show in-flight Checker usage separately from settlement", () => {
+  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-16T00:00:00.000Z", "checker_usage_progress", {
+    detail: { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 },
+  }));
+  assert.match(line, /Checker 探索 进行中用量/);
+  assert.match(line, /tokens .*100.*20.*120/);
+  assert.match(line, /费用 \$0\.0001/);
+});
+
 test("Human logs explain Checker stages, cache reuse and rejection feedback", () => {
   const formatter = new HumanRunFormatter();
   for (const [stage, label] of [

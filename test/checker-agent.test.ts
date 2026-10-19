@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -146,7 +146,34 @@ test("Checker tool schemas keep an object root because the gateway rejects a roo
     assert.deepEqual((save.parameters as { required: string[] }).required, ["kind", "contract"]);
     const invoke = f.toolSchemas.find(item => item.name === "invoke")!;
     assert.equal(((invoke.parameters as { properties: Record<string, { type?: string }> }).properties.input.type), "object");
+    assert.deepEqual((invoke.parameters as { properties: { capabilityId: { enum: string[] } } }).properties.capabilityId.enum, ["inspect"]);
     assert.equal(((save.parameters as { properties: Record<string, { type?: string }> }).properties.contract.type), "object");
+  } finally { await f.cleanup(); }
+});
+
+test("Checker corrects a nested finish call and permits a corrected independent review", async () => {
+  const f = await fixture();
+  try {
+    const model: CheckerModel = { async run(request) {
+      if (request.role === "exploration") {
+        const invoke = request.tools.find(tool => tool.name === "invoke")!;
+        const args = { capabilityId: "finish", input: { programs: [] } };
+        assert.throws(() => invoke.prepareArguments!(args), /Call the separate Checker tools.*finish directly/);
+        await assert.rejects(invoke.execute(args), /Call the separate Checker tools.*finish directly/);
+      } else {
+        const finish = request.tools[0]!;
+        const ids = (JSON.parse(request.prompt).contract as AcceptanceContract).clauses.map(clause => clause.id);
+        for (const clauseIds of [[ids[0]], [ids[0], ids[0]], [ids[0], "unknown-clause"]]) {
+          await assert.rejects(finish.execute({ approved: true, reasons: [], clauseIds }), /each contract clause exactly once/);
+        }
+      }
+      return f.model.run(request);
+    } };
+    const report = await createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
+    assert(report.outcomes.every(outcome => outcome.status === "pass"));
+    const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
+    assert.equal(manifest.reviews.length, 1);
+    assert.deepEqual(manifest.diagnostics, []);
   } finally { await f.cleanup(); }
 });
 
@@ -392,6 +419,35 @@ test("failed rediscovery leaves approved sibling programs eligible for current r
   } finally { await f.cleanup(); }
 });
 
+test("an unsubmitted review leaves sibling programs verifiable and can be retried without rediscovery", async () => {
+  const f = await fixture();
+  try {
+    const original = (await f.checker.check(f.job, new AbortController().signal)).programs[0]!;
+    const contract = await f.store.getJson<AcceptanceContract>(original.contract);
+    const descriptor = await f.store.readTypedJson<Record<string, unknown>>(original.descriptor);
+    const programs = await Promise.all(contract.clauses.map(async clause => ({ ...original,
+      contract: await f.store.putJson({ ...contract, clauses: [clause],
+        checkpoints: contract.checkpoints.filter(checkpoint => checkpoint.kind !== "assertion" || checkpoint.clauseId === clause.id) }),
+      descriptor: await f.store.putTypedJson({ ...descriptor, clauses: [{ clauseId: clause.id, checkpointId: clause.checkpointId }] }, original.descriptor.schema),
+    })));
+    let reviews = 0;
+    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+      if (request.role === "semantic_review" && reviews++ === 0) return { totalTokens: 100 };
+      return f.model.run(request);
+    } } });
+    const partial = await checker.check({ ...f.job, jobId: "partial-review", mode: "replay", programs }, new AbortController().signal);
+    assert.deepEqual(partial.outcomes.map(outcome => outcome.status), ["inconclusive", "pass"]);
+    assert.match(partial.outcomes[0]!.reason!, /Independent semantic review did not call finish/);
+    assert.equal(partial.programs.length, 2, "both programs remain available for retry");
+    const manifest = await f.store.getJson<CheckerManifest>(partial.manifest);
+    assert.equal(manifest.reviews.length, 1, "an unsubmitted review is not cached");
+    const retried = await f.checker.check({ ...f.job, jobId: "review-retry", mode: "replay", programs: partial.programs }, new AbortController().signal);
+    assert(retried.outcomes.every(outcome => outcome.status === "pass"));
+    assert.equal(f.roles.filter(role => role === "exploration").length, 1);
+    assert.equal(f.closed, f.environments);
+  } finally { await f.cleanup(); }
+});
+
 test("cleanup failure rejects the job instead of publishing acceptance", async () => {
   const f = await fixture();
   try {
@@ -539,6 +595,7 @@ test("production Pi Checker session exposes only declared tools, calls finish an
   const payloads: Array<Record<string, unknown>> = [];
   let finished = false;
   const usage: CheckerModelUsage[] = [];
+  const progress: CheckerModelUsage[] = [];
   const server = createServer(async (req, res) => {
     const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
     const payload = JSON.parse(Buffer.concat(parts).toString()) as Record<string, unknown>;
@@ -553,7 +610,7 @@ test("production Pi Checker session exposes only declared tools, calls finish an
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address(); assert(address && typeof address !== "string");
-    const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" }, sessionDir: join(f.directory, "sessions"), onUsage: item => usage.push(item) });
+    const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" }, sessionDir: join(f.directory, "sessions"), onUsage: item => usage.push(item), onProgress: item => progress.push(item) });
     await model.run({ role: "semantic_review", job: f.job, systemPrompt: "Use finish.", prompt: "Review.",
       tools: [{ name: "finish", description: "Submit review", parameters: Type.Object({}), async execute() { finished = true; return {}; } }], signal: new AbortController().signal });
     assert.equal(finished, true); assert.equal(payloads.length, 2);
@@ -564,8 +621,63 @@ test("production Pi Checker session exposes only declared tools, calls finish an
     }
     assert.equal(usage.length, 1); assert.equal(usage[0]!.role, "semantic_review"); assert.equal(usage[0]!.jobId, f.job.jobId);
     assert.equal(usage[0]!.input, 20); assert.equal(usage[0]!.output, 6);
+    assert.equal(progress.length, 2, "each assistant turn publishes an in-flight usage snapshot");
+    assert.deepEqual(progress.map(item => [item.input, item.output, item.total]), [[10, 3, 13], [20, 6, 26]]);
   } finally {
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await f.cleanup();
   }
+});
+
+test("production Pi Checker requires a successful finish and bounds same-session submission reminders", { timeout: 30_000 }, async t => {
+  const cases = [
+    { name: "exploration submits after a text-only answer", role: "exploration" as const, actions: ["text", "finish", "text"], reminders: 1, rejected: false, succeeds: true },
+    { name: "review submits after a JSON-only answer", role: "semantic_review" as const, actions: ["text", "finish", "text"], reminders: 1, rejected: false, succeeds: true },
+    { name: "a rejected finish does not complete the session", role: "semantic_review" as const, actions: ["finish", "text", "finish", "text"], reminders: 1, rejected: true, succeeds: true },
+    { name: "persistent JSON-only answers stop after two reminders", role: "semantic_review" as const, actions: ["text", "text", "text"], reminders: 2, rejected: false, succeeds: false },
+  ];
+  for (const config of cases) await t.test(config.name, async () => {
+    const f = await fixture();
+    const payloads: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const usage: CheckerModelUsage[] = [];
+    let finishCalls = 0, accepted = 0;
+    const server = createServer(async (req, res) => {
+      const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
+      payloads.push(JSON.parse(Buffer.concat(parts).toString()));
+      const tool = config.actions[payloads.length - 1] === "finish";
+      const delta = tool
+        ? { role: "assistant", tool_calls: [{ index: 0, id: `finish-${payloads.length}`, type: "function", function: { name: "finish", arguments: "{}" } }] }
+        : { role: "assistant", content: '{"approved":true,"reasons":[],"clauseIds":["r1"]}' };
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ id: "checker", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: tool ? "tool_calls" : "stop" }], usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 } })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address(); assert(address && typeof address !== "string");
+      const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "local-test", model: "test-checker" },
+        sessionDir: join(f.directory, "sessions"), onUsage: item => usage.push(item) });
+      const call = model.run({ role: config.role, job: f.job, systemPrompt: "Call finish to submit.", prompt: "Check the fixed candidate.",
+        tools: [{ name: "finish", description: "Submit", parameters: Type.Object({}), async execute() {
+          finishCalls++;
+          if (config.rejected && finishCalls === 1) throw new Error("Include every contract clause exactly once");
+          accepted++; return { accepted: true };
+        } }], signal: new AbortController().signal });
+      if (config.succeeds) assert.equal((await call).totalTokens, config.actions.length * 13);
+      else await assert.rejects(call, /did not call finish successfully after 2 submission reminders/);
+      assert.equal(payloads.length, config.actions.length);
+      assert.equal(accepted, config.succeeds ? 1 : 0);
+      assert.equal(finishCalls, config.rejected ? 2 : accepted);
+      const reminders = payloads.at(-1)!.messages.filter(message => message.role === "user" && JSON.stringify(message.content).includes("尚未提交"));
+      assert.equal(reminders.length, config.reminders);
+      assert.equal((await readdir(join(f.directory, "sessions"))).length, 1, "reminders retain the original session and tool results");
+      assert.equal(usage.length, 1, "continuations are billed once with the cumulative session usage");
+      assert.equal(usage[0]!.input, payloads.length * 10);
+      assert.equal(usage[0]!.output, payloads.length * 3);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      await f.cleanup();
+    }
+  });
 });

@@ -148,9 +148,9 @@ test("Concurrent Checker jobs clear on cancellation and historical progress cann
   receive(view, "check_progress", { jobId: "j1", stage: "replay" }, "audit-1");
   receive(view, "check_progress", { jobId: "j2", stage: "semantic_review" }, "audit-2");
   receive(view, "check_queued", { jobId: "j3" }, "audit-3");
-  assert.match(view.render(100).join("\n"), /另 1 项运行 · 1 项排队/);
+  assert.match(view.render(100).join("\n"), /2 项运行 · 1 项排队/);
   receive(view, "check_cancelled", { jobId: "j2" }, "audit-2");
-  assert.doesNotMatch(view.render(100).filter(line => line.includes("后台")).join("\n"), /另 1 项运行|独立语义复核/);
+  assert.doesNotMatch(view.render(100).filter(line => line.includes("后台")).join("\n"), /独立语义复核|2 项运行/);
   receive(view, "snapshot_sealed", { snapshotId: "s2", authoritative: true });
   receive(view, "check_progress", { jobId: "j1", stage: "semantic_review", archived: true }, "audit-1");
   assert.doesNotMatch(view.render(100).filter(line => !line.startsWith(" · ")).join("\n"), /后台|独立语义复核/);
@@ -440,6 +440,20 @@ test("Run view attributes verification usage to the Checker group", () => {
   assert.match(text, /Checker\s+tokens 120（入 100 \/ 出 20） · 费用 \$0\.0001/);
   assert.doesNotMatch(text, /Builder\s+tokens 0/, "zero groups stay out of the expanded view");
   assert.match(text, /总计\s+tokens 120/);
+});
+
+test("In-flight Checker usage updates immediately and is replaced by the settled result", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "checker_usage_progress", { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  receive(view, "checker_usage_progress", { jobId: "j2", role: "exploration", input: 50, output: 10, cacheRead: 0, cacheWrite: 0, total: 60 });
+  assert.match(view.render(80).join("\n"), /总计\s+tokens 180/);
+  receive(view, "checker_usage_progress", { jobId: "j1", role: "exploration", input: 200, output: 40, cacheRead: 0, cacheWrite: 0, total: 240, cost: 0.0002 });
+  view.toggleUsage();
+  assert.match(view.render(80).join("\n"), /Checker\s+tokens 300/);
+  receive(view, "checker_usage", { jobId: "j1", role: "exploration", input: 220, output: 44, cacheRead: 0, cacheWrite: 0, total: 264, cost: 0.00022 });
+  assert.match(view.render(80).join("\n"), /Checker\s+tokens 324/);
+  receive(view, "checker_usage", { jobId: "j2", role: "exploration", input: 55, output: 11, cacheRead: 0, cacheWrite: 0, total: 66 });
+  assert.match(view.render(80).join("\n"), /Checker\s+tokens 330/);
 });
 
 test("Run view keeps grouped cache counts and partial cost visible in an 80-column terminal", () => {
