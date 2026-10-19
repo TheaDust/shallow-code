@@ -124,9 +124,9 @@ shallow build apply  --run-dir E:\runs\<运行目录>
 
 | 命令 | 作用 |
 | --- | --- |
-| `shallow req` | 需求整理：对话生成 `requirements/requirements.yaml`，支持草稿恢复。 |
+| `shallow req` | 需求整理：对话生成 `requirements/requirements.yaml`；明确提出技术要求时一并生成 `project-intent.md`，支持草稿恢复。 |
 | `shallow build` | 在当前目录子树查找唯一的 `requirements.yaml`，开发并交付到当前目录。 |
-| `shallow build --output-dir` | 新建项目；空目录会写入随附的 React/Vite + Node Web 模板。 |
+| `shallow build --output-dir` | 新建项目；没有技术要求的空目录使用 React/Vite + Node Web 模板，有明确技术要求时先初始化对应工程。 |
 | `shallow build --project` | 接管已有项目：复制当前源码到独立开发目录，原目录和 Git index 保持不动。 |
 | `resume` | 从最近的可运行检查点继续，保留失败尝试历史，本轮重新验收。 |
 | `apply` | 把 `changes.patch` 写回原项目；默认只接受 `delivered`。 |
@@ -156,7 +156,9 @@ children:
             content: The homepage is displayed.
 ```
 
-项目运行方式由 `shallowcode.config.json` 声明；新项目可省略，脚手架会写入默认配置。
+可在 `requirements.yaml` 同目录放置 `project-intent.md`，用自然语言写明技术栈、工程形态、数据存储或运行要求。没有明确技术要求时省略该文件；页面类型、风格和参考图不会自动决定技术栈。`shallow req` 会在审阅时展示明确提出的技术意图，确认后与需求一起保存。
+
+项目运行方式由 `shallowcode.config.json` 声明。已有代码会保留并补齐缺少的配置；只有配置时按其声明建立工程。空目录且没有技术意图时使用随附模板；有技术意图时由 Builder 建立最小工程和配置。已有配置中的明确要求若与技术意图冲突，初始化会报告冲突。初始化需通过安装、构建、健康检查和浏览器入口检查，成功后才冻结运行合同并进入功能开发；这一步不表示业务需求已经通过验收。
 
 ```json
 {
@@ -184,7 +186,7 @@ Windows 上把 `npm` 换成 `npm.cmd`。`start` 必填；`install`、`build`、`
 | `checker/` | 快照、合同、检查程序、证据收据和检查报告；只存在于私有运行目录。 |
 | `shallow-progress/progress.log` | 对外可见的进度日志，保持 untracked。 |
 
-`resume` 要求需求、运行配置、提示词、Checker 执行绑定和依赖锁文件匹配；已接受的实现通过可运行检查后继续使用，历史 `verified` 不会带入本轮。`apply` 写回前会核对补丁摘要和每个受影响文件的完整输入内容，受影响文件已被修改时拒绝写回。
+初始化中断时可用同一运行目录执行 `resume`，继续使用已经生成的工程文件与原初始化路径。合同冻结后的 `resume` 要求需求（包括技术意图）、运行配置、提示词、Checker 执行绑定和依赖锁文件匹配；已接受的实现通过可运行检查后继续使用，历史 `verified` 不会带入本轮。`apply` 写回前会核对补丁摘要和每个受影响文件的完整输入内容，受影响文件已被修改时拒绝写回。
 
 ## 交付状态
 

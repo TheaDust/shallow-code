@@ -125,6 +125,12 @@ type DiagnosticDetail = { message?: string; source?: string; category?: string; 
   httpStatus?: number; attempt?: number; retryCount?: number; retry?: boolean };
 
 interface RunEventDetails {
+  initialization_started: { path: string; hasCode: boolean; hasConfig: boolean; intentPresent: boolean };
+  initialization_attempt: { path: string; attempt: number };
+  initialization_verification_started: { path: string; attempt: number };
+  initialization_validation_failed: { path: string; attempt: number; message: string };
+  initialization_verified: { path: string; adapterId: string; attempt?: number; resumed?: boolean };
+  initialization_finished: { path: string; adapterId: string; attempt?: number };
   snapshot_sealed: { snapshotId: string; sourceSha: string; parentSnapshotId?: string; requirementIds: string[]; sequence: number; authoritative?: boolean };
   check_queued: CheckEventDetail;
   check_started: CheckEventDetail;

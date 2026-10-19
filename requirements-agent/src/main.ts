@@ -20,6 +20,7 @@ import {
   assembleInputLines,
   createDraftStore,
   createRequirementsTool,
+  createProjectIntentTool,
   createReviewTool,
   runConversation,
   type ChatAgent,
@@ -51,7 +52,7 @@ export async function main(): Promise<number> {
   const store = createDraftStore(baseDir);
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
   const agent = await createPiAgent({
-    gateway, systemPrompt, requirementsTool: createRequirementsTool(store),
+    gateway, systemPrompt, requirementsTool: createRequirementsTool(store), projectIntentTool: createProjectIntentTool(store),
     ...(interactive ? {} : { out: (text: string) => { process.stdout.write(text); } }),
   });
   let tui: RequirementsTui | undefined;
@@ -114,6 +115,7 @@ interface PiAgentOptions {
   gateway: GatewayEnv;
   systemPrompt: string;
   requirementsTool: ReturnType<typeof createRequirementsTool>;
+  projectIntentTool: ReturnType<typeof createProjectIntentTool>;
   /** 纯文本模式的流式输出；TUI 模式由界面自行订阅会话事件。 */
   out?: (text: string) => void;
 }
@@ -199,7 +201,7 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
     if (!model) throw new Error(`网关模型未注册：${options.gateway.model}`);
     let requestedOutput: RequirementsOutputMode | undefined;
     const reviewTool = createReviewTool((mode) => { requestedOutput = mode; });
-    const customTools = [options.requirementsTool, reviewTool] as ToolDefinition[];
+    const customTools = [options.requirementsTool, options.projectIntentTool, reviewTool] as ToolDefinition[];
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       agentDir,

@@ -36,6 +36,16 @@ test("没有草稿时不创建文件；首次模型响应前的输入可恢复",
   assert.deepEqual(restored.pendingInputs, ["我要一个任务管理页面。\n刷新后仍保留任务。"]);
 });
 
+test("技术意图先于需求树提交时仍能恢复草稿", async (t) => {
+  const base = await directory(t);
+  const store = createDraftStore(base);
+  store.setProjectIntent("前端使用 Vue。\n");
+  const restored = createDraftStore(base);
+  assert.equal(restored.tree, null);
+  assert.equal(restored.projectIntent, "前端使用 Vue。");
+  assert.equal(restored.revision, 1);
+});
+
 test("工具成功返回前保存草稿；恢复不完整场景、问题、数据、引用与版本", async (t) => {
   const base = await directory(t);
   const store = createDraftStore(base);

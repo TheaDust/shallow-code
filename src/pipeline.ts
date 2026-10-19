@@ -19,6 +19,7 @@ export interface PipelineDeps {
   logSink?: LogSink;
   diagnosticSecrets?: readonly string[];
   runMetadata?: Record<string, unknown>;
+  assertContractUnchanged?(): Promise<void>;
   gatewayRecovery?: GatewayRecovery;
 }
 
@@ -28,6 +29,10 @@ export interface PipelineOptions {
   outputDir: string;
   ledgerFile: string;
   totalBudgetMs: number;
+  /** Command start, including initialization and input preparation. */
+  startedAtMs?: number;
+  initializationUsage?: import("./model-usage.js").TokenUsage[];
+  initialization?: { path: import("./project-initialization.js").InitializationPath; intent: string | null };
   applicationContract: ApplicationContract;
   /** Product-visible journal directory (`shallow-progress`). */
   progressDir?: string;

@@ -86,6 +86,18 @@ function describe(event: RunEvent): string | null {
     }
     case "run_resumed":
       return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
+    case "initialization_started":
+      return `开始初始化工程；路径 ${pickString(detail, "path")}；技术意图${detail?.intentPresent ? "已指定" : "未指定"}`;
+    case "initialization_attempt":
+      return `Builder 初始化工程；第 ${pickNumber(detail, "attempt")} 次尝试`;
+    case "initialization_verification_started":
+      return "验证工程安装、构建、健康检查与浏览器入口";
+    case "initialization_validation_failed":
+      return `工程运行验证失败；第 ${pickNumber(detail, "attempt")} 次尝试：${pickString(detail, "message")}`;
+    case "initialization_verified":
+      return `工程运行验证通过；路径 ${pickString(detail, "path")}；适配器 ${pickString(detail, "adapterId")}`;
+    case "initialization_finished":
+      return `工程可运行基线已保存；路径 ${pickString(detail, "path")}；业务需求尚未验收`;
     case "phase_started":
       return `进入${({ implementation: "模块实现", audit: "独立验收", repair: "修复", delivery: "最终交付" } as Record<string, string>)[pickString(detail, "phase") ?? ""] ?? "运行"}阶段${detail?.round ? `；第 ${detail.round} 轮` : ""}${typeof detail?.remainingMs === "number" ? `；阶段剩余 ${renderDuration(detail.remainingMs)}` : ""}`;
     case "checkpoint_saved":

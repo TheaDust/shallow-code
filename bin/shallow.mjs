@@ -3,7 +3,7 @@
 const USAGE = `ShallowCode —— shallow <子命令>
 
 子命令：
-  req       需求整理：对话生成 requirements/requirements.yaml（写在当前目录）
+  req       需求整理：对话生成 requirements/requirements.yaml；明确技术要求写入同目录 project-intent.md
   build     开发与交付：按需求开发或修改 Web 应用并独立验收
 
 示例：
