@@ -77,6 +77,9 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.taskPrompt, /需求核对/);
   assert.doesNotMatch(compiled.systemPrompt, /REQ-PROFILE/);
   assert.match(compiled.taskPrompt, /# 行动：实现当前工作包/);
+  const actionIndex = compiled.taskPrompt.indexOf(loadPrompt("system", "action-implement"));
+  const packetIndex = compiled.taskPrompt.indexOf("## 当前工作包");
+  assert.ok(actionIndex >= 0 && packetIndex > actionIndex, "implement action stays ahead of packet-specific context");
   assert.match(compiled.taskPrompt, /先规划，再实施/);
   assert.match(compiled.taskPrompt, /严格符合需求文档/);
   assert.match(compiled.taskPrompt, /覆盖本包每条需求和场景新增的具体约束/);
@@ -126,18 +129,45 @@ test("Builder shares its product and platform prefix across packets and repair m
     assert.ok(compiled.taskPrompt.includes(`当前尝试：${index + 1}`));
     return compiled;
   });
-  const boundary = prompts[0].taskPrompt.indexOf("当前功能路径：");
-  assert.ok(boundary > 0);
-  const prefix = prompts[0].taskPrompt.slice(0, boundary);
+  const commonLength = prompts.reduce((length, prompt) => {
+    let index = 0;
+    while (index < length && prompt.taskPrompt[index] === prompts[0].taskPrompt[index]) index++;
+    return index;
+  }, prompts[0].taskPrompt.length);
+  const prefix = prompts[0].taskPrompt.slice(0, commonLength);
   assert.ok(prefix.includes("Root description."));
   assert.ok(prefix.includes("shared account alice"));
   assert.ok(prefix.includes("cwd=frontend: npm run build"));
   assert.ok(prefix.includes("结果：完成 | 阻塞"));
+  assert.ok(prompts[0].taskPrompt.indexOf("# 行动：实现当前工作包") < prompts[0].taskPrompt.indexOf("当前功能路径："));
+  for (const prompt of prompts.slice(1)) assert.ok(prompt.taskPrompt.indexOf("# 行动：") > prompt.taskPrompt.indexOf("## 当前工作包"));
   for (const prompt of prompts) {
     assert.equal(prompt.systemPrompt, prompts[0].systemPrompt);
-    assert.ok(prompt.taskPrompt.startsWith(prefix));
     assert.equal(prompt.taskPrompt.split("cwd=frontend: npm run build").length, 2);
   }
+});
+
+test("Evolution packets share the static context before their prerequisite ids", () => {
+  const prompts = ["REQ-1-1-2", "REQ-3-3"].map((externalId, index) => {
+    const request = implementRequest();
+    if (request.mode !== "implement") throw new Error("unexpected mode");
+    request.packet.id = `packet-${index}`;
+    request.packet.requirements[0].text += ` Packet ${index}.`;
+    request.packet.requirements[0].ancestors = [{ id: `AREA-${index}`, name: `Area ${index}`, description: `Area ${index}.` }];
+    request.projectContext.ancestors = [{ id: `AREA-${index}`, name: `Area ${index}`, description: `Area ${index}.` }];
+    request.projectContext.evolution = { startingPoint: "inherited_application", externalPrerequisiteIds: [externalId], changesOnly: true };
+    return compileBuilderPrompt(request).taskPrompt;
+  });
+  const marker = "前序能力 ID：";
+  const boundary = prompts[0]!.indexOf(marker);
+  assert.ok(boundary > 0);
+  const prefix = prompts[0]!.slice(0, boundary + marker.length);
+  assert.ok(prefix.includes("## 增量开发上下文"));
+  assert.ok(prefix.includes(loadPrompt("system", "evolution-audit-all")));
+  assert.ok(prefix.includes(loadPrompt("system", "incremental-start-inherited")));
+  assert.ok(prefix.includes("继承应用的持久化目录"), "the last static paragraph stays in the shared prefix");
+  for (const prompt of prompts) assert.ok(prompt.startsWith(prefix));
+  assert.notEqual(prompts[0]!.slice(boundary), prompts[1]!.slice(boundary));
 });
 
 test("Builder receives progressive-stage rules for inherited and blank starting points", () => {
@@ -156,6 +186,7 @@ test("Builder receives progressive-stage rules for inherited and blank starting 
     const compiled = compileBuilderPrompt(request);
     const prompt = compiled.taskPrompt;
     assert.match(prompt, /## 分阶段增量上下文/);
+    assert.ok(prompt.indexOf("前序阶段能力 ID：") > prompt.indexOf("无论起点如何"));
     assert.match(prompt, /当前阶段：Stage 3/);
     assert.ok(prompt.includes(`本轮起点：${expected}`));
     assert.match(prompt, /REQ-1-1-2、REQ-3-3/);
@@ -420,6 +451,16 @@ test("Builder distinguishes the evaluation default from the probe port", () => {
   const compiled = compileBuilderPrompt(request);
   assert.match(compiled.taskPrompt, /应用读取 PORT 环境变量/);
   assert.match(compiled.taskPrompt, /PORT=3210/);
+});
+
+test("Web builder instructions keep static adapter guidance ahead of run-specific ports", () => {
+  const instructions = minimalWebContract({ port: 3210 }).builderInstructions!;
+  const implementation = instructions.indexOf("## 全新项目的缺省栈");
+  const selfTest = instructions.indexOf("## Web 开发检查");
+  const runtime = instructions.indexOf("## 项目运行合同");
+  assert.ok(implementation >= 0 && selfTest >= 0 && runtime >= 0);
+  assert.ok(implementation < runtime && selfTest < runtime);
+  assert.ok(instructions.indexOf("PORT=3210") > runtime);
 });
 
 test("Builder receives every discovered extra port and omits the clause when there are none", () => {

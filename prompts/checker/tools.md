@@ -2,7 +2,7 @@
 
 一次探索可以处理同一功能组的多个需求；每份 contract/program 只覆盖一个 requirementId/scenarioId。分别保存各场景程序后一次 finish 提交。宿主逐程序独立重放与复核，结果仍按原文子句记录。
 
-invoke {capabilityId,input} 只接受随附声明中的能力，并校验声明的输入/输出 schema。save_artifact 接受 {kind:"contract",contract} 或 {kind:"program",contract,source,clauses}。`input` 与 `contract` 是 JSON 对象，不要传 JSON 字符串；网关偶发把未知类型字段序列化成字符串时宿主会解析一次，但合同与能力输入仍按对象校验。探索中的 finish 接受 {programs:[精确的已保存 program 引用],unsupported?:[{clauseId,reason,attempts:[string],retryable?:boolean}]}；任何缺口均可报告当前测不了，须说明实际尝试和具体原因，不需要能力限制 id。retryable 缺省表示后续检查可重试。语义复核中的 finish 接受 {approved:boolean,reasons:string[],clauseIds:string[]}。
+invoke {capabilityId,input} 只接受随附声明中的能力，并校验声明的输入/输出 schema。save_artifact 接受 {kind:"contract",contract} 或 {kind:"program",contract,source,clauses}。`input` 与 `contract` 是 JSON 对象，不要传 JSON 字符串；网关偶发把未知类型字段序列化成字符串时宿主会解析一次，但合同与能力输入仍按对象校验。探索中的 finish 接受 {programs:[精确的已保存 program 引用],unsupported?:[{clauseId,reason,attempts:[string],retryable?:boolean}]}；任何缺口均可报告当前测不了，须说明实际尝试和具体原因，不需要能力限制 id。retryable 缺省为 false，同一快照和执行条件下复用诊断；仅对有明确重试依据的暂时性问题设置 true，并在 reason 中解释。语义复核中的 finish 接受 {approved:boolean,reasons:string[],clauseIds:string[]}。
 
 invoke、save_artifact、finish 是三个独立工具。`invoke.capabilityId` 只能填写声明的执行能力 id；保存产物时直接调用 save_artifact，提交时直接调用 finish。调用示例：先调用工具 save_artifact，参数为 {kind:"program",contract:已保存合同引用,source:完整源码,clauses:子句映射}；拿到返回的完整 program 引用后，调用工具 finish，参数为 {programs:[该引用]}。语义复核也须调用 finish 工具；文字解释或 JSON 文本不构成提交。工具报错后按错误修正当前调用，沿用本次已保存产物；finish 返回 {accepted:true} 后结束本次会话。
 

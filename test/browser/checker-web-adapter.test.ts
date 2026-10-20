@@ -31,6 +31,9 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     let launches = 0;
     const { adapter, declaration, initialState } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: baseline.ref,
       launchBrowser: async () => { launches++; return chromium.launch({ headless: true }); } });
+    const declarationPrompts = await Promise.all(declaration.prompts.map(ref => artifacts.getBytes(ref).then(bytes => bytes.toString("utf8"))));
+    assert.match(declarationPrompts[0]!, /^你在隔离解释器中执行普通 JavaScript 异步函数体/);
+    assert.match(declarationPrompts[1]!, /^Web public entry: \/$/);
     assert.deepEqual(declaration.initialStates, [initialState]);
     assert.deepEqual(await artifacts.readTypedJson(initialState), { baseline: baseline.ref });
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,

@@ -546,7 +546,7 @@ test("model-defined unverifiable gaps need no limitation list and expire with ch
     const payload = JSON.parse(request.prompt);
     assert.equal("limitations" in payload, false);
     const unsupported = payload.sourceClauses.map((clause: SourceClause) => ({ clauseId: clause.id, reason: "The cross-window animation cannot be observed with sufficient timing evidence",
-      attempts: ["Inspected both windows and tried the available state observations; intermediate frames remain unobservable"], retryable: false }));
+      attempts: ["Inspected both windows and tried the available state observations; intermediate frames remain unobservable"] }));
     const finish = request.tools.find(tool => tool.name === "finish")!;
     await assert.rejects(finish.execute({ programs: [], unsupported: [{ ...unsupported[0], attempts: [] }] }), /reason and attempts/);
     await assert.rejects(finish.execute({ programs: [], unsupported: [{ ...unsupported[0], clauseId: "invented" }] }), /source clause/);
@@ -562,7 +562,7 @@ test("model-defined unverifiable gaps need no limitation list and expire with ch
     const second = await restarted.check({ ...f.job, jobId: "gap-replay" }, new AbortController().signal,
       async event => { progress.push(event); });
     assert.equal(explorations, 1);
-    assert.equal(f.environments, 1, "an explicitly non-retryable gap on the same snapshot needs no new exploration environment");
+    assert.equal(f.environments, 1, "a gap on the same snapshot defaults to reuse without another exploration environment");
     assert(second.outcomes.every(outcome => outcome.status === "inconclusive"));
     assert.equal(progress.filter(event => event.cached && event.stage === "diagnostic").length, 2);
     const manifest = await f.store.getJson<CheckerManifest>(second.manifest);
@@ -608,14 +608,14 @@ test("unverifiable-gap reuse preserves a verifiable sibling and expires when ada
   } finally { await f.cleanup(); }
 });
 
-test("unverifiable gaps retry by default so a transient observation failure cannot suppress later verification", async () => {
+test("unverifiable gaps retry only when explicitly marked as a transient problem", async () => {
   const f = await fixture();
   let explorations = 0;
   const model: CheckerModel = { async run(request) {
     if (request.role === "exploration" && ++explorations === 1) {
       const payload = JSON.parse(request.prompt);
       await request.tools.find(tool => tool.name === "finish")!.execute({ programs: [], unsupported: payload.sourceClauses.map((source: SourceClause) => ({
-        clauseId: source.id, reason: "The application connection stopped before evidence could be collected", attempts: ["Opened the page and attempted to inspect the result; the connection was interrupted"],
+        clauseId: source.id, reason: "The application connection was interrupted; reconnecting can restore observations", attempts: ["Opened the page and attempted to inspect the result; the connection was interrupted"], retryable: true,
       })) });
       return { totalTokens: 100 };
     }

@@ -100,12 +100,15 @@ export function loadProjectSpec(directory: string, filename?: string): Promise<P
 function webBuilderInstructions(contract: ApplicationContract): string {
   const config = webRuntimeConfig(contract);
   const command = (value: import("../../application/port.js").ProcessCommand) => `cwd=${value.cwd === "output" ? "." : value.cwd}: ${[value.executable, ...value.args].join(" ")}`;
-  return fillTemplate(loadPrompt("adapters/web", "runtime"), {
+  const runtime = fillTemplate(loadPrompt("adapters/web", "runtime"), {
     PROBE_PORT: String(config.port), RESERVED_PORT_CLAUSE: config.evaluationPort === undefined ? "" : `不要占用正式评测端口 ${config.evaluationPort}；`,
     EXTRA_PORTS_SECTION: config.extraPorts.length ? fillTemplate(loadPrompt("adapters/web", "extra-ports"), { EXTRA_PORTS: config.extraPorts.join("、"), PROBE_PORT: String(config.port) }) : "",
     INSTALL_COMMANDS: contract.installCommands.map(command).join("\n") || "无", BUILD_COMMANDS: contract.buildCommands.map(command).join("\n") || "无",
     START_COMMAND: command(contract.startCommand), HEALTH_PATH: config.healthPath, BROWSER_PATH: config.browserPath, BASE_URL: config.baseUrl,
     TEST_TARGETS: (contract.testTargets ?? []).map(target => `${target.id}: ${command(target)}`).join("\n") || "本轮未登记开发测试目标",
     DATA_ENV_VAR: contract.dataEnvVar ?? "SHALLOW_DATA_DIR", DATA_PATHS: contract.dataPaths?.join("、") || "未声明继承数据目录",
-  }) + "\n\n" + loadPrompt("adapters/web", "implementation") + "\n\n" + loadPrompt("adapters/web", "self-test");
+  });
+  // Static adapter guidance stays before run-specific ports and commands so the
+  // shared prompt prefix survives a new run's port allocation.
+  return loadPrompt("adapters/web", "implementation") + "\n\n" + loadPrompt("adapters/web", "self-test") + "\n\n" + runtime;
 }

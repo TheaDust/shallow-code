@@ -249,7 +249,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           try {
             const ref = JSON.parse(await readFile(cache.path, "utf8")) as ContentRef;
             const saved = await store.getJson<{ key: string; gap: UnsupportedClause }>(ref);
-            if (saved.key === cache.key && saved.gap.clauseId === source.id && validGap(saved.gap) && saved.gap.retryable === false) gap = saved.gap;
+            if (saved.key === cache.key && saved.gap.clauseId === source.id && validGap(saved.gap) && saved.gap.retryable !== true) gap = saved.gap;
           } catch { /* A missing or incompatible assessment requires exploration. */ }
           if (gap) await recordGap(gap, true);
         }
@@ -332,7 +332,8 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
             { name: "finish", description: "Submit saved programs for host replay and independent semantic review. Claims here do not determine outcomes.",
               parameters: Type.Object({ programs: Type.Array(programSchema), unsupported: Type.Optional(Type.Array(Type.Object({
                 clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
-                attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }), retryable: Type.Optional(Type.Boolean()),
+                attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
+                retryable: Type.Optional(Type.Boolean({ description: "Defaults to false. Set true only when the reason explains a transient problem and why another attempt may obtain evidence." })),
               }))) }), prepareArguments: prepareFinishArguments, async execute(raw) {
                 if (finished) throw new Error("Checker exploration already finished");
                 const args = raw as { programs: unknown; unsupported?: unknown };
@@ -352,7 +353,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                   claimed.add(gap.clauseId);
                 }
                 for (const gap of gaps) {
-                  if (gap.retryable === false) {
+                  if (gap.retryable !== true) {
                     const cache = gapCache(gap.clauseId);
                     const ref = await store.putJson({ key: cache.key, gap });
                     await atomicWrite(cache.path, canonicalJson(ref));

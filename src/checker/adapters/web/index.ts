@@ -64,7 +64,9 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const inspectSchema = await store.putJson({ type: "object", properties: { actor: { type: "string" } }, additionalProperties: false });
   const resetSchema = await store.putJson({ type: "object", additionalProperties: false });
   const runSchema = await store.putJson(RUN_SCHEMA);
-  const promptFragments = [await store.putBytes(`Web public entry: ${webSettings(spec).browserPath}`), await store.putBytes(await readFile(new URL("../../../../prompts/checker/web/browser.md", import.meta.url))), ...(options.promptFragments ?? [])];
+  // Keep the static browser guidance ahead of the project-specific entry line so
+  // equivalent Checker prompts share the long prefix across browser paths.
+  const promptFragments = [await store.putBytes(await readFile(new URL("../../../../prompts/checker/web/browser.md", import.meta.url))), await store.putBytes(`Web public entry: ${webSettings(spec).browserPath}`), ...(options.promptFragments ?? [])];
   const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission"].map((name) => readFile(new URL(`../../../../prompts/checker/${name}.md`, import.meta.url), "utf8")));
   const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-case", dataDirectory: "allocated-per-case" }, objectSchema);
   const declaration: AdapterDeclaration = {
