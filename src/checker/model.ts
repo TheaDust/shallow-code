@@ -103,6 +103,7 @@ export function createPiCheckerModel(options: {
     const customTools: ToolDefinition[] = request.tools.map(tool => ({ name: tool.name, label: tool.name, description: tool.description,
       parameters: tool.parameters, prepareArguments: tool.prepareArguments, executionMode: "sequential", async execute(_id, input) {
         request.signal.throwIfAborted();
+        if (finished) throw new Error("Checker submission already finished");
         const result = await tool.execute(input);
         if (tool.name === "finish") finished = true;
         return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
@@ -111,6 +112,13 @@ export function createPiCheckerModel(options: {
       model: runtime.getModel("checker-gateway", options.gateway.model), settingsManager, resourceLoader: resources,
       sessionManager: SessionManager.create(cwd, cwd), noTools: "builtin", tools: customTools.map(tool => tool.name), customTools });
     if (modelFallbackMessage) { session.dispose(); throw new Error(modelFallbackMessage); }
+    const finishTurn = session.agent.finishTurn;
+    session.agent.finishTurn = async (turn, signal) => {
+      const decision = await finishTurn?.(turn, signal);
+      if (finished) return { action: "end" };
+      if (decision) return decision;
+      return undefined;
+    };
     let reasoning = 0;
     let hasReasoning = false;
     let providerError: string | undefined;

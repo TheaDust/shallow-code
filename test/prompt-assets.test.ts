@@ -150,7 +150,7 @@ test("Feature grouping balances session overhead with cohesion and hard capacity
 });
 
 test("prompt assets contain no CR characters", async () => {
-  const categories = ["system", "planning", "adapters/web"] as const;
+  const categories = ["system", "planning", "adapters/web", "checker", "checker/web"] as const;
   for (const category of categories) {
     const directory = fileURLToPath(
       new URL(`../prompts/${category}`, import.meta.url),

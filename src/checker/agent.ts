@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import { ArtifactStore, atomicWrite, canonicalJson, contentDigest, hashBytes } from "./artifacts.js";
-import type { AdapterDeclaration, CheckOutcome, CheckReport, CheckerPort, CheckerProgress, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef } from "./port.js";
+import type { AdapterDeclaration, CheckOutcome, CheckReport, CheckerPort, CheckerProgress, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef, ReviewEvidence } from "./port.js";
 import { checkerSourceClauses, evaluateProgramEvidence, sameRef, validateAcceptanceContract,
   type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview, type UnsupportedClause } from "./evidence.js";
 import type { CheckerModel, CheckerTool } from "./model.js";
@@ -58,8 +58,9 @@ function semanticReviewRequirements(input: CheckerRequirements, contract: Accept
 }
 
 function semanticReviewPayload(input: CheckerRequirements, sources: ReturnType<typeof checkerSourceClauses>, contract: AcceptanceContract,
-  descriptor: CheckerProgramDescriptor, source: string, capabilities: ReadonlyArray<{ id: string }>, receipts: unknown[]): Record<string, unknown> {
+  descriptor: CheckerProgramDescriptor, source: string, capabilities: ReadonlyArray<{ id: string }>, evidence: ReviewEvidence[]): Record<string, unknown> {
   const clauseIds = new Set(contract.clauses.map(clause => clause.id));
+  const environments = new Map(evidence.map(item => [item.receipt.environment.id, item.environment]));
   return {
     // Stable, program-independent context comes first so equivalent reviews share a prefix.
     requirements: semanticReviewRequirements(input, contract),
@@ -72,12 +73,13 @@ function semanticReviewPayload(input: CheckerRequirements, sources: ReturnType<t
     },
     descriptor: { ...descriptor, clauses: [...descriptor.clauses].sort(compareClauseId) },
     source,
+    environments: Object.fromEntries(environments),
     // Receipts are execution-specific and intentionally remain the final prompt field.
-    receipts,
+    receipts: evidence.map(item => reviewReceipt(item.receipt, item.payload)),
   };
 }
 
-function reviewReceipt(receipt: EvidenceReceipt, payload: unknown, environment: unknown): Record<string, unknown> {
+function reviewReceipt(receipt: EvidenceReceipt, payload: unknown): Record<string, unknown> {
   return {
     receipt: {
       id: receipt.id,
@@ -87,10 +89,9 @@ function reviewReceipt(receipt: EvidenceReceipt, payload: unknown, environment: 
       readiness: receipt.readiness,
       assertion: receipt.assertion,
       inputs: receipt.inputs,
-      ...(receipt.program ? { program: { descriptor: receipt.program.descriptor, contract: receipt.program.contract } } : {}),
+      environmentId: receipt.environment.id,
     },
     payload,
-    environment,
   };
 }
 
@@ -289,7 +290,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 }
                 return { output, receipts: result.receipts, ...(checks.length ? { checks } : {}) };
               } },
-            { name: "save_artifact", description: "Save acceptance contract or complete reusable program. The host binds requirements, initial state and execution binding.",
+            { name: "save_artifact", description: "Save acceptance contract or complete reusable program. The host binds requirements, initial state and execution binding. Before finish, dry-run each final saved program reference in a clean case using the declared capabilities; repeat after any source or contract change.",
               // The tool schema root must stay a plain object: the gateway rejects tool parameters declared as a root union.
               parameters: Type.Object({ kind: Type.Union([Type.Literal("contract"), Type.Literal("program")]), contract: toolObjectSchema,
                 source: Type.Optional(Type.String()),
@@ -329,7 +330,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 savedPrograms.push(program);
                 return program;
               } },
-            { name: "finish", description: "Submit saved programs for host replay and independent semantic review. Claims here do not determine outcomes.",
+            { name: "finish", description: "Submit exact saved program references after their required clean-case self-check, or explain unverifiable clauses. Correct program errors in this exploration session first; faithful tests observing business violations remain valid submissions. The host independently replays and reviews; claims here do not determine outcomes.",
               parameters: Type.Object({ programs: Type.Array(programSchema), unsupported: Type.Optional(Type.Array(Type.Object({
                 clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
                 attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
@@ -419,6 +420,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               if (await ready(replay)) replayRefs.push(...await replay.replay(program, signal));
               manifest.receipts.push(...replayRefs);
               await close(replay);
+              const outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(replayRefs));
               if (!review) {
                 await progress({ stage: "semantic_review", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
                 let proposal: { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
@@ -426,11 +428,12 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                     const receipt = await store.getJson<EvidenceReceipt>(ref);
                     return { receipt, payload: await store.readTypedJson(receipt.payload), environment: await store.readTypedJson(receipt.environment) };
                   }));
-                const receipts = (adapter.reviewEvidence?.(evidence) ?? evidence).map(item => reviewReceipt(item.receipt, item.payload, item.environment));
+                const projected = adapter.reviewEvidence?.(evidence) ?? evidence;
+                const receipts = projected.map(item => reviewReceipt(item.receipt, item.payload));
                 observations = receipts.filter(item => (item.receipt as EvidenceReceipt).kind === "observation");
                 try {
                   await runModel("semantic_review", [genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify(
-                    semanticReviewPayload(input, eligibleSources, contract, descriptor, source, capabilities, receipts)), [{ name: "finish", description: "Submit the independent semantic review through this tool. JSON text is not a submission. Include every contract clause exactly once.",
+                    semanticReviewPayload(input, eligibleSources, contract, descriptor, source, capabilities, projected)), [{ name: "finish", description: "Submit the independent semantic review through this tool. JSON text is not a submission. Include every contract clause exactly once.",
                     parameters: Type.Object({ approved: Type.Boolean(), reasons: Type.Array(Type.String()),
                       clauseIds: Type.Array(Type.String({ enum: contract.clauses.map(clause => clause.id) }),
                         { minItems: contract.clauses.length, maxItems: contract.clauses.length, uniqueItems: true }) }), async execute(raw) {
@@ -467,7 +470,6 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                   clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
                 continue;
               }
-              const outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(replayRefs));
               if (outcomes.some(outcome => outcome.status === "fail")) {
                 const confirmation = await prepare();
                 await progress({ stage: "confirmation", programId: program.descriptor.id, clauseIds: outcomes.filter(item => item.status === "fail").map(item => item.clauseId) });

@@ -50,6 +50,9 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
         assert(evidence.receipts.some(item => item.receipt.kind === "observation" && JSON.stringify(item.payload).includes("cancelled")));
         await invoke("finish", { approved: true, reasons: [], clauseIds: clauses.map(clause => clause.id) });
       } else {
+        assert.match(request.systemPrompt, /提交前必须逐程序执行以下顺序/);
+        assert.match(request.systemPrompt, /capabilityId:"reset_case",input:\{\}/);
+        assert.match(request.systemPrompt, /capabilityId:"run",input:\{program:该完整引用\}/);
         const observed = await invoke("invoke", { capabilityId: "inspect", input: { actor: "alice" } });
         assert.match(JSON.stringify(observed), /unpaid/);
         await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('bob');const o=await p.read({role:'status',name:'Train T-6 seats'});return o.value;" } });

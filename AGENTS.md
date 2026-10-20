@@ -82,3 +82,4 @@ npm run test:all
 - TypeScript 使用 strict ESM / NodeNext，相对 import 带 `.js` 后缀。
 - 控制器测试使用 `node:test` 和 `node:assert/strict`，经 `tsx --test` 运行；无凭证测试依赖 `test/fakes/`。
 - 生产依赖通过现有 port 注入；Fake 属于测试。Builder 的传统开发测试经 `run_tests` 工具执行，工具合同在 `prompts/system/self-test.md`。
+- 对提示词资产的改动原则上保持最长固定前缀
