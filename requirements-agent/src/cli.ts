@@ -50,10 +50,13 @@ export function createRequirementsTool(store: DraftStore) {
     description:
       "提交完整候选需求树与当前未决问题，替换当前草案。requirements 是根节点对象：" +
       "每个节点包含 id、name、type（ROOT/FOLDER/ATOMIC）、description、dependencies、children 与 scenarios；" +
+      "节点和场景 id 使用 kebab-case；未修改的节点与场景沿用原 id，不要重命名或重新编号；" +
       "scenario 包含 id、name、steps，step 由 keyword（GIVEN/WHEN/THEN/AND/BUT）与 content 组成；" +
+      "description 中每一条可验收的规则都必须在某个场景的 THEN 中出现；" +
       "节点可包含 guidance 字符串数组：用户提出但无法从界面或行为独立验收的期望（页面主题、配色、风格、美观、语气等），" +
-      "按用户原措辞逐条保留在最相关的节点上，不要为它们编造场景；" +
-      "根节点可包含 data 初始数据（每项含 category 与 items 字符串数组）。" +
+      "按用户原措辞逐条保留在最相关的节点上，不要为它们编造场景；guidance 不进入正式验收；" +
+      "根节点可包含 data 产品级共享预置（每项含 category 与 items 字符串数组）；" +
+      "只在单个场景成立或与其他场景互斥的初始状态写入该场景 GIVEN，不要放进 data。" +
       "用户提供的参考文件路径放在对应节点的 visual_reference 字符串数组中，保留原路径，程序导出时复制并改为相对路径。" +
       "校验失败会返回具体错误，请在本回合内修正后重新提交。",
     promptSnippet: "update_requirements: 提交完整候选需求树与未决问题",
