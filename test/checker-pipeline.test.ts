@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { ArtifactStore, contentDigest } from "../src/checker/artifacts.js";
@@ -28,16 +28,19 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   const binding: ExecutionBindingRef = { ...await artifacts.putJson({ schemaVersion: 1, declaration: await artifacts.putJson(declaration),
     executor, schemas: [schema], dependencies: {}, promptDigest: contentDigest([]) }), executor };
   let instance = 0;
+  const readiness = async (job: CheckJob) => {
+    const environment = await artifacts.putTypedJson({ instance: ++instance }, schema);
+    return artifacts.putReceipt(job, { id: `receipt-${instance}`, job: await artifacts.putJson(job),
+      snapshot: job.snapshot, binding, environment, sequence: 0, recordedAt: new Date().toISOString(),
+      kind: "readiness", readiness: { result: "ready" }, inputs: [], payload: input, attachments: [] });
+  };
   const runtime: CheckerRuntime = { directory, artifacts, snapshots, binding, initialState: input, resourceKeys: [],
-    async verifyDelivery() { return { ok: true, stage: "complete", message: "Fake execution readiness" }; },
+    async verifyDelivery(job) { return { report: { ok: true, stage: "complete", message: "Fake execution readiness" }, receipts: [await readiness(job)] }; },
     checker: { async check(job, signal, onProgress): Promise<CheckReport> {
       await onProgress?.({ stage: "prepare" });
       await hook?.(job, signal);
       if (job.mode !== "prepare") await onProgress?.({ stage: "replay" });
-      const environment = await artifacts.putTypedJson({ instance: ++instance }, schema);
-      const ready = await artifacts.putReceipt(job, { id: `receipt-${instance}`, job: await artifacts.putJson(job),
-        snapshot: job.snapshot, binding, environment, sequence: 0, recordedAt: new Date().toISOString(),
-        kind: "readiness", readiness: { result: "ready" }, inputs: [], payload: input, attachments: [] });
+      const ready = await readiness(job);
       return { job: await artifacts.putJson(job), snapshot: job.snapshot, binding, manifest: await artifacts.putJson({ receipts: [ready] }), programs: [],
         outcomes: job.mode === "prepare" ? [] : await Promise.all(job.requirementIds.map(async requirementId => ({ requirementId,
           scenarioId: "description", clauseId: `${requirementId}:result`, status: await status?.(job) ?? "pass", evidence: [ready] }))) };
@@ -120,6 +123,59 @@ test("In-flight Checker usage reaches only the live view, not the ledger or sett
   });
 });
 
+test("Delivery records readiness and advances the runnable checkpoint without a separate prepare job", async () => {
+  await withModulePipeline(async f => {
+    await mkdir(f.options.outputDir);
+    await writeFile(f.options.requirementsFile, JSON.stringify({ id: "ROOT", name: "Product", type: "ROOT", children: [] }));
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); });
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    assert.deepEqual(jobs, [], "delivery alone prepares the empty application");
+    assert.equal(result.acceptedSha, result.checker!.producedHead!.sourceSha);
+    const attempts = await readdir(join(runtime.directory, "delivery"));
+    assert.equal(attempts.length, 1);
+    const attempt = JSON.parse(await readFile(join(runtime.directory, "delivery", attempts[0]!), "utf8"));
+    const job = await runtime.artifacts.getJson<CheckJob>(attempt.job);
+    assert.equal(job.packetId, "delivery");
+    assert.equal(job.snapshot.digest, result.checker!.producedHead!.snapshot.digest);
+    assert.equal(attempt.receipts.length, 1);
+    await runtime.artifacts.validateReceipt(job, await runtime.artifacts.getJson(attempt.receipts[0]));
+    assert.equal((await f.events()).filter(event => event.type === "check_queued" && event.packetId === "delivery").length, 0);
+  });
+});
+
+test("A successful delivery claim without readiness evidence cannot advance the runnable checkpoint", async () => {
+  await withModulePipeline(async f => {
+    await mkdir(f.options.outputDir);
+    await writeFile(f.options.requirementsFile, JSON.stringify({ id: "ROOT", name: "Product", type: "ROOT", children: [] }));
+    const runtime = await attach(f);
+    runtime.verifyDelivery = async () => ({ report: { ok: true, stage: "complete", message: "Unproven" }, receipts: [] });
+    f.builder.run = async () => ({ outcome: "failed", sessionId: "test", summary: "No change" });
+    const result = await f.run();
+    assert.equal(result.status, "failed");
+    assert.equal(result.acceptedSha, "initial");
+    assert.match(result.delivery!.message, /readiness evidence/);
+    for (const name of await readdir(join(runtime.directory, "delivery"))) {
+      const attempt = JSON.parse(await readFile(join(runtime.directory, "delivery", name), "utf8"));
+      assert.equal(attempt.report.ok, false, "the stored attempt records the evidence-checked decision");
+    }
+  });
+});
+
+test("Delivery rejects readiness receipts belonging to another job", async () => {
+  await withModulePipeline(async f => {
+    await mkdir(f.options.outputDir);
+    await writeFile(f.options.requirementsFile, JSON.stringify({ id: "ROOT", name: "Product", type: "ROOT", children: [] }));
+    const runtime = await attach(f);
+    const verify = runtime.verifyDelivery.bind(runtime);
+    runtime.verifyDelivery = async (job, signal) => verify({ ...job, jobId: "another-job" }, signal);
+    await assert.rejects(f.run(), /receipt.*job|job.*receipt/i);
+    const checkpoint = await readCheckerCheckpoint(join(runtime.directory, "controller.json"));
+    assert.equal(checkpoint!.accepted.sha, "initial");
+  });
+});
+
 test("An incomplete group cannot grant its implementation or dispatch dependent groups", async () => {
   await withModulePipeline(async f => {
     await attach(f);
@@ -140,7 +196,8 @@ test("An incomplete group cannot grant its implementation or dispatch dependent 
 
 test("Current changed requirements are audited while inherited Evolution context remains explicitly skipped", async () => {
   await withModulePipeline(async f => {
-    await attach(f);
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); });
     const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
     input.type = "ROOT";
     input.name = "Product - Evolution";
@@ -153,26 +210,58 @@ test("Current changed requirements are audited while inherited Evolution context
     assert.deepEqual(result.skippedRequirementIds, ["A"]);
     assert.deepEqual(result.verifiedRequirementIds.sort(), ["B", "C"]);
     assert.ok(!f.builder.requests.some(request => request.mode === "implement" && request.packet.requirementIds.includes("A")));
+    const audit = jobs.find(job => job.mode !== "prepare" && job.requirementIds.includes("B"))!;
+    const context = await runtime.artifacts.getJson<{ requirements: Array<{ dependencyIds: string[] }>; prerequisites: Array<{ id: string }> }>(audit.requirements);
+    assert.deepEqual(context.requirements[0]!.dependencyIds, ["A"]);
+    assert(context.prerequisites.some(item => item.id === "A"), "group discovery retains the original inherited prerequisite context");
+    assert(!jobs.some(job => job.mode !== "prepare" && job.requirementIds.includes("A")));
   });
 });
 
-test("Feature groups retain sealed snapshots and Checker starts on the latest module snapshot at closure", async () => {
+test("Group checks overlap Builder while the next module waits for current-version publication", { timeout: 20_000 }, async () => {
   await withModulePipeline(async f => {
     const jobs: CheckJob[] = [];
-    const runtime = await attach(f, async job => { jobs.push(job); });
+    let started!: () => void, release!: () => void;
+    const checking = new Promise<void>(resolve => { started = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let checkingA = false, overlapped = false;
+    const runtime = await attach(f, async (job, signal) => {
+      jobs.push(job);
+      if (job.requirementIds[0] !== "A" || job.moduleEpoch !== 0) return;
+      checkingA = true;
+      started();
+      await released;
+      assert.equal(signal.aborted, false, "normal module closure does not cancel group checks");
+      const sealed = await runtime.snapshots.open(job.snapshot);
+      assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), "A");
+      checkingA = false;
+    });
+    let timer!: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Group check did not overlap Builder")), 8_000); });
     const build = f.builder.run.bind(f.builder);
     f.builder.run = async (request, options) => {
       if (request.mode === "implement" && request.packet.requirementIds[0] === "B") {
-        assert.equal(jobs.length, 0);
+        await Promise.race([checking, timeout]);
+        overlapped = checkingA;
         const checkpoint = await readCheckerCheckpoint(join(runtime.directory, "controller.json"));
         assert.deepEqual(checkpoint!.producedHead!.implementedRequirementIds, ["A"]);
         assert.equal(checkpoint!.accepted.ordinal, 0);
       }
+      if (request.mode === "implement" && request.packet.requirementIds[0] === "C") {
+        assert.equal(checkingA, false);
+        const events = await f.events();
+        assert.ok(events.some(event => event.type === "module_check_finished" && event.detail?.moduleId === "FIRST" && event.detail?.published));
+      }
       const result = await build(request, options);
       await writeFile(join(f.options.outputDir, "marker.txt"), request.mode === "implement" ? request.packet.requirementIds[0] : "repair");
+      if (request.mode === "implement" && request.packet.requirementIds[0] === "B") release();
       return result;
     };
-    const result = await f.run();
+    const running = f.run();
+    let result: Awaited<typeof running>;
+    try { result = await Promise.race([running, timeout]); }
+    finally { release(); clearTimeout(timer); await running.catch(() => {}); }
+    assert.equal(overlapped, true);
     assert.equal(result.status, "delivered");
     assert.deepEqual(result.verifiedRequirementIds.sort(), ["A", "B", "C"]);
     assert.equal(f.builder.closeCount, 1);
@@ -182,8 +271,12 @@ test("Feature groups retain sealed snapshots and Checker starts on the latest mo
       const sealed = await runtime.snapshots.open(checkpoint!.snapshots[index].snapshot);
       assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), marker);
     }
-    assert.ok(!jobs.some(job => job.snapshot.id === checkpoint!.snapshots[0].snapshot.id));
-    const firstModuleJobs = jobs.filter(job => job.moduleEpoch === 1);
+    const groupJobs = jobs.filter(job => job.moduleEpoch === 0);
+    assert.deepEqual(groupJobs.map(job => job.requirementIds), [["A"], ["B"]]);
+    assert.equal(groupJobs[0]!.snapshot.id, checkpoint!.snapshots[0].snapshot.id);
+    assert.equal(groupJobs[1]!.snapshot.id, checkpoint!.snapshots[1].snapshot.id);
+    assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.budget.timeoutMs === 1_800_000));
+    const firstModuleJobs = jobs.filter(job => job.moduleEpoch === 1 && job.moduleId === "FIRST");
     assert.equal(firstModuleJobs.length, 3);
     assert.ok(firstModuleJobs.every(job => job.snapshot.id === checkpoint!.snapshots[1].snapshot.id));
     assert.deepEqual(firstModuleJobs.filter(job => job.mode !== "prepare").flatMap(job => job.requirementIds).sort(), ["A", "B"]);
@@ -191,12 +284,100 @@ test("Feature groups retain sealed snapshots and Checker starts on the latest mo
     assert.ok(!events.some(item => item.type === "check_cancelled"));
     const boundary = events.findIndex(item => item.type === "module_check_started");
     assert.ok(boundary >= 0);
-    assert.ok(!events.slice(0, boundary).some(item => item.type === "check_queued" || item.type === "check_started"));
+    assert.ok(events.slice(0, boundary).some(item => item.type === "check_started"));
+    assert.ok(!events.slice(0, boundary).some(item => item.type === "module_check_finished"));
     assert.ok(events.some(item => item.type === "module_check_finished" && item.detail?.moduleId === "<final>"));
     await writeRunReport(dirname(f.options.ledgerFile), result);
     assert.match(await readFile(join(dirname(f.options.ledgerFile), "checker-report.md"), "utf8"), /Checker 验收证据/);
     const ledger = events.map(item => item.sequence);
     assert.deepEqual(ledger, Array.from({ length: ledger.length }, (_, i) => i + 1));
+  });
+});
+
+test("feature groups share discovery context, aggregate scoped program history and survive resume", async () => {
+  await withModulePipeline(async f => {
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    input.children[1].children[0].dependencies = ["A"];
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); });
+    let groupCalls = 0;
+    f.deps.grouper = { async group() {
+      groupCalls++;
+      return { groups: [{ requirementIds: ["A", "B"], purpose: "Shared workspace" }, { requirementIds: ["C"], purpose: "Next module" }] };
+    } };
+    const check = runtime.checker.check.bind(runtime.checker);
+    runtime.checker.check = async (job, signal, onProgress) => {
+      const report = await check(job, signal, onProgress);
+      if (job.mode === "prepare") return report;
+      const programs = await Promise.all(job.requirementIds.map(async requirementId => {
+        const clauseId = `${requirementId}:result`, checkpointId = `${requirementId}-result`;
+        const contract = await runtime.artifacts.putJson({ requirements: job.requirements,
+          checkpoints: [{ id: checkpointId, kind: "assertion", requirementId, scenarioId: "description", clauseId, dependsOn: [], basis: "Display the main workspace." }],
+          clauses: [{ id: clauseId, requirementId, scenarioId: "description", basis: "Display the main workspace.", checkpointId, expected: { operator: "equal", value: true } }] });
+        return { contract, binding: job.binding, format: "fake@1", descriptor: await runtime.artifacts.putTypedJson({
+          source: await runtime.artifacts.putBytes(`// ${requirementId}`), initialState: job.initialState, clauses: [{ clauseId, checkpointId }],
+        }, runtime.initialState.schema) };
+      }));
+      return { ...report, programs };
+    };
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    const initial = jobs.filter(job => job.moduleEpoch === 0 && job.mode !== "prepare");
+    assert.deepEqual(initial.map(job => job.requirementIds), [["A", "B"]], "a sealed feature group creates one discovery job");
+    const sharedContext = initial[0]!.requirements.digest;
+    const groupJobs = jobs.filter(job => job.requirementIds.includes("A") && job.mode !== "prepare");
+    assert(groupJobs.every(job => job.requirements.digest === sharedContext));
+    const scoped = groupJobs.find(job => job.requirementIds.length === 1)!;
+    assert(scoped, "the later module audits only its prerequisite A using the original A/B context");
+    assert.equal(scoped.programs.length, 1);
+    assert.equal(scoped.mode, "replay");
+    const final = groupJobs.at(-1)!;
+    assert.deepEqual(final.requirementIds, ["A", "B"]);
+    assert.equal(final.programs.length, 2, "latest scoped A report cannot hide the earlier B program");
+    assert.equal(final.mode, "replay");
+    const file = join(runtime.directory, "controller.json");
+    assert.deepEqual((await readCheckerCheckpoint(file))!.featureGroups, [["A", "B"], ["C"]]);
+    const implementations = f.builder.requests.filter(request => request.mode === "implement").length;
+    f.deps.grouper = { async group() { groupCalls++; throw new Error("Resume must keep the saved grouping"); } };
+    const resumed = await f.run();
+    assert.equal(resumed.status, "delivered");
+    assert.equal(groupCalls, 1);
+    assert.equal(f.builder.requests.filter(request => request.mode === "implement").length, implementations);
+    const resumedEvents = await f.events();
+    assert.ok(resumedEvents.some(item => item.type === "run_resumed" && item.detail?.requirementIds.length === 3),
+      "resume reports the recovered implemented scope");
+    assert.ok(resumedEvents.filter(item => item.type === "snapshot_sealed")
+      .some(item => item.detail?.implementedRequirementIds?.length === 3),
+      "sealed snapshots carry the implemented scope for live progress");
+    const store = await CheckerCheckpoints.open(file, runtime.binding.digest, "ignored");
+    await assert.rejects(store.setFeatureGroups([["A"], ["B"], ["C"]]), /changed within the run/);
+  });
+});
+
+test("Module repairs and their regression replay finish before Builder enters the next module", async () => {
+  await withModulePipeline(async f => {
+    const runtime = await attach(f, undefined, async job => {
+      const snapshot = await runtime.snapshots.open(job.snapshot);
+      const repaired = await readFile(join(snapshot.sourceDirectory, "repaired.txt")).then(() => true, () => false);
+      return job.requirementIds[0] === "A" && !repaired ? "fail" : "pass";
+    });
+    const build = f.builder.run.bind(f.builder);
+    let builtB = false;
+    f.builder.run = async (request, options) => {
+      if (request.mode === "repair") assert.equal(builtB, true, "group failure cannot interrupt the active module's implementation");
+      if (request.mode === "implement" && request.packet.requirementIds[0] === "C") {
+        assert.equal(await readFile(join(f.options.outputDir, "repaired.txt"), "utf8"), "fixed");
+        assert.ok((await f.events()).some(event => event.type === "repair_batch_finished" && event.detail?.retained));
+      }
+      const result = await build(request, options);
+      if (request.mode === "implement" && request.packet.requirementIds[0] === "B") builtB = true;
+      if (request.mode === "repair") await writeFile(join(f.options.outputDir, "repaired.txt"), "fixed");
+      return result;
+    };
+    assert.equal((await f.run()).status, "delivered");
+    const modes = f.builder.requests.map(request => request.mode === "implement" ? request.packet.requirementIds[0] : request.mode);
+    assert.deepEqual(modes, ["A", "B", "repair", "C"]);
   });
 });
 
@@ -259,9 +440,11 @@ test("Rejected repair restores the complete module, including B produced after A
 test("Source drift after final snapshot invalidates delivery and its current verification", async () => {
   await withModulePipeline(async f => {
     const runtime = await attach(f);
-    runtime.verifyDelivery = async () => {
+    const verify = runtime.verifyDelivery.bind(runtime);
+    runtime.verifyDelivery = async (job, signal) => {
+      const result = await verify(job, signal);
       await writeFile(join(f.options.outputDir, "external-edit.txt"), "changed after sealing");
-      return { ok: true, stage: "complete", message: "execution itself was ready" };
+      return result;
     };
     const result = await f.run();
     assert.equal(result.status, "failed"); assert.deepEqual(result.verifiedRequirementIds, []);
@@ -276,10 +459,11 @@ test("A runnable ancestor can be delivered while newer sealed source remains rec
       const snapshot = await runtime.snapshots.open(job.snapshot);
       if (await readFile(join(snapshot.sourceDirectory, "cannot-run.txt")).then(() => true, () => false)) throw new Error("Application cannot start");
     });
-    runtime.verifyDelivery = async job => {
+    const verify = runtime.verifyDelivery.bind(runtime);
+    runtime.verifyDelivery = async (job, signal) => {
       const snapshot = await runtime.snapshots.open(job.snapshot);
       const broken = await readFile(join(snapshot.sourceDirectory, "cannot-run.txt")).then(() => true, () => false);
-      return { ok: !broken, stage: broken ? "readiness" : "complete", message: broken ? "Cannot start" : "Ready" };
+      return broken ? { report: { ok: false, stage: "readiness", message: "Cannot start" }, receipts: [] } : verify(job, signal);
     };
     const build = f.builder.run.bind(f.builder);
     f.builder.run = async (request, options) => {
@@ -319,8 +503,7 @@ test("Repair retains partial improvement and checks each packet once per round f
     assert.ok(jobs.every(job => job.initialState.id === runtime.initialState.id));
     assert.ok(jobs.every(job => job.budget.timeoutMs === 1_800_000));
     const audit = jobs.filter(job => job.mode !== "prepare");
-    // A repair is checked twice for confirmation; the first module audit and final audit each check once.
-    for (const epoch of [1, Math.max(...audit.map(job => job.moduleEpoch))]) {
+    for (const epoch of new Set(audit.map(job => job.moduleEpoch))) {
       const round = audit.filter(job => job.moduleEpoch === epoch);
       assert.equal(new Set(round.map(job => job.packetId)).size, round.length);
     }

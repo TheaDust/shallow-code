@@ -13,7 +13,7 @@ export interface CheckerRequirements {
 export interface SourceClause { id: string; requirementId: string; scenarioId: string; basis: string }
 export interface ContractCheckpoint {
   id: string;
-  kind: "precondition" | "action" | "assertion";
+  kind: "precondition" | "action" | "condition" | "assertion";
   requirementId: string;
   scenarioId: string;
   clauseId?: string;
@@ -47,7 +47,9 @@ export interface CheckerManifest {
   reviews: ContentRef[];
   receipts: ContentRef[];
   diagnostics: string[];
+  unsupported?: UnsupportedClause[];
 }
+export interface UnsupportedClause { clauseId: string; reason: string; attempts: string[]; retryable?: boolean }
 export const sameRef = (left: ContentRef, right: ContentRef): boolean => left.id === right.id && left.digest === right.digest;
 
 /** Stable identities come from source result clauses, never the model's submitted coverage. */
@@ -79,17 +81,21 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
     clauses.add(clause.id);
   }
   if (!clauses.size) throw new Error("Empty acceptance contract");
+  if (new Set(contract.clauses.map(clause => JSON.stringify([clause.requirementId, clause.scenarioId]))).size !== 1) {
+    throw new Error("Each program must cover one requirement scenario; save separate contracts and programs for independent cases");
+  }
   // Initial conditions and required actions are source checkpoints even if the model omits them.
   for (const requirement of input?.requirements ?? []) for (const scenario of requirement.scenarioContracts ?? []) {
     if (!contract.clauses.some(clause => clause.requirementId === requirement.id && clause.scenarioId === scenario.id)) continue;
     const phases = scenarioStepPhases(scenario);
     scenario.steps.forEach((step, index) => {
-      const kind = phases[index] === "given" ? "precondition" : phases[index] === "when" ? "action" : undefined;
-      if (!kind) return;
+      const phase = phases[index];
+      if (phase !== "given" && phase !== "when") return;
       const checkpoint = contract.checkpoints.find(item => item.requirementId === requirement.id && item.scenarioId === scenario.id
-        && item.kind === kind && item.basis === step.content);
-      if (!checkpoint) throw new Error("Contract omitted a source initial condition or required action");
-      if (kind === "precondition" && checkpoint.expected === undefined) throw new Error("Source initial condition has no expectation");
+        && item.basis === step.content
+        && (phase === "given" ? item.kind === "precondition" : item.kind === "action" || item.kind === "condition"));
+      if (!checkpoint) throw new Error(phase === "given" ? "Contract omitted a source initial condition" : "Contract omitted a source action or condition");
+      if (phase === "given" && checkpoint.expected === undefined) throw new Error("Source initial condition has no expectation");
     });
   }
   for (const checkpoint of checkpoints.values()) {
@@ -119,12 +125,16 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
     const setup = contract.checkpoints.filter(item => item.requirementId === clause.requirementId
       && item.scenarioId === clause.scenarioId && item.kind !== "assertion");
     if (setup.some(item => !ancestors.has(item.id))) {
-      throw new Error(`Assertion checkpoint dependency closure omits source setup or action for ${clause.id}`);
+      throw new Error(`Assertion checkpoint dependency closure omits source setup, action, or condition for ${clause.id}`);
     }
   }
 }
 
-/** Evaluate only host receipts returned by execution, from a single fresh environment. */
+/**
+ * Evaluate only host receipts returned by execution, from a single fresh environment.
+ * Action WHEN checkpoints require an action receipt; condition WHEN checkpoints are state
+ * transitions and are proven by the result assertion's own observations.
+ */
 export async function evaluateProgramEvidence(store: ArtifactStore, job: CheckJob, program: ProgramRef,
   contract: AcceptanceContract, refs: ContentRef[]): Promise<CheckOutcome[]> {
   const jobRef = await store.putJson(job);
@@ -141,59 +151,74 @@ export async function evaluateProgramEvidence(store: ArtifactStore, job: CheckJo
     for (const input of receipt.inputs) if (!records.some(record => sameRef(record.ref, input))) throw new Error("Receipt references an observation outside the replay");
   }
   const checkpoints = new Map(contract.checkpoints.map(checkpoint => [checkpoint.id, checkpoint]));
-  const checkSatisfied = async (id: string, before: EvidenceReceipt, seen = new Set<string>()): Promise<boolean> => {
-    if (seen.has(id)) return false;
-    const checkpoint = checkpoints.get(id);
-    if (!checkpoint) return false;
-    const evidence = records.find(({ receipt }) => receipt.checkpointId === id && receipt.kind === checkpoint.kind
+  const receiptFor = (checkpoint: ContractCheckpoint, before: EvidenceReceipt): { ref: ContentRef; receipt: EvidenceReceipt } | undefined =>
+    records.find(({ receipt }) => receipt.checkpointId === checkpoint.id && receipt.kind === checkpoint.kind
       && sameRef(receipt.environment, before.environment) && receipt.sequence < before.sequence);
-    if (!evidence) return false;
-    if (checkpoint.kind === "precondition") {
-      const payload = await store.readTypedJson<{ result?: string }>(evidence.receipt.payload);
-      if (payload.result !== "satisfied") return false;
-      if (!evidence.receipt.inputs.length || !evidence.receipt.inputs.every(input => records.some(record => sameRef(record.ref, input)
-        && record.receipt.kind === "observation" && sameRef(record.receipt.environment, evidence.receipt.environment)
-        && record.receipt.sequence < evidence.receipt.sequence))) return false;
-    }
-    if (checkpoint.kind === "assertion" && evidence.receipt.assertion?.result !== "satisfied") return false;
-    for (const dependency of checkpoint.dependsOn) if (!await checkSatisfied(dependency, evidence.receipt, new Set([...seen, id]))) return false;
-    return true;
-  };
+  const resultOf = async (record: { ref: ContentRef; receipt: EvidenceReceipt }): Promise<string | undefined> =>
+    (await store.readTypedJson<{ result?: string }>(record.receipt.payload)).result;
+  const hasObservationInputs = async (record: { ref: ContentRef; receipt: EvidenceReceipt }): Promise<boolean> =>
+    record.receipt.inputs.length > 0 && record.receipt.inputs.every(input => records.some(item => sameRef(item.ref, input)
+      && item.receipt.kind === "observation" && sameRef(item.receipt.environment, record.receipt.environment)
+      && item.receipt.sequence < record.receipt.sequence));
   const outcomes: CheckOutcome[] = [];
   for (const clause of contract.clauses) {
     const identity = { requirementId: clause.requirementId, scenarioId: clause.scenarioId, clauseId: clause.id };
     const assertions = records.filter(({ receipt }) => receipt.kind === "assertion" && receipt.checkpointId === clause.checkpointId
       && receipt.assertion?.clauseId === clause.id && receipt.program && sameRef(receipt.program.descriptor, program.descriptor));
     if (assertions.length !== 1) {
-      const dependencies = new Set<string>();
-      const visit = (id: string): void => { if (dependencies.has(id)) return; dependencies.add(id); checkpoints.get(id)?.dependsOn.forEach(visit); };
-      checkpoints.get(clause.checkpointId)?.dependsOn.forEach(visit);
-      const failed = [];
-      for (const record of records) if (record.receipt.checkpointId && dependencies.has(record.receipt.checkpointId)) {
-        if (record.receipt.assertion?.result === "violated") failed.push(record.ref);
-        else if (record.receipt.kind === "precondition" && (await store.readTypedJson<{ result?: string }>(record.receipt.payload)).result === "violated") failed.push(record.ref);
-      }
-      outcomes.push({ ...identity, status: failed.length ? "blocked" : "inconclusive", evidence: failed,
-        reason: failed.length ? "Upstream checkpoint failed before this result was reached" : "Result assertion was not executed exactly once" }); continue;
+      outcomes.push({ ...identity, status: "inconclusive", evidence: assertions.map(item => item.ref),
+        reason: "Result assertion was not executed exactly once" });
+      continue;
     }
     const assertion = assertions[0]!;
-    const readiness = records.some(({ receipt }) => receipt.kind === "readiness" && receipt.readiness?.result === "ready" && sameRef(receipt.environment, assertion.receipt.environment)
-      && receipt.sequence < assertion.receipt.sequence);
-    const inputs = assertion.receipt.inputs.map(input => records.find(record => sameRef(record.ref, input))!);
-    const hasObservation = inputs.length > 0 && inputs.every(record => record.receipt.kind === "observation" && sameRef(record.receipt.environment, assertion.receipt.environment)
-      && record.receipt.sequence < assertion.receipt.sequence);
+    const readiness = records.some(({ receipt }) => receipt.kind === "readiness" && receipt.readiness?.result === "ready"
+      && sameRef(receipt.environment, assertion.receipt.environment) && receipt.sequence < assertion.receipt.sequence);
+    const inputs = assertion.receipt.inputs.map(input => records.find(record => sameRef(record.ref, input)));
+    if (!readiness || inputs.length === 0 || inputs.some(record => !record || record.receipt.kind !== "observation"
+      || !sameRef(record.receipt.environment, assertion.receipt.environment) || record.receipt.sequence >= assertion.receipt.sequence)) {
+      outcomes.push({ ...identity, status: "inconclusive", evidence: [assertion.ref], reason: "Missing readiness or host observation" });
+      continue;
+    }
     const checkpoint = checkpoints.get(clause.checkpointId)!;
-    let prerequisites = true;
-    for (const dependency of checkpoint.dependsOn) if (!await checkSatisfied(dependency, assertion.receipt)) prerequisites = false;
-    // Every source setup and action in this scenario must be represented in the assertion dependency graph.
-    const ancestors = new Set<string>();
-    const collect = (id: string): void => { if (ancestors.has(id)) return; ancestors.add(id); checkpoints.get(id)?.dependsOn.forEach(collect); };
-    checkpoint.dependsOn.forEach(collect);
-    const setup = contract.checkpoints.filter(item => item.scenarioId === clause.scenarioId && item.requirementId === clause.requirementId && item.kind !== "assertion");
-    if (setup.some(item => !ancestors.has(item.id))) prerequisites = false;
-    const evidence = records.filter(record => sameRef(record.receipt.environment, assertion.receipt.environment)).map(record => record.ref);
-    if (!readiness || !hasObservation) outcomes.push({ ...identity, status: "inconclusive", evidence, reason: "Missing readiness or host observation" });
-    else if (!prerequisites) outcomes.push({ ...identity, status: "blocked", evidence, reason: "Required setup or action checkpoint did not succeed" });
+    const requiredIds = new Set<string>();
+    const pending = [...checkpoint.dependsOn];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (requiredIds.has(id)) continue;
+      requiredIds.add(id);
+      pending.push(...(checkpoints.get(id)?.dependsOn ?? []));
+    }
+    const required = contract.checkpoints.filter(item => requiredIds.has(item.id));
+    const missing: string[] = [];
+    const failed: string[] = [];
+    const unproven: string[] = [];
+    const evidence = [assertion.ref, ...assertion.receipt.inputs];
+    for (const dependency of required) {
+      // A condition is a state transition; the assertion's own observations prove it was reached.
+      if (dependency.kind === "condition") continue;
+      const record = receiptFor(dependency, assertion.receipt);
+      if (!record) { missing.push(dependency.id); continue; }
+      evidence.push(record.ref);
+      if (dependency.kind === "precondition") {
+        if (await resultOf(record) !== "satisfied") failed.push(dependency.id);
+        else if (!await hasObservationInputs(record)) unproven.push(`${dependency.id} (no observation input)`);
+      } else if (dependency.kind === "assertion" && record.receipt.assertion?.result !== "satisfied") failed.push(dependency.id);
+    }
+    for (const dependency of required) {
+      const dependent = receiptFor(dependency, assertion.receipt);
+      if (!dependent) continue;
+      for (const prerequisite of dependency.dependsOn) {
+        const point = checkpoints.get(prerequisite);
+        if (!point || point.kind === "condition") continue;
+        if (!receiptFor(point, dependent.receipt)) unproven.push(`${dependency.id} requires earlier ${prerequisite}`);
+      }
+    }
+    if (missing.length) outcomes.push({ ...identity, status: "inconclusive", evidence,
+      reason: `Program did not record required checkpoint receipt: ${missing.join(", ")}` });
+    else if (failed.length) outcomes.push({ ...identity, status: "blocked", evidence,
+      reason: `Required checkpoint did not succeed: ${failed.join(", ")}` });
+    else if (unproven.length) outcomes.push({ ...identity, status: "inconclusive", evidence,
+      reason: `Evidence chain is incomplete: ${unproven.join(", ")}` });
     else outcomes.push({ ...identity, status: assertion.receipt.assertion!.result === "satisfied" ? "pass" : "fail", evidence,
       ...(assertion.receipt.assertion!.result === "violated" ? { reason: "Fresh replay violated the requirement; independent reproduction required" } : {}) });
   }

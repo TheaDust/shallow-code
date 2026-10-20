@@ -10,8 +10,9 @@ import { loadProjectSpec, parseProjectSpec, resolveRuntimeContract, webRuntimeCo
 import { pickFreePort } from "../../../adapters/web/ports.js";
 import type { SnapshotStore } from "../../../snapshot-store.js";
 import { ArtifactStore, canonicalJson, contentDigest, hashBytes, sameRef } from "../../artifacts.js";
-import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ExecutionSession, ProgramRef, TypedRef } from "../../port.js";
+import type { AdapterDeclaration, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ExecutionSession, ProgramRef, ReviewEvidence, TypedRef } from "../../port.js";
 import { WebProgramRuntime, type WebCheckpoint, type WebExpectation } from "./program-runtime.js";
+import { webReviewEvidence } from "./review-evidence.js";
 
 export const WEB_PROGRAM_FORMAT = "shallow.web.javascript@1";
 export interface WebAdapterOptions {
@@ -52,7 +53,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const spec = parseProjectSpec(options.spec);
   const store = options.artifacts;
   const require = createRequire(import.meta.url);
-  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../../builder/sse-resilience.ts", "../../../gateway-failure.ts", "../../../gateway-recovery.ts", "../../artifacts.ts", "../../agent.ts", "../../evidence.ts", "../../model.ts"];
+  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./fixtures.ts", "./file-inputs.ts", "./binary-renderer.ts", "./binary-worker.mjs", "./review-evidence.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../../builder/sse-resilience.ts", "../../../gateway-failure.ts", "../../../gateway-recovery.ts", "../../artifacts.ts", "../../agent.ts", "../../evidence.ts", "../../model.ts"];
   const release = hashBytes(Buffer.concat(await Promise.all(releaseFiles.map((path) => readFile(new URL(path, import.meta.url))))));
   const executor = { id: "shallow.web.quickjs", version: "1", digest: release };
   const objectSchema = await store.putJson(OBJECT);
@@ -71,7 +72,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
     resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
-      { id: "run", version: "1", description: "Run bounded JavaScript using controlled browser and contract assertions.", inputSchema: runSchema, outputSchema: objectSchema },
+      { id: "run", version: "2", description: "Run bounded JavaScript with controlled browser actions, image paste, file drop, directory upload, PDF/image rendering, offline OCR and contract assertions.", inputSchema: runSchema, outputSchema: objectSchema },
       { id: "reset_case", version: "1", description: "Rebuild an independent case from declared initial state; expire all browser handles.", inputSchema: resetSchema, outputSchema: objectSchema },
     ],
     programFormat: { id: "shallow.web.javascript", version: "1", mediaType: "text/javascript", schema: programSchema },
@@ -81,7 +82,10 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   };
   const bindingRecord: ExecutionBinding = { schemaVersion: 1, declaration: await store.putJson(declaration), executor,
     schemas: [objectSchema, stateSchema, programSchema, inspectSchema, runSchema, resetSchema],
-    dependencies: { node: process.version, tsx: require("tsx/package.json").version as string, playwright: require("@playwright/test/package.json").version as string, quickjs: require("quickjs-emscripten/package.json").version as string, browser: chromium.executablePath().split(/[\\/]/).slice(-3).join("/") },
+    dependencies: { node: process.version, tsx: require("tsx/package.json").version as string, playwright: require("@playwright/test/package.json").version as string, quickjs: require("quickjs-emscripten/package.json").version as string,
+      pdfjs: require("pdfjs-dist/package.json").version as string, canvas: require("@napi-rs/canvas/package.json").version as string,
+      ocr: require("tesseract.js/package.json").version as string, ocrEnglish: require("@tesseract.js-data/eng/package.json").version as string, ocrChinese: require("@tesseract.js-data/chi_sim/package.json").version as string,
+      browser: chromium.executablePath().split(/[\\/]/).slice(-3).join("/") },
     promptDigest: contentDigest({ generic: genericPrompts, fragments: promptFragments, capabilities: declaration.capabilities, assembler: 1 }),
   };
   const binding: ExecutionBindingRef = { ...await store.putJson(bindingRecord), executor };
@@ -93,6 +97,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
 /** One session owns each application, data directory, browser and execution realm it creates. */
 export class WebExecutionAdapter implements ExecutionAdapter {
   constructor(private readonly options: WebAdapterOptions, readonly binding: ExecutionBindingRef, readonly declaration: AdapterDeclaration, private readonly schemas: WebSchemas) {}
+  reviewEvidence(evidence: ReviewEvidence[]): ReviewEvidence[] { return webReviewEvidence(evidence); }
   async prepare(job: Readonly<CheckJob>, signal: AbortSignal): Promise<ExecutionSession> {
     signal.throwIfAborted();
     if (canonicalJson(job.binding) !== canonicalJson(this.binding)) throw new Error("Web executor binding mismatch");
@@ -109,7 +114,9 @@ export class WebExecutionAdapter implements ExecutionAdapter {
   /** Delivery consumes the same immutable snapshot and readiness implementation as Checker cases. */
   async verifyDelivery(job: Readonly<CheckJob>, signal: AbortSignal): Promise<ContentRef[]> {
     const session = await this.prepare(job, signal);
-    try { await (session as WebSession).verifyDelivery(signal); return session.readinessEvidence; } finally { await session.close(); }
+    try { await (session as WebSession).verifyDelivery(signal); return session.readinessEvidence; }
+    catch (error) { throw new WebExecutionError(error instanceof Error ? error.message : String(error), session.readinessEvidence); }
+    finally { await session.close(); }
   }
 }
 
@@ -122,6 +129,7 @@ class WebSession implements ExecutionSession {
   private caseDirectory?: string;
   private sequence = 0;
   private closed = false;
+  private used = false;
   private program?: ProgramRef;
   private contract?: Contract;
   private receipts: ContentRef[] = [];
@@ -194,7 +202,12 @@ class WebSession implements ExecutionSession {
       if (event.assertion?.result === "violated" || event.kind === "precondition" && event.payload.result === "violated") this.failed = true;
       const formal = !!this.program && (event.kind !== "action" || !!event.checkpointId);
       const kind = (event.kind === "action" || event.kind === "assertion" || event.kind === "precondition") && !formal ? "diagnostic" : event.kind;
-      const receipt = await this.record(kind, event.payload, { ...(formal && event.checkpointId ? { checkpointId: event.checkpointId } : {}), ...(formal && event.assertion ? { assertion: event.assertion } : {}), inputs: event.inputs.map((id) => {
+      const attachments = await Promise.all((event.attachments ?? []).map(async attachment => {
+        const declaration = this.declaration.attachments.find(item => item.mediaType === attachment.mediaType);
+        if (!declaration || attachment.bytes.length > declaration.maxBytes) throw new Error("Observation attachment exceeds its declared limit");
+        return { ...await this.options.artifacts.putBytes(attachment.bytes), schema: declaration.schema, mediaType: attachment.mediaType };
+      }));
+      const receipt = await this.record(kind, event.payload, { attachments, ...(formal && event.checkpointId ? { checkpointId: event.checkpointId } : {}), ...(formal && event.assertion ? { assertion: event.assertion } : {}), inputs: event.inputs.map((id) => {
         const ref = this.receiptIds.get(id); if (!ref) throw new Error("Unknown host observation receipt"); return ref;
       }) });
       this.receiptIds.set(receipt.id, receipt);
@@ -222,6 +235,7 @@ class WebSession implements ExecutionSession {
     let value: unknown;
     if (capabilityId === "reset_case") { await this.reset(signal); value = { reset: true }; }
     else if (capabilityId === "inspect") {
+      this.used = true;
       const actor = typeof data.actor === "string" ? data.actor : "default";
       await this.runtime!.invoke("actor", { actor }, signal);
       value = await this.runtime!.invoke("inspect", { actor }, signal);
@@ -240,6 +254,7 @@ class WebSession implements ExecutionSession {
     return { output: await this.options.artifacts.putTypedJson({ result: value ?? null }, this.schemas.output), receipts: this.receipts.slice(start) };
   }
   private async run(source: string, signal: AbortSignal): Promise<unknown> {
+    this.used = true;
     const onAbort = () => { void this.runtime?.close().catch(() => {}); };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
@@ -278,8 +293,10 @@ class WebSession implements ExecutionSession {
     return descriptor;
   }
   async replay(program: ProgramRef, signal: AbortSignal): Promise<ContentRef[]> {
+    signal.throwIfAborted();
+    if (this.closed) throw new Error("Web execution session is closed");
     const start = this.receipts.length;
-    await this.reset(signal);
+    if (this.used) await this.reset(signal);
     const descriptor = await this.loadProgram(program);
     const source = (await this.options.artifacts.getBytes(descriptor.source)).toString("utf8");
     if (!source.trim() || source.length > 256_000) throw new Error("Web program must contain bounded JavaScript source");
@@ -288,12 +305,14 @@ class WebSession implements ExecutionSession {
     return this.receipts.slice(start);
   }
   private async reset(signal: AbortSignal): Promise<void> {
+    this.used = true;
     await this.cleanup();
     this.program = undefined;
     this.contract = undefined;
     this.failed = false;
     this.receiptIds.clear();
     await this.initialize(signal);
+    this.used = false;
   }
   private async cleanup(): Promise<void> {
     const failures: unknown[] = [];

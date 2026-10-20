@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { chromium } from "@playwright/test";
 import { test } from "node:test";
 import { ArtifactStore } from "../../src/checker/artifacts.js";
 import { createWebExecutionAdapter, WEB_PROGRAM_FORMAT } from "../../src/checker/adapters/web/index.js";
 import type { CheckJob, EvidenceReceipt, ProgramRef } from "../../src/checker/port.js";
 import type { ProjectSpec } from "../../src/project-spec.js";
 import { SnapshotStore } from "../../src/snapshot-store.js";
+import { fileFixture } from "../../src/checker/adapters/web/fixtures.js";
 import { withTempDir } from "../helpers/temp-dir.js";
 
 test("Web adapter binds schemas, fixed inputs, independent case data and full assertion receipts", async () => {
@@ -18,14 +20,17 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     await writeFile(join(source, "data/state.txt"), "original");
     await writeFile(join(source, "server.cjs"), `const fs=require('node:fs'),path=require('node:path');const file=path.join(process.env.APP_DATA_DIR,'state.txt');
       if(!fs.existsSync(file))fs.writeFileSync(file,'empty');
-      require('node:http').createServer((req,res)=>{if(req.url.startsWith('/change')){fs.writeFileSync(file,'changed');res.writeHead(302,{location:'/'});res.end();return;}
-      res.setHeader('content-type',req.url==='/health'?'text/plain':'text/html');res.end(req.url==='/health'?'ok':'<main><output role="status">'+fs.readFileSync(file,'utf8')+'</output><form action="/change"><button>Change</button></form></main>');}).listen(Number(process.env.PORT),'127.0.0.1');`);
+      require('node:http').createServer((req,res)=>{if(req.url==='/image'){res.writeHead(200,{'content-type':'image/png','content-disposition':'attachment; filename="image.png"'});res.end(Buffer.from('${fileFixture({ kind: "png", bytes: 128 }).buffer.toString("base64")}','base64'));return;}
+      if(req.url.startsWith('/change')){fs.writeFileSync(file,'changed');res.writeHead(302,{location:'/'});res.end();return;}
+      res.setHeader('content-type',req.url==='/health'?'text/plain':'text/html');res.end(req.url==='/health'?'ok':'<main><output role="status">'+fs.readFileSync(file,'utf8')+'</output><form action="/change"><button>Change</button></form><a href="/image" download>Download image</a></main>');}).listen(Number(process.env.PORT),'127.0.0.1');`);
     const artifacts = new ArtifactStore(join(root, "artifacts"), "run");
     const snapshots = new SnapshotStore(join(root, "snapshots"));
     const baseline = await snapshots.seal({ sourceDirectory: source, sourceSha: "sha-baseline", packetId: "baseline", dataPaths: ["data"] });
     await writeFile(join(source, "data/state.txt"), "snapshot-later");
     const snapshot = await snapshots.seal({ sourceDirectory: source, sourceSha: "sha-original", packetId: "packet", dataPaths: ["data"] });
-    const { adapter, declaration, initialState } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: baseline.ref });
+    let launches = 0;
+    const { adapter, declaration, initialState } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, spec, initialDataSnapshot: baseline.ref,
+      launchBrowser: async () => { launches++; return chromium.launch({ headless: true }); } });
     assert.deepEqual(declaration.initialStates, [initialState]);
     assert.deepEqual(await artifacts.readTypedJson(initialState), { baseline: baseline.ref });
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
@@ -42,13 +47,22 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     const session = await adapter.prepare(job, new AbortController().signal);
     const firstEnvironment = session.execution;
     try {
+      assert.equal(launches, 1);
       const receiptRefs = await session.replay(program, new AbortController().signal);
       const receipts = await Promise.all(receiptRefs.map((ref) => artifacts.getJson<EvidenceReceipt>(ref)));
       assert.equal(receipts.find((receipt) => receipt.kind === "assertion")?.assertion?.result, "satisfied");
       assert.ok(receipts.some((receipt) => receipt.kind === "precondition"));
       assert.ok(receipts.some((receipt) => receipt.kind === "action" && receipt.checkpointId === "change"));
       assert.ok(receipts.filter((receipt) => receipt.kind === "observation").length >= 2);
-      assert.notEqual(session.execution.digest, firstEnvironment.digest);
+      assert.equal(session.execution.digest, firstEnvironment.digest, "first replay uses the freshly prepared case");
+      assert.equal(launches, 1, "first replay does not rebuild its prepared environment");
+      const repeatedRefs = await session.replay(program, new AbortController().signal);
+      assert.notEqual(session.execution.digest, firstEnvironment.digest, "a used case must reset before another replay");
+      assert.equal(launches, 2);
+      const repeatedReceipts = await Promise.all(repeatedRefs.map(ref => artifacts.getJson<EvidenceReceipt>(ref)));
+      assert.equal((await artifacts.readTypedJson<{ result: string }>(repeatedReceipts.find(receipt => receipt.kind === "precondition")!.payload)).result, "satisfied");
+      assert.equal(repeatedReceipts
+        .find(receipt => receipt.kind === "assertion")?.assertion?.result, "satisfied", "repeated replay restores the original data");
       const observed = await session.invoke("inspect", { actor: "alice" }, new AbortController().signal);
       assert.match(JSON.stringify(await artifacts.readTypedJson(observed.output)), /changed/);
       await session.invoke("reset_case", {}, new AbortController().signal);
@@ -64,6 +78,7 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
         { id: "initial", kind: "precondition", expected: { operator: "equal", value: "original" } }, { id: "change", kind: "action" }, { id: "result", kind: "assertion" },
       ] });
       const failedRefs = await session.replay({ ...program, contract: failedContract }, new AbortController().signal);
+      assert.equal(launches, 4, "explicit reset and replay after exploration each create one fresh case");
       const failedReceipts = await Promise.all(failedRefs.map((ref) => artifacts.getJson<EvidenceReceipt>(ref)));
       assert.equal(failedReceipts.find((receipt) => receipt.kind === "assertion")?.assertion?.result, "violated");
       const attachments = failedReceipts.flatMap((receipt) => receipt.attachments);
@@ -74,6 +89,25 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
       assert.equal(await readFile(join(baseline.sourceDirectory, "data/state.txt"), "utf8"), "original");
       assert.equal(await readFile(join(source, "data/state.txt"), "utf8"), "builder-later");
     } finally { await session.close(); }
+    await assert.rejects(session.replay(program, new AbortController().signal), /closed/);
+    const beforeDelivery = launches;
+    const deliveryReceipts = await adapter.verifyDelivery({ ...job, jobId: "delivery", mode: "prepare" }, new AbortController().signal);
+    assert.equal(launches, beforeDelivery + 1, "delivery uses one prepared browser environment");
+    for (const ref of deliveryReceipts) await artifacts.validateReceipt({ ...job, jobId: "delivery", mode: "prepare" }, await artifacts.getJson<EvidenceReceipt>(ref));
+    const mediaJob = { ...job, jobId: "media" };
+    const media = await adapter.prepare(mediaJob, new AbortController().signal);
+    try {
+      const result = await media.invoke("run", { source: `const p=await browser.actor('alice');const file=await p.download({role:'link',name:'Download image'},undefined,'base64');return await p.render(file.id,{samples:[{x:0,y:0}]});` }, new AbortController().signal);
+      const receipts = await Promise.all(result.receipts.map(ref => artifacts.getJson<EvidenceReceipt>(ref)));
+      for (const receipt of receipts) await artifacts.validateReceipt(mediaJob, receipt);
+      const rendered = receipts.find(receipt => receipt.kind === "observation" && receipt.attachments.length)!;
+      const payload = await artifacts.readTypedJson<{ value: { samples: Array<{ rgba: number[] }> } }>(rendered.payload);
+      assert.deepEqual(payload.value.samples[0]!.rgba, [51, 102, 153, 255]);
+      assert.equal(rendered.attachments[0]!.mediaType, "image/png");
+      assert((await artifacts.getBytes(rendered.attachments[0]!)).length > 20);
+      const input = await artifacts.getJson<EvidenceReceipt>(rendered.inputs[0]!);
+      assert.equal((await artifacts.readTypedJson<{ kind: string }>(input.payload)).kind, "download", "rendered evidence links to the actual download receipt");
+    } finally { await media.close(); }
     assert.deepEqual(await readdir(workspace), []);
     const emptyInput = join(root, "empty-input");
     await mkdir(emptyInput);

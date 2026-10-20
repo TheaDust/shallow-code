@@ -42,9 +42,11 @@ test("Run view counts independent evidence, keeps runnable checkpoints and refle
   receive(view, "checkpoint_saved");
   receive(view, "check_completed", { status: "passed", requirementIds: ["A"] });
   receive(view, "check_completed", { verdict: "pass", passed: 1, failed: 0 });
+  assert.match(view.render(80).join("\n"), /已实现 1\/3/);
   assert.match(view.render(80).join("\n"), /已验证 0\/3/);
   assert.match(view.render(80).join("\n"), /可运行检查点覆盖 1 条需求/);
   receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" });
+  assert.match(view.render(80).join("\n"), /已实现 1\/3/);
   assert.match(view.render(80).join("\n"), /已验证 1\/3/);
   receive(view, "module_check_finished", { requirementIds: ["A"], status: "inconclusive" });
   assert.match(view.render(80).join("\n"), /已验证 0\/3.*证据不足 1/);
@@ -57,14 +59,14 @@ test("Module audit results update requirement counts before the final audit and 
   receive(view, "module_check_finished", { moduleId: "first", packetIds: ["opaque-audit-packet"],
     results: { "opaque-audit-packet": "verified" }, requirementResults: { A: "verified", B: "inconclusive" } });
   let text = view.render(80).join("\n");
-  assert.match(text, /已验证 1\/3.*证据不足 1/);
-  assert.match(text, /未验收 1/);
+  assert.match(text, /已实现 2\/3.*已验证 1\/3.*证据不足 1/);
+  assert.match(text, /未实现 1/);
 
   receive(view, "module_check_finished", { moduleId: "second", packetIds: ["other-audit-packet"],
     results: { "other-audit-packet": "verified" }, requirementResults: { A: "failed", B: "verified", C: "verified" } });
   text = view.render(80).join("\n");
-  assert.match(text, /已验证 2\/3.*失败 1/);
-  assert.match(text, /未验收 0/);
+  assert.match(text, /已实现 3\/3.*已验证 2\/3.*失败 1/);
+  assert.match(text, /未实现 0/);
 });
 
 test("Only retained repairs update live audit counts and the final summary replaces stage results", () => {
@@ -75,13 +77,13 @@ test("Only retained repairs update live audit counts and the final summary repla
   assert.match(view.render(80).join("\n"), /已验证 0\/3.*失败 1/);
   receive(view, "repair_batch_finished", { round: 2, retained: true, reason: "confirmed",
     requirementResults: { A: "verified", B: "inconclusive", C: "verified" } });
-  assert.match(view.render(80).join("\n"), /已验证 2\/3.*失败 0.*证据不足 1/);
+  assert.match(view.render(80).join("\n"), /已实现 3\/3.*已验证 2\/3.*失败 0.*证据不足 1/);
 
   receive(view, "pipeline_finished", { status: "partial", verifiedRequirementIds: ["A"], failedRequirementIds: ["B"],
     blockedRequirementIds: [], pendingRequirementIds: ["C"] });
   const text = view.render(80).join("\n");
-  assert.match(text, /已验证 1\/3.*失败 1.*证据不足 0/);
-  assert.match(text, /未验收 1/);
+  assert.match(text, /已实现 3\/3.*已验证 1\/3.*失败 1.*证据不足 0/);
+  assert.match(text, /未实现 0/);
 });
 
 test("Evolution skips stay outside the current numerator and denominator", () => {
@@ -89,9 +91,10 @@ test("Evolution skips stay outside the current numerator and denominator", () =>
   receive(view, "evolution_scope_selected", { auditRequirementIds: ["B", "C"], skippedRequirementIds: ["A"] });
   receive(view, "module_check_finished", { moduleId: "first", packetIds: ["audit-packet"],
     results: { "audit-packet": "verified" }, requirementResults: { A: "verified", B: "verified", C: "inconclusive" } });
-  assert.match(view.render(80).join("\n"), /已验证 1\/2.*证据不足 1/);
+  assert.match(view.render(80).join("\n"), /已实现 2\/2.*已验证 1\/2.*证据不足 1/);
   receive(view, "module_check_finished", { requirementIds: ["A", "B"], status: "verified" });
   const text = view.render(80).join("\n");
+  assert.match(text, /已实现 2\/2/);
   assert.match(text, /已验证 1\/2/);
   assert.match(text, /沿用跳过 1/);
 });
@@ -483,14 +486,15 @@ test("Run view keeps grouped cache counts and partial cost visible in an 80-colu
   assert.match(text, /费用未知/);
 });
 
-test("Run view renders verified progress as a bar in full and compact layouts", () => {
+test("Run view renders implementation progress as a bar in full and compact layouts", () => {
   for (const [columns, rows] of [[80, 24], [40, 18], [24, 8]] as const) {
     const view = new BuildView(options, () => rows, terminalTheme(false));
-    receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" });
+    receive(view, "snapshot_sealed", { snapshotId: "s", authoritative: true, implementedRequirementIds: ["A"] });
     const lines = view.render(columns);
     const text = lines.join("\n");
     assert.match(text, /进度\s+[█░]+/);
-    assert.match(text, /已验证 1\/3/);
+    assert.match(text, /已实现 1\/3/);
+    assert.match(text, /已验证 0\/3/);
     assert.ok(lines.length <= rows, `${columns}×${rows}: ${lines.length} rows`);
     assert.ok(lines.every(line => visibleWidth(line) <= columns), `${columns} columns exceeded`);
   }
@@ -542,9 +546,10 @@ test("Requirement tree page colours subtree states and shows per-node completion
   receive(view, "module_check_finished", { requirementIds: ["C"], status: "inconclusive" });
   receive(view, "dependency_gate_blocked", { requirementIds: ["D"] });
   const plain = view.requirementTreeText(terminalTheme(false));
-  assert.match(plain, /订单管理\s+1\/2 · 失败 1/);
+  assert.match(plain, /总体\s+已实现 3\/4.*已验证 1\/4/);
+  assert.match(plain, /订单管理\s+已实现 2\/2 · 已验证 1\/2 · 失败 1/);
   assert.match(plain, /创建订单\s+\[已验证\]/);
-  assert.match(plain, /用户管理\s+0\/2 · 证据不足 1 · 阻塞 1/);
+  assert.match(plain, /用户管理\s+已实现 1\/2 · 已验证 0\/2 · 证据不足 1 · 阻塞 1/);
   assert.match(plain, /权限\s+\[阻塞\]/);
   assert.match(plain, /├─|└─/);
 
@@ -554,6 +559,30 @@ test("Requirement tree page colours subtree states and shows per-node completion
   assert.match(coloured, /\x1b\[38;5;179m[^\n]*登录/);
   assert.match(coloured, /\x1b\[38;5;139m[^\n]*用户管理/);
   assert.match(coloured, /\x1b\[38;5;139m[^\n]*权限/);
+});
+
+test("Requirement tree shows builder implementation independently from verification", () => {
+  const view = new BuildView({ ...options, requirementIds: ["A", "B", "C", "D"], requirementTree }, () => 30, terminalTheme(false));
+  receive(view, "snapshot_sealed", { snapshotId: "s1", authoritative: true, implementedRequirementIds: ["A", "B"] });
+  let text = view.requirementTreeText(terminalTheme(false));
+  assert.match(text, /总体\s+已实现 2\/4.*已验证 0\/4/);
+  assert.match(text, /订单管理\s+已实现 2\/2 · 已验证 0\/2/);
+  assert.match(text, /创建订单\s+\[已实现\]/);
+  assert.match(text, /取消订单\s+\[已实现\]/);
+  assert.match(view.render(80).join("\n"), /进度\s+[█░]+.*已实现 2\/4/);
+
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified" });
+  text = view.requirementTreeText(terminalTheme(false));
+  assert.match(text, /订单管理\s+已实现 2\/2 · 已验证 1\/2/);
+  assert.match(text, /创建订单\s+\[已验证\]/);
+  assert.match(view.render(80).join("\n"), /已实现 2\/4.*已验证 1\/4/);
+
+  // 新快照会撤销旧版本的验证结果，但不会撤销 Builder 已完成的实现。
+  receive(view, "snapshot_sealed", { snapshotId: "s2", authoritative: true, implementedRequirementIds: ["A", "B", "C"] });
+  text = view.requirementTreeText(terminalTheme(false));
+  assert.match(text, /总体\s+已实现 3\/4.*已验证 0\/4/);
+  assert.match(text, /登录\s+\[已实现\]/);
+  assert.match(view.render(80).join("\n"), /已实现 3\/4.*已验证 0\/4/);
 });
 
 test("Interactive tree key opens the requirement page and Esc closes it", (t) => {

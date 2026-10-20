@@ -74,7 +74,10 @@ export interface ExecutionSession {
 export interface ExecutionAdapter {
   binding: ExecutionBindingRef;
   prepare(job: Readonly<CheckJob>, signal: AbortSignal): Promise<ExecutionSession>;
+  /** Project opaque adapter data for model review; original receipts remain immutable. */
+  reviewEvidence?(evidence: ReviewEvidence[]): ReviewEvidence[];
 }
+export interface ReviewEvidence { receipt: EvidenceReceipt; payload: unknown; environment: unknown }
 export interface CheckerPort {
   /** Every exit, including cancellation, awaits execution cleanup. */
   check(job: Readonly<CheckJob>, signal: AbortSignal, onProgress?: (progress: CheckerProgress) => Promise<void>): Promise<CheckReport>;

@@ -131,7 +131,9 @@ interface RunEventDetails {
   initialization_validation_failed: { path: string; attempt: number; message: string };
   initialization_verified: { path: string; adapterId: string; attempt?: number; resumed?: boolean };
   initialization_finished: { path: string; adapterId: string; attempt?: number };
-  snapshot_sealed: { snapshotId: string; sourceSha: string; parentSnapshotId?: string; requirementIds: string[]; sequence: number; authoritative?: boolean };
+  snapshot_sealed: { snapshotId: string; sourceSha: string; parentSnapshotId?: string; requirementIds: string[];
+    /** Cumulative Builder-implemented requirements carried by this sealed source; independent of verification. */
+    implementedRequirementIds?: string[]; sequence: number; authoritative?: boolean };
   check_queued: CheckEventDetail;
   check_started: CheckEventDetail;
   check_progress: CheckEventDetail & CheckerProgress;

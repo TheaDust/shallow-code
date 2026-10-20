@@ -498,8 +498,10 @@ async function executeProduction(
         setUsageRecorder: recorder => { recordUsage = recorder; },
         setUsageProgressRecorder: recorder => { recordUsageProgress = recorder; },
         async verifyDelivery(job, signal) {
-          try { await execution.adapter.verifyDelivery(job, signal); return { ok: true, stage: "complete", message: "Frozen candidate satisfies its execution binding and delivery checks" }; }
-          catch (error) { return { ok: false, stage: "readiness", message: error instanceof Error ? error.message : String(error) }; }
+          try { return { receipts: await execution.adapter.verifyDelivery(job, signal),
+            report: { ok: true, stage: "complete", message: "Frozen candidate satisfies its execution binding and delivery checks" } }; }
+          catch (error) { return { receipts: (error as { readinessEvidence?: ContentRef[] }).readinessEvidence ?? [],
+            report: { ok: false, stage: "readiness", message: error instanceof Error ? error.message : String(error) } }; }
         } };
     }
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {

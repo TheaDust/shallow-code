@@ -19,6 +19,7 @@ export interface CheckerCheckpoint {
   accepted: { sha: string; snapshot?: ContentRef; ordinal: number; requirementIds: string[] };
   readySnapshots: ContentRef[];
   epoch: number;
+  featureGroups?: string[][];
 }
 
 /** One serialized durable pointer separates produced source from runnable source. */
@@ -36,6 +37,13 @@ export class CheckerCheckpoints {
   }
 
   get snapshot(): CheckerCheckpoint { return structuredClone(this.state); }
+
+  async setFeatureGroups(groups: string[][]): Promise<void> {
+    await this.update(next => {
+      if (next.featureGroups && canonicalJson(next.featureGroups) !== canonicalJson(groups)) throw new Error("Checker feature groups changed within the run");
+      next.featureGroups = structuredClone(groups);
+    });
+  }
 
   async produced(value: Omit<ProducedSnapshot, "ordinal">): Promise<ProducedSnapshot> {
     let result!: ProducedSnapshot;
@@ -114,6 +122,9 @@ export async function readCheckerCheckpoint(file: string): Promise<CheckerCheckp
     throw new Error("Invalid Checker checkpoint index");
   }
   const seen = new Map<string, ProducedSnapshot>();
+  if (value.featureGroups !== undefined && (!Array.isArray(value.featureGroups) || value.featureGroups.some(group =>
+    !Array.isArray(group) || !group.length || !group.every(id => typeof id === "string")) ||
+    new Set(value.featureGroups.flat()).size !== value.featureGroups.flat().length)) throw new Error("Invalid Checker feature groups");
   for (const item of value.snapshots) {
     if (!item.snapshot || typeof item.snapshot.id !== "string" || typeof item.snapshot.digest !== "string" ||
       typeof item.sourceSha !== "string" || !Array.isArray(item.implementedRequirementIds) ||

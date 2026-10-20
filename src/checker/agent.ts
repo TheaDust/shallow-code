@@ -2,10 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import { ArtifactStore, atomicWrite, canonicalJson, hashBytes } from "./artifacts.js";
+import { ArtifactStore, atomicWrite, canonicalJson, contentDigest, hashBytes } from "./artifacts.js";
 import type { AdapterDeclaration, CheckOutcome, CheckReport, CheckerPort, CheckerProgress, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionSession, ProgramRef } from "./port.js";
 import { checkerSourceClauses, evaluateProgramEvidence, sameRef, validateAcceptanceContract,
-  type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview } from "./evidence.js";
+  type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview, type UnsupportedClause } from "./evidence.js";
 import type { CheckerModel, CheckerTool } from "./model.js";
 import type { AtomicRequirement } from "../types.js";
 
@@ -21,6 +21,8 @@ const programSchema = Type.Object({ descriptor: Type.Object({ id: Type.String(),
   format: Type.String(), contract: refSchema, binding: Type.Object({ id: Type.String(), digest: Type.String(), executor: Type.Object({ id: Type.String(), version: Type.String(), digest: Type.String() }) }) });
 /** Values with an application-defined shape still advertise an object root to the model and gateway. */
 const toolObjectSchema = Type.Object({}, { additionalProperties: true });
+const PROGRAM_REPAIR_MS = 10 * 60_000;
+type RejectedProgram = { program: ProgramRef; source: string; contract: AcceptanceContract; clauseIds: string[]; reasons: string[]; observations?: unknown[] };
 
 export class CheckerCleanupError extends Error {
   readonly code = "CHECKER_CLEANUP_FAILED";
@@ -107,10 +109,13 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     }
   };
   return { async check(job, parentSignal, onProgress) {
+    const limit = Math.min(job.budget.deadlineAt, Date.now() + (job.budget.timeoutMs ?? Infinity));
+    // Finish work before queue expiry so cleanup and a partial report can still commit.
+    const deadlineAt = limit - Math.min(5_000, Math.max(0, Math.floor((limit - Date.now()) / 10)));
     const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(Math.max(1,
-      Math.min(2_147_483_647, job.budget.timeoutMs ?? Infinity, job.budget.deadlineAt - Date.now())))]);
+      Math.min(2_147_483_647, deadlineAt - Date.now())))]);
     const manifest: CheckerManifest = { schemaVersion: 1, contracts: [], reviews: [], receipts: [], diagnostics: [] };
-    const programs: ProgramRef[] = [];
+    const programs = new Map<string, ProgramRef>();
     const input = await store.getJson<CheckerRequirements>(job.requirements);
     const sources = checkerSourceClauses(input, job.requirementIds);
     const outcomeMap = new Map<string, CheckOutcome>(sources.map(source => [source.id, { requirementId: source.requirementId,
@@ -122,11 +127,11 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     const progress = async (detail: CheckerProgress): Promise<void> => {
       try { await onProgress?.(detail); } catch { /* Presentation failures must not change evidence or prevent cleanup. */ }
     };
-    const prepare = async (): Promise<ExecutionSession> => {
-      signal.throwIfAborted();
+    const prepare = async (executionSignal = signal): Promise<ExecutionSession> => {
+      executionSignal.throwIfAborted();
       await progress({ stage: "prepare" });
       let session: ExecutionSession;
-      try { session = await adapter.prepare(job, signal); }
+      try { session = await adapter.prepare(job, executionSignal); }
       catch (error) {
         const failure = error as { readinessEvidence?: ContentRef[]; code?: string };
         if (failure?.readinessEvidence) manifest.receipts.push(...failure.readinessEvidence);
@@ -148,9 +153,9 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
       return receipts.length > 0 && receipts.every(receipt => receipt.kind === "readiness" && receipt.readiness?.result === "ready"
         && sameRef(receipt.environment, session.execution));
     };
-    const runModel = async (role: "exploration" | "semantic_review", systemPrompt: string, prompt: string, tools: CheckerTool[]): Promise<void> => {
-      signal.throwIfAborted();
-      await model.run({ role, job, systemPrompt, prompt, tools, signal });
+    const runModel = async (role: "exploration" | "semantic_review", systemPrompt: string, prompt: string, tools: CheckerTool[], modelSignal = signal): Promise<void> => {
+      modelSignal.throwIfAborted();
+      await model.run({ role, job, systemPrompt, prompt, tools, signal: modelSignal });
     };
     try {
       if (!sameRef(adapter.binding, job.binding)) throw new Error("Checker adapter binding mismatch");
@@ -189,7 +194,8 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
         const eligibleSources = sources.filter(source => outcomeMap.get(source.id)?.status !== "blocked");
         const submitted: ProgramRef[] = [];
         const coveredSources = new Set<string>();
-        const rejectedPrograms: Array<{ program: ProgramRef; source: string; clauseIds: string[]; reasons: string[] }> = [];
+        const rejectedPrograms: RejectedProgram[] = [];
+        const candidates: Array<{ program: ProgramRef; descriptor: CheckerProgramDescriptor; approved: boolean }> = [];
         for (const program of job.programs) {
           try {
             if (!sameRef(program.binding, job.binding) || program.format !== `${declaration.programFormat.id}@${declaration.programFormat.version}`) continue;
@@ -201,27 +207,59 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
             if (cached.review && !cached.review.approved) {
               manifest.reviews.push(cached.ref!);
               // Retain the rejected attempt for history and feedback, without claiming coverage.
-              programs.push(program);
-              rejectedPrograms.push({ program, source: (await store.getBytes(descriptor.source)).toString("utf8"),
+              programs.set(canonicalJson(program), program);
+              rejectedPrograms.push({ program, contract, source: (await store.getBytes(descriptor.source)).toString("utf8"),
                 clauseIds: cached.review.clauseIds, reasons: cached.review.reasons });
               await progress({ stage: "review_rejected", programId: program.descriptor.id, clauseIds: cached.review.clauseIds,
                 cached: true, reason: cached.review.reasons.join("; ") });
               continue;
             }
-            if (descriptor.clauses.some(mapping => coveredSources.has(mapping.clauseId))) continue;
-            descriptor.clauses.forEach(mapping => coveredSources.add(mapping.clauseId));
-            submitted.push(program);
+            candidates.push({ program, descriptor, approved: cached.review?.approved === true });
           } catch (error) {
             const reason = `Reusable program requires rediscovery: ${String(error)}`;
             manifest.diagnostics.push(reason);
             await progress({ stage: "diagnostic", reason });
           }
         }
-        const discoverySources = eligibleSources.filter(source => !coveredSources.has(source.id));
-        if (discoverySources.length) {
-          const exploration = await prepare();
+        for (const { program, descriptor } of candidates.sort((left, right) => Number(right.approved) - Number(left.approved))) {
+          if (descriptor.clauses.some(mapping => coveredSources.has(mapping.clauseId))) continue;
+          descriptor.clauses.forEach(mapping => coveredSources.add(mapping.clauseId));
+          submitted.push(program);
+        }
+        const unsupported = new Set<string>();
+        const validGap = (gap: UnsupportedClause): boolean => !!gap && typeof gap.reason === "string" && !!gap.reason.trim() && gap.reason.length <= 2000
+          && Array.isArray(gap.attempts) && gap.attempts.length > 0 && gap.attempts.length <= 8 && gap.attempts.every(attempt => typeof attempt === "string" && !!attempt.trim() && attempt.length <= 1000)
+          && (gap.retryable === undefined || typeof gap.retryable === "boolean");
+        const gapCache = (clauseId: string) => {
+          const key = contentDigest({ snapshot: job.snapshot, requirements: job.requirements, initialState: job.initialState, binding: job.binding, promptDigest, clauseId });
+          return { key, path: join(store.directory, "unsupported", key + ".json") };
+        };
+        const recordGap = async (gap: UnsupportedClause, cached: boolean): Promise<void> => {
+          const source = eligibleSources.find(source => source.id === gap.clauseId)!;
+          const reason = `Unable to verify: ${gap.reason} Attempts: ${gap.attempts.join("; ")}`;
+          unsupported.add(source.id);
+          (manifest.unsupported ??= []).push(gap);
+          outcomeMap.set(source.id, { requirementId: source.requirementId, scenarioId: source.scenarioId,
+            clauseId: source.id, status: "inconclusive", evidence: [], reason });
+          await progress({ stage: "diagnostic", clauseIds: [source.id], cached, reason });
+        };
+        for (const source of eligibleSources.filter(source => !coveredSources.has(source.id))) {
+          const cache = gapCache(source.id);
+          let gap: UnsupportedClause | undefined;
+          try {
+            const ref = JSON.parse(await readFile(cache.path, "utf8")) as ContentRef;
+            const saved = await store.getJson<{ key: string; gap: UnsupportedClause }>(ref);
+            if (saved.key === cache.key && saved.gap.clauseId === source.id && validGap(saved.gap) && saved.gap.retryable === false) gap = saved.gap;
+          } catch { /* A missing or incompatible assessment requires exploration. */ }
+          if (gap) await recordGap(gap, true);
+        }
+        const explore = async (discoverySources: typeof eligibleSources, repair: boolean): Promise<void> => {
+          const explorationDeadline = repair ? Date.now() + Math.max(1, Math.floor(Math.min(PROGRAM_REPAIR_MS, (deadlineAt - Date.now()) / 2))) : deadlineAt;
+          const explorationSignal = repair ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, explorationDeadline - Date.now()))]) : signal;
+          const exploration = await prepare(explorationSignal);
           if (!await ready(exploration)) throw new Error("Execution adapter did not establish a ready exploration environment");
-          await progress({ stage: rejectedPrograms.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
+          const feedback = rejectedPrograms.filter(program => program.clauseIds.some(id => discoverySources.some(source => source.id === id)));
+          await progress({ stage: feedback.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
           let finished = false;
           const savedPrograms: ProgramRef[] = [];
           const savedContracts = new Map<string, AcceptanceContract>();
@@ -237,7 +275,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 const args = raw as { capabilityId: string; input: unknown };
                 const capability = executionCapability(args.capabilityId);
                 const inputValue = await invocationInput(args.capabilityId, capability.inputSchema, args.input);
-                const result = await exploration.invoke(args.capabilityId, inputValue, signal);
+                const result = await exploration.invoke(args.capabilityId, inputValue, explorationSignal);
                 const output = await store.readTypedJson(result.output);
                 await store.validateSchema(capability.outputSchema, output);
                 manifest.receipts.push(...result.receipts);
@@ -286,126 +324,197 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                     cached: true, reason: cached.review.reasons.join("; ") });
                   throw new Error(`Program was rejected by semantic review; revise its source or contract: ${cached.review.reasons.join("; ")}`);
                 }
+                // An unfinished exploration may still leave a valid candidate for later replay/review.
+                programs.set(canonicalJson(program), program);
                 savedPrograms.push(program);
                 return program;
               } },
             { name: "finish", description: "Submit saved programs for host replay and independent semantic review. Claims here do not determine outcomes.",
-              parameters: Type.Object({ programs: Type.Array(programSchema) }), prepareArguments: prepareFinishArguments, async execute(raw) {
+              parameters: Type.Object({ programs: Type.Array(programSchema), unsupported: Type.Optional(Type.Array(Type.Object({
+                clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
+                attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }), retryable: Type.Optional(Type.Boolean()),
+              }))) }), prepareArguments: prepareFinishArguments, async execute(raw) {
                 if (finished) throw new Error("Checker exploration already finished");
-                const args = raw as { programs: unknown };
+                const args = raw as { programs: unknown; unsupported?: unknown };
                 const submittedPrograms = toolArray(args.programs, "programs") as ProgramRef[];
-                if (!submittedPrograms.length || submittedPrograms.some(program => !savedPrograms.some(saved => canonicalJson(saved) === canonicalJson(program)))) throw new Error("Finish must reference saved programs");
+                const gaps = args.unsupported === undefined ? [] : toolArray(args.unsupported, "unsupported") as UnsupportedClause[];
+                if ((!submittedPrograms.length && !gaps.length) || submittedPrograms.some(program => !savedPrograms.some(saved => canonicalJson(saved) === canonicalJson(program)))) throw new Error("Finish must reference saved programs or explain unverifiable source clauses");
+                const claimed = new Set<string>();
+                for (const program of submittedPrograms) {
+                  const descriptor = await store.readTypedJson<CheckerProgramDescriptor>(program.descriptor);
+                  for (const mapping of descriptor.clauses) {
+                    if (claimed.has(mapping.clauseId)) throw new Error("Submitted programs overlap source clauses");
+                    claimed.add(mapping.clauseId);
+                  }
+                }
+                for (const gap of gaps) {
+                  if (!validGap(gap) || !discoverySources.some(source => source.id === gap.clauseId) || claimed.has(gap.clauseId)) throw new Error("Unverifiable clauses must uniquely cite a source clause and explain the reason and attempts");
+                  claimed.add(gap.clauseId);
+                }
+                for (const gap of gaps) {
+                  if (gap.retryable === false) {
+                    const cache = gapCache(gap.clauseId);
+                    const ref = await store.putJson({ key: cache.key, gap });
+                    await atomicWrite(cache.path, canonicalJson(ref));
+                  }
+                  await recordGap(gap, false);
+                }
                 submitted.push(...submittedPrograms); finished = true; return { accepted: true };
               } },
           ];
           try {
-            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({ requirements: input,
+            const context = repair ? { requirements: input.requirements.filter(requirement => discoverySources.some(source => source.requirementId === requirement.id)),
+              prerequisites: input.prerequisites ?? [] } : input;
+            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({ requirements: context,
               sourceClauses: discoverySources, capabilities, programFormat: declaration.programFormat, initialState: await store.readTypedJson(job.initialState),
-              ...(rejectedPrograms.length ? { rejectedPrograms } : {}) }), tools);
+              remainingMs: Math.max(0, explorationDeadline - Date.now()), repair,
+              ...(feedback.length ? { rejectedPrograms: feedback } : {}) }), tools, explorationSignal);
             if (!finished) throw new Error("Checker exploration did not finish with saved programs");
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
             manifest.diagnostics.push(reason);
+            for (const source of discoverySources) {
+              const outcome = outcomeMap.get(source.id)!;
+              if (outcome.status === "inconclusive" && !unsupported.has(source.id)) outcome.reason = outcome.reason === "No reviewed program covered this source result"
+                ? reason : `${outcome.reason}; Program correction failed: ${reason}`;
+            }
             await progress({ stage: "diagnostic", reason });
           }
           finally { await close(exploration); }
-        }
-        for (const program of submitted) {
-          signal.throwIfAborted();
-          if (!sameRef(program.binding, job.binding)) throw new Error("Reusable program execution binding changed");
-          if (program.format !== `${declaration.programFormat.id}@${declaration.programFormat.version}`) throw new Error("Reusable program format changed");
-          const contract = await store.getJson<AcceptanceContract>(program.contract);
-          validateAcceptanceContract(contract, job, eligibleSources, input);
-          const descriptor = await store.readTypedJson<CheckerProgramDescriptor>(program.descriptor);
-          if (!sameRef(descriptor.initialState, job.initialState) || descriptor.clauses.length !== contract.clauses.length
-            || new Set(descriptor.clauses.map(mapping => mapping.clauseId)).size !== descriptor.clauses.length
-            || descriptor.clauses.some(mapping => !contract.clauses.some(clause => clause.id === mapping.clauseId && clause.checkpointId === mapping.checkpointId))) throw new Error("Reusable program contract or initial state mismatch");
-          const source = (await store.getBytes(descriptor.source)).toString("utf8");
-          if (!source.trim()) throw new Error("Cannot replay an empty program");
-          programs.push(program); manifest.contracts.push(program.contract);
-          const cached = await cachedReview(program);
-          let reviewRef = cached.ref;
-          let review = cached.review;
-          if (review && !review.approved) {
-            await progress({ stage: "review_rejected", programId: program.descriptor.id, clauseIds: review.clauseIds,
-              cached: true, reason: review.reasons.join("; ") });
-            manifest.reviews.push(reviewRef!);
-            for (const clause of contract.clauses) outcomeMap.set(clause.id, { requirementId: clause.requirementId, scenarioId: clause.scenarioId,
-              clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
-            continue;
-          }
-          const replay = await prepare();
-          await progress({ stage: "replay", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
-          let replayRefs = [...replay.readinessEvidence];
-          if (await ready(replay)) replayRefs.push(...await replay.replay(program, signal));
-          manifest.receipts.push(...replayRefs);
-          await close(replay);
-          if (!review) {
-            await progress({ stage: "semantic_review", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
-            let proposal: { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
-            const receipts = await Promise.all(replayRefs.map(async ref => {
-                const receipt = await store.getJson<EvidenceReceipt>(ref);
-                return reviewReceipt(receipt, await store.readTypedJson(receipt.payload), await store.readTypedJson(receipt.environment));
-              }));
+        };
+        const replaySubmitted = async (): Promise<Set<string>> => {
+          const rejectedClauses = new Set<string>();
+          for (const program of submitted.splice(0)) {
+            signal.throwIfAborted();
+            let failedContract: AcceptanceContract | undefined;
             try {
-              await runModel("semantic_review", [genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify(
-                semanticReviewPayload(input, eligibleSources, contract, descriptor, source, capabilities, receipts)), [{ name: "finish", description: "Submit the independent semantic review through this tool. JSON text is not a submission. Include every contract clause exactly once.",
-                parameters: Type.Object({ approved: Type.Boolean(), reasons: Type.Array(Type.String()),
-                  clauseIds: Type.Array(Type.String({ enum: contract.clauses.map(clause => clause.id) }),
-                    { minItems: contract.clauses.length, maxItems: contract.clauses.length, uniqueItems: true }) }), async execute(raw) {
-                  if (proposal) throw new Error("Semantic review already finished");
-                  const decision = raw as { approved: boolean; reasons: string[]; clauseIds: string[] };
-                  if (decision.clauseIds.length !== contract.clauses.length || new Set(decision.clauseIds).size !== decision.clauseIds.length
-                    || contract.clauses.some(clause => !decision.clauseIds.includes(clause.id))) {
-                    throw new Error(`Independent review must enumerate each contract clause exactly once: ${contract.clauses.map(clause => clause.id).join(", ")}`);
-                  }
-                  proposal = decision; return { accepted: true };
-                } }]);
-              const decision = proposal as { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
-              if (!decision) throw new Error("Independent semantic review did not call finish");
-              review = { key: cached.key, requirements: job.requirements, contract: program.contract, program, binding: job.binding, ...decision };
-              reviewRef = await store.putJson(review);
-              await atomicWrite(cached.path, canonicalJson(reviewRef));
-              await progress({ stage: review.approved ? "review_approved" : "review_rejected", programId: program.descriptor.id,
-                clauseIds: review.clauseIds, reason: review.reasons.join("; ") });
+              if (!sameRef(program.binding, job.binding)) throw new Error("Reusable program execution binding changed");
+              if (program.format !== `${declaration.programFormat.id}@${declaration.programFormat.version}`) throw new Error("Reusable program format changed");
+              const contract = await store.getJson<AcceptanceContract>(program.contract);
+              failedContract = contract;
+              validateAcceptanceContract(contract, job, eligibleSources, input);
+              const descriptor = await store.readTypedJson<CheckerProgramDescriptor>(program.descriptor);
+              if (!sameRef(descriptor.initialState, job.initialState) || descriptor.clauses.length !== contract.clauses.length
+                || new Set(descriptor.clauses.map(mapping => mapping.clauseId)).size !== descriptor.clauses.length
+                || descriptor.clauses.some(mapping => !contract.clauses.some(clause => clause.id === mapping.clauseId && clause.checkpointId === mapping.checkpointId))) throw new Error("Reusable program contract or initial state mismatch");
+              const source = (await store.getBytes(descriptor.source)).toString("utf8");
+              if (!source.trim()) throw new Error("Cannot replay an empty program");
+              programs.set(canonicalJson(program), program); manifest.contracts.push(program.contract);
+              const cached = await cachedReview(program);
+              let reviewRef = cached.ref;
+              let review = cached.review;
+              let observations: unknown[] | undefined;
+              if (review && !review.approved) {
+                await progress({ stage: "review_rejected", programId: program.descriptor.id, clauseIds: review.clauseIds,
+                  cached: true, reason: review.reasons.join("; ") });
+                manifest.reviews.push(reviewRef!);
+                for (const clause of contract.clauses) outcomeMap.set(clause.id, { requirementId: clause.requirementId, scenarioId: clause.scenarioId,
+                  clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
+                continue;
+              }
+              const replay = await prepare();
+              await progress({ stage: "replay", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
+              let replayRefs = [...replay.readinessEvidence];
+              if (await ready(replay)) replayRefs.push(...await replay.replay(program, signal));
+              manifest.receipts.push(...replayRefs);
+              await close(replay);
+              if (!review) {
+                await progress({ stage: "semantic_review", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
+                let proposal: { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
+                const evidence = await Promise.all(replayRefs.map(async ref => {
+                    const receipt = await store.getJson<EvidenceReceipt>(ref);
+                    return { receipt, payload: await store.readTypedJson(receipt.payload), environment: await store.readTypedJson(receipt.environment) };
+                  }));
+                const receipts = (adapter.reviewEvidence?.(evidence) ?? evidence).map(item => reviewReceipt(item.receipt, item.payload, item.environment));
+                observations = receipts.filter(item => (item.receipt as EvidenceReceipt).kind === "observation");
+                try {
+                  await runModel("semantic_review", [genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify(
+                    semanticReviewPayload(input, eligibleSources, contract, descriptor, source, capabilities, receipts)), [{ name: "finish", description: "Submit the independent semantic review through this tool. JSON text is not a submission. Include every contract clause exactly once.",
+                    parameters: Type.Object({ approved: Type.Boolean(), reasons: Type.Array(Type.String()),
+                      clauseIds: Type.Array(Type.String({ enum: contract.clauses.map(clause => clause.id) }),
+                        { minItems: contract.clauses.length, maxItems: contract.clauses.length, uniqueItems: true }) }), async execute(raw) {
+                      if (proposal) throw new Error("Semantic review already finished");
+                      const decision = raw as { approved: boolean; reasons: string[]; clauseIds: string[] };
+                      if (decision.clauseIds.length !== contract.clauses.length || new Set(decision.clauseIds).size !== decision.clauseIds.length
+                        || contract.clauses.some(clause => !decision.clauseIds.includes(clause.id))) {
+                        throw new Error(`Independent review must enumerate each contract clause exactly once: ${contract.clauses.map(clause => clause.id).join(", ")}`);
+                      }
+                      proposal = decision; return { accepted: true };
+                    } }]);
+                  const decision = proposal as { approved: boolean; reasons: string[]; clauseIds: string[] } | undefined;
+                  if (!decision) throw new Error("Independent semantic review did not call finish");
+                  review = { key: cached.key, requirements: job.requirements, contract: program.contract, program, binding: job.binding, ...decision };
+                  reviewRef = await store.putJson(review);
+                  await atomicWrite(cached.path, canonicalJson(reviewRef));
+                  await progress({ stage: review.approved ? "review_approved" : "review_rejected", programId: program.descriptor.id,
+                    clauseIds: review.clauseIds, reason: review.reasons.join("; ") });
+                } catch (error) {
+                  signal.throwIfAborted();
+                  const reason = `Independent review failed: ${errorMessage(error)}`;
+                  manifest.diagnostics.push(reason);
+                  await progress({ stage: "diagnostic", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id), reason });
+                  continue;
+                }
+              } else {
+                await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
+              }
+              manifest.reviews.push(reviewRef!);
+              if (!review.approved) {
+                rejectedPrograms.push({ program, contract, source, clauseIds: review.clauseIds, reasons: review.reasons, ...(observations ? { observations } : {}) });
+                review.clauseIds.forEach(id => rejectedClauses.add(id));
+                for (const clause of contract.clauses) outcomeMap.set(clause.id, { requirementId: clause.requirementId, scenarioId: clause.scenarioId,
+                  clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
+                continue;
+              }
+              const outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(replayRefs));
+              if (outcomes.some(outcome => outcome.status === "fail")) {
+                const confirmation = await prepare();
+                await progress({ stage: "confirmation", programId: program.descriptor.id, clauseIds: outcomes.filter(item => item.status === "fail").map(item => item.clauseId) });
+                const confirmationRefs = [...confirmation.readinessEvidence];
+                if (await ready(confirmation)) confirmationRefs.push(...await confirmation.replay(program, signal));
+                manifest.receipts.push(...confirmationRefs);
+                await close(confirmation);
+                const repeated = await evaluateProgramEvidence(store, job, program, contract, deduplicate(confirmationRefs));
+                for (const outcome of outcomes.filter(item => item.status === "fail")) {
+                  const reproduced = repeated.find(item => item.clauseId === outcome.clauseId && item.status === "fail");
+                  const firstEnvironment = await environmentOf(store, outcome.evidence);
+                  const secondEnvironment = reproduced ? await environmentOf(store, reproduced.evidence) : undefined;
+                  if (reproduced && firstEnvironment && secondEnvironment && !sameRef(firstEnvironment, secondEnvironment)) {
+                    outcome.evidence.push(...reproduced.evidence); outcome.reason = "Requirement violation reproduced in an independent fresh environment";
+                  } else { outcome.status = "inconclusive"; outcome.reason = "Violation did not reproduce independently"; }
+                }
+              }
+              for (const outcome of outcomes) {
+                if (outcomeMap.get(outcome.clauseId)?.status === "pass" || outcomeMap.get(outcome.clauseId)?.status === "fail") throw new Error("Multiple programs claimed the same source clause");
+                outcomeMap.set(outcome.clauseId, outcome);
+              }
             } catch (error) {
+              if (cleanupFailure) throw cleanupFailure;
               signal.throwIfAborted();
-              const reason = `Independent review failed: ${errorMessage(error)}`;
+              const reason = `Program execution failed: ${errorMessage(error)}`;
               manifest.diagnostics.push(reason);
-              await progress({ stage: "diagnostic", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id), reason });
-              continue;
-            }
-          } else {
-            await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
-          }
-          manifest.reviews.push(reviewRef!);
-          if (!review.approved) {
-            for (const clause of contract.clauses) outcomeMap.set(clause.id, { requirementId: clause.requirementId, scenarioId: clause.scenarioId,
-              clauseId: clause.id, status: "inconclusive", evidence: [], reason: `Semantic review rejected: ${review.reasons.join("; ")}` });
-            continue;
-          }
-          const outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(replayRefs));
-          if (outcomes.some(outcome => outcome.status === "fail")) {
-            const confirmation = await prepare();
-            await progress({ stage: "confirmation", programId: program.descriptor.id, clauseIds: outcomes.filter(item => item.status === "fail").map(item => item.clauseId) });
-            const confirmationRefs = [...confirmation.readinessEvidence];
-            if (await ready(confirmation)) confirmationRefs.push(...await confirmation.replay(program, signal));
-            manifest.receipts.push(...confirmationRefs);
-            await close(confirmation);
-            const repeated = await evaluateProgramEvidence(store, job, program, contract, deduplicate(confirmationRefs));
-            for (const outcome of outcomes.filter(item => item.status === "fail")) {
-              const reproduced = repeated.find(item => item.clauseId === outcome.clauseId && item.status === "fail");
-              const firstEnvironment = await environmentOf(store, outcome.evidence);
-              const secondEnvironment = reproduced ? await environmentOf(store, reproduced.evidence) : undefined;
-              if (reproduced && firstEnvironment && secondEnvironment && !sameRef(firstEnvironment, secondEnvironment)) {
-                outcome.evidence.push(...reproduced.evidence); outcome.reason = "Requirement violation reproduced in an independent fresh environment";
-              } else { outcome.status = "inconclusive"; outcome.reason = "Violation did not reproduce independently"; }
+              for (const clause of failedContract?.clauses ?? []) {
+                const outcome = outcomeMap.get(clause.id);
+                if (outcome && outcome.status !== "pass" && outcome.status !== "fail") outcome.reason = reason;
+              }
+              await progress({ stage: "diagnostic", programId: program.descriptor.id, clauseIds: failedContract?.clauses.map(clause => clause.id), reason });
+            } finally {
+              for (const session of sessions) await close(session);
             }
           }
-          for (const outcome of outcomes) {
-            if (outcomeMap.get(outcome.clauseId)?.status === "pass" || outcomeMap.get(outcome.clauseId)?.status === "fail") throw new Error("Multiple programs claimed the same source clause");
-            outcomeMap.set(outcome.clauseId, outcome);
-          }
+          return rejectedClauses;
+        };
+        // Verify reusable programs first; one difficult discovery cannot erase their results.
+        const corrections = await replaySubmitted();
+        const missing = eligibleSources.filter(source => !coveredSources.has(source.id) && !unsupported.has(source.id));
+        for (let round = 0; round < 2; round++) {
+          const repair = round > 0 || !missing.length;
+          const targets = repair ? eligibleSources.filter(source => corrections.has(source.id) && !unsupported.has(source.id)) : missing;
+          if (!targets.length) break;
+          await explore(targets, repair);
+          const rejected = await replaySubmitted();
+          if (repair) break;
+          rejected.forEach(id => corrections.add(id));
         }
       }
     } catch (error) {
@@ -419,12 +528,12 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     }
     if (cleanupFailure) throw cleanupFailure;
     if (manifest.diagnostics.length) for (const outcome of outcomeMap.values()) {
-      if (outcome.status === "inconclusive") outcome.reason = manifest.diagnostics.join("; ");
+      if (outcome.status === "inconclusive" && outcome.reason === "No reviewed program covered this source result") outcome.reason = manifest.diagnostics.join("; ");
     }
     for (const ref of deduplicate(manifest.receipts)) await store.validateReceipt(job, await store.getJson<EvidenceReceipt>(ref));
     const report: CheckReport = { job: await store.putJson(job), snapshot: job.snapshot, binding: job.binding,
       manifest: await store.putJson({ ...manifest, contracts: deduplicate(manifest.contracts), receipts: deduplicate(manifest.receipts) }),
-      programs, outcomes: job.mode === "prepare" ? [] : [...outcomeMap.values()] };
+      programs: [...programs.values()], outcomes: job.mode === "prepare" ? [] : [...outcomeMap.values()] };
     await store.validateReport(job, report);
     return report;
   } };
@@ -451,7 +560,7 @@ function prepareSaveArguments(value: unknown): unknown {
 }
 function prepareFinishArguments(value: unknown): unknown {
   if (!isRecord(value)) return value;
-  return { ...value, programs: toolArray(value.programs, "programs") };
+  return { ...value, programs: toolArray(value.programs, "programs"), ...(value.unsupported === undefined ? {} : { unsupported: toolArray(value.unsupported, "unsupported") }) };
 }
 /** Accept both the declared object argument and a gateway/model-rendered JSON string. */
 function toolObject(value: unknown, name: string): Record<string, unknown> {

@@ -14,10 +14,11 @@ import { ModelUsageTotals } from "./model-usage.js";
 import type { PipelineDeps, PipelineOptions, RunSummary } from "./pipeline.js";
 import { RunBudget, type PipelinePhase } from "./run-budget.js";
 import { RunStateStore } from "./run-state.js";
-import { auditPackets, featureGroupPackets, makePacket } from "./scheduler.js";
+import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket } from "./scheduler.js";
 import type { AtomicRequirement, RequirementCatalog, RequirementStatus, RunEvent, WorkPacket } from "./types.js";
 import type { ArtifactStore } from "./checker/artifacts.js";
-import { sameRef } from "./checker/artifacts.js";
+import { atomicWrite, canonicalJson, sameRef } from "./checker/artifacts.js";
+import type { AcceptanceContract, CheckerProgramDescriptor } from "./checker/evidence.js";
 import { CheckerCheckpoints, type ProducedSnapshot } from "./checker/checkpoints.js";
 import { CheckerQueue } from "./checker/queue.js";
 import type { CheckJob, CheckerPort, CheckOutcome, CheckReport, ContentRef, EvidenceReceipt, ExecutionBindingRef, ProgramRef, TypedRef } from "./checker/port.js";
@@ -34,7 +35,7 @@ export interface CheckerRuntime {
   resourceKeys: string[];
   setUsageRecorder?(recorder: (usage: CheckerModelUsage) => void): void;
   setUsageProgressRecorder?(recorder: (usage: CheckerModelUsage) => void): void;
-  verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<DeliveryReport>;
+  verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<{ report: DeliveryReport; receipts: ContentRef[] }>;
 }
 type ScopedOutcome = CheckOutcome & { initialState?: TypedRef };
 
@@ -82,27 +83,45 @@ export class CheckerCoordinator {
     const head = await this.checkpoints.produced({ snapshot: sealed.ref, sourceSha,
       ...(parent ? { parentSnapshotId: parent.snapshot.id } : {}), implementedRequirementIds: [...implemented] });
     await this.emit({ at: now(), type: "snapshot_sealed", packetId: packet.id, detail: { snapshotId: head.snapshot.id,
-      sourceSha, parentSnapshotId: head.parentSnapshotId, requirementIds: packet.requirementIds, sequence: head.ordinal,
-      authoritative: true } });
+      sourceSha, parentSnapshotId: head.parentSnapshotId, requirementIds: packet.requirementIds,
+      implementedRequirementIds: head.implementedRequirementIds, sequence: head.ordinal, authoritative: true } });
     return head;
   }
 
   async submit(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], budget: CheckJob["budget"],
-    epoch = this.checkpoints.snapshot.epoch, programs: ProgramRef[] = [], priority = 3): Promise<CheckJob> {
-    this.assertHealthy();
-    const contextualIds = new Set([...packet.requirementIds, ...(packet.prerequisites ?? []).map(item => item.id)]);
-    const requirements = await this.runtime.artifacts.putJson(JSON.parse(JSON.stringify({ requirements: packet.requirements,
-      prerequisites: packet.prerequisites ?? [], implementedRequirementIds: head.implementedRequirementIds.filter(id => contextualIds.has(id)) })));
-    const job: CheckJob = { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
-      packetId: packet.id, attempt: packet.attempt, moduleEpoch: epoch, snapshot: head.snapshot, requirements,
-      binding: this.runtime.binding, initialState: this.runtime.initialState, requirementIds: packet.requirementIds, mode, programs,
-      budget };
-    await this.queue.enqueue(job, { priority });
+    options: { epoch?: number; programs?: ProgramRef[]; priority?: number; requirementIds?: string[] } = {}): Promise<CheckJob> {
+    const job = await this.createJob(head, packet, mode, budget, options);
+    await this.queue.enqueue(job, { priority: options.priority ?? 3 });
     await this.emit({ at: now(), type: "check_queued", packetId: packet.id, detail: jobDetail(job, head.sourceSha) });
     const monitor = this.monitor(job, head).catch(error => { this.failure = error; });
     this.monitors.add(monitor);
     void monitor.finally(() => this.monitors.delete(monitor));
     return job;
+  }
+
+  private async createJob(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], budget: CheckJob["budget"],
+    options: { epoch?: number; programs?: ProgramRef[]; requirementIds?: string[] } = {}): Promise<CheckJob> {
+    this.assertHealthy();
+    const contextualIds = new Set([...packet.requirementIds, ...(packet.prerequisites ?? []).map(item => item.id)]);
+    const requirements = await this.runtime.artifacts.putJson(JSON.parse(JSON.stringify({ requirements: packet.requirements,
+      prerequisites: packet.prerequisites ?? [], implementedRequirementIds: head.implementedRequirementIds.filter(id => contextualIds.has(id)) })));
+    const requirementIds = options.requirementIds ?? packet.requirementIds;
+    const programs = options.programs ?? (mode === "prepare" ? [] : await this.programs(requirementIds, this.runtime.initialState, requirements));
+    return { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
+      packetId: packet.id, attempt: packet.attempt, moduleEpoch: options.epoch ?? this.checkpoints.snapshot.epoch, snapshot: head.snapshot, requirements,
+      binding: this.runtime.binding, initialState: this.runtime.initialState, requirementIds, mode: mode === "discover" && programs.length ? "replay" : mode, programs,
+      budget };
+  }
+
+  async verifyDelivery(head: ProducedSnapshot, packet: WorkPacket, budget: CheckJob["budget"], signal: AbortSignal): Promise<DeliveryReport> {
+    await this.drain();
+    const job = await this.createJob(head, packet, "prepare", budget);
+    const { report, receipts } = await this.runtime.verifyDelivery(job, signal);
+    const ready = await this.acceptReadiness(job, head, receipts);
+    const checked = report.ok && !ready ? { ok: false, stage: "readiness" as const, message: "Delivery did not produce current readiness evidence" } : report;
+    await atomicWrite(join(this.runtime.directory, "delivery", job.jobId + ".json"),
+      canonicalJson({ job: await this.runtime.artifacts.putJson(job), report: checked, receipts }));
+    return checked;
   }
 
   async report(job: CheckJob): Promise<CheckReport | undefined> {
@@ -121,40 +140,51 @@ export class CheckerCoordinator {
     this.assertHealthy();
   }
 
-  async programs(requirementIds: string[], initialState?: TypedRef): Promise<ProgramRef[]> {
+  async programs(requirementIds: string[], initialState?: TypedRef, requirements?: ContentRef): Promise<ProgramRef[]> {
+    const programs = new Map<string, ProgramRef>();
     for (const record of this.queue.records().reverse()) {
-      if (!record.report || !record.job.requirementIds.some(id => requirementIds.includes(id)) ||
+      const ref = record.report ?? record.lateReport;
+      if (!ref || !record.job.requirementIds.some(id => requirementIds.includes(id)) ||
         record.job.binding.digest !== this.runtime.binding.digest) continue;
-      const report = await this.runtime.artifacts.getJson<CheckReport>(record.report);
-      const programs: ProgramRef[] = [];
+      if (requirements && !sameRef(record.job.requirements, requirements)) continue;
+      const report = await this.runtime.artifacts.getJson<CheckReport>(ref);
+      await this.runtime.artifacts.validateReport(record.job, report);
       for (const program of report.programs) {
-        const descriptor = await this.runtime.artifacts.readTypedJson<{ initialState: TypedRef }>(program.descriptor);
+        if (!sameRef(program.binding, this.runtime.binding)) continue;
+        const descriptor = await this.runtime.artifacts.readTypedJson<CheckerProgramDescriptor>(program.descriptor);
         if (initialState && !sameRef(descriptor.initialState, initialState)) continue;
-        programs.push(program);
+        const contract = await this.runtime.artifacts.getJson<AcceptanceContract>(program.contract);
+        if (requirements && !sameRef(contract.requirements, requirements)) continue;
+        if (!contract.clauses.every(clause => requirementIds.includes(clause.requirementId))) continue;
+        programs.set(canonicalJson(program), program);
       }
-      if (programs.length) return programs;
     }
-    return [];
+    return [...programs.values()];
   }
 
   private async monitor(job: CheckJob, head: ProducedSnapshot): Promise<void> {
     const record = await this.queue.wait(job.jobId);
-    let ready = false;
     if (record.status === "completed" && record.report) {
       const report = await this.runtime.artifacts.getJson<CheckReport>(record.report);
       const manifest = await this.runtime.artifacts.getJson<{ receipts?: ContentRef[] }>(report.manifest);
-      for (const ref of manifest.receipts ?? []) {
-        const receipt = await this.runtime.artifacts.getJson<EvidenceReceipt>(ref);
-        await this.runtime.artifacts.validateReceipt(job, receipt);
-        if (receipt.kind === "readiness" && receipt.readiness?.result === "ready") ready = true;
-      }
-      if (ready && this.accepted && await this.checkpoints.ready(head.snapshot)) await this.accepted(head);
+      await this.acceptReadiness(job, head, manifest.receipts ?? []);
     }
     const current = this.checkpoints.snapshot;
     await this.emit({ at: now(), type: record.status === "cancelled" ? "check_cancelled" : "check_completed", packetId: job.packetId,
       detail: { ...jobDetail(job, head.sourceSha), status: record.status, reason: record.error,
         archived: current.producedHead?.snapshot.id !== job.snapshot.id || current.epoch !== job.moduleEpoch,
         durationMs: (record.completedAt ?? Date.now()) - (record.startedAt ?? record.queuedAt) } });
+  }
+
+  private async acceptReadiness(job: CheckJob, head: ProducedSnapshot, receipts: ContentRef[]): Promise<boolean> {
+    let ready = false;
+    for (const ref of receipts) {
+      const receipt = await this.runtime.artifacts.getJson<EvidenceReceipt>(ref);
+      await this.runtime.artifacts.validateReceipt(job, receipt);
+      if (receipt.kind === "readiness" && receipt.readiness?.result === "ready") ready = true;
+    }
+    if (ready && this.accepted && await this.checkpoints.ready(head.snapshot)) await this.accepted(head);
+    return ready;
   }
 }
 
@@ -189,6 +219,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   const inherited = new Set<string>();
   const skipped = new Set<string>();
   const currentResults = new Map<string, ScopedOutcome[]>();
+  let auditGroups: WorkPacket[] = [];
   const byId = new Map(catalog.requirements.map(item => [item.id, item]));
   let implementationCatalog: RequirementCatalog = catalog;
   const checkBudget = (): CheckJob["budget"] => ({ timeoutMs: 1_800_000,
@@ -240,10 +271,13 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   };
   const inspect = async (head: ProducedSnapshot, requirements: AtomicRequirement[], epoch: number): Promise<ScopedOutcome[]> => {
     const jobs: CheckJob[] = [];
-    for (const packet of auditPackets({ requirements, statusById: catalog.statusById })) {
+    const scope = new Set(requirements.map(item => item.id));
+    const grouped = new Set(auditGroups.flatMap(packet => packet.requirementIds));
+    const packets = [...auditGroups, ...auditPackets({ requirements: requirements.filter(item => !grouped.has(item.id)), statusById: catalog.statusById })];
+    for (const packet of packets.filter(packet => packet.requirementIds.some(id => scope.has(id)))) {
       const full = packetFor(packet.id, packet.requirements);
-      const programs = await coordinator.programs(packet.requirementIds, runtime.initialState);
-      jobs.push(await coordinator.submit(head, full, programs.length ? "replay" : "discover", checkBudget(), epoch, programs, 1));
+      jobs.push(await coordinator.submit(head, full, "discover", checkBudget(), { epoch, priority: 1,
+        requirementIds: packet.requirementIds.filter(id => scope.has(id)) }));
     }
     const reports = await Promise.all(jobs.map(job => coordinator.report(job)));
     await coordinator.drain();
@@ -276,7 +310,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     await state.record({ at: now(), type: "module_check_started", detail: { moduleId: module, moduleEpoch: epoch,
       snapshotId: head.snapshot.id, requirementIds: scope.map(item => item.id) } });
     const prepare = await coordinator.submit(head, packetFor(`prepare-${module}`, scope.length ? scope : catalog.requirements.slice(0, 1)),
-      "prepare", checkBudget(), epoch, [], 0);
+      "prepare", checkBudget(), { epoch, priority: 0 });
     const prepared = await coordinator.report(prepare);
     await coordinator.drain();
     let runnable = coordinator.checkpoints.snapshot.accepted.snapshot?.id === head.snapshot.id;
@@ -301,7 +335,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(repairPacket, implemented);
         epoch = await coordinator.checkpoints.nextEpoch();
-        const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", checkBudget(), epoch, [], 0);
+        const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", checkBudget(), { epoch, priority: 0 });
         await coordinator.report(readyJob); await coordinator.drain();
         if (coordinator.checkpoints.snapshot.accepted.snapshot?.id === repaired.snapshot.id) {
           const regressionScope = catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id) &&
@@ -314,15 +348,10 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
             checked.filter(item => outcomeKey(item) === outcomeKey(previous)).length > 0 &&
             checked.filter(item => outcomeKey(item) === outcomeKey(previous)).every(item => item.status === "pass"));
           if (preserved && improved) {
-            // Replay the improved complete scope again in new execution environments.
-            const confirmed = await inspect(repaired, regressionScope, epoch);
-            if (checked.filter(item => item.status === "pass").every(previous => confirmed.filter(item => outcomeKey(item) === outcomeKey(previous)).length > 0 &&
-              confirmed.filter(item => outcomeKey(item) === outcomeKey(previous)).every(item => item.status === "pass"))) {
-              retained = true; runnable = true; head = repaired;
-              outcomes = confirmed.filter(item => scope.some(requirement => requirement.id === item.requirementId));
-              for (const requirement of regressionScope.filter(item => moduleId(item) !== module)) currentResults.set(requirement.id,
-                confirmed.filter(item => item.requirementId === requirement.id));
-            }
+            retained = true; runnable = true; head = repaired;
+            outcomes = checked.filter(item => scope.some(requirement => requirement.id === item.requirementId));
+            for (const requirement of regressionScope.filter(item => moduleId(item) !== module)) currentResults.set(requirement.id,
+              checked.filter(item => item.requirementId === requirement.id));
           }
         }
       }
@@ -348,6 +377,8 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   try {
     await state.record({ at: now(), type: "pipeline_started", detail: { requirements: catalog.requirements.length,
       totalBudgetMs: options.totalBudgetMs, adapterId: options.applicationContract.adapterId, ...deps.runMetadata } });
+    // 恢复运行时先把已实现范围交给展示层；验收结果仍由后续独立检查确定。
+    if (implemented.size) await state.record({ at: now(), type: "run_resumed", detail: { requirementIds: [...implemented] } });
     if (options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution) {
       const history = options.historicalRequirements ?? await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, "shallow-progress"));
       const selection = selectEvolutionScope(catalog, new Set(history.requirementIds), history.requirementDigests, options.requirementDigests);
@@ -360,18 +391,10 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         implementationRequirementIds: implementationCatalog.requirements.map(item => item.id),
         auditRequirementIds: catalog.requirements.filter(item => !skipped.has(item.id)).map(item => item.id), skippedRequirementIds: [...skipped] } });
     }
-    if (coordinator.checkpoints.snapshot.producedHead) {
-      const head = coordinator.checkpoints.snapshot.producedHead!;
-      const packet = packetFor("resume", catalog.requirements.filter(item => implemented.has(item.id)));
-      if (packet.requirements.length) {
-        const job = await coordinator.submit(head, packet, "prepare", checkBudget(), undefined, [], 0);
-        await coordinator.report(job); await coordinator.drain();
-        if (coordinator.checkpoints.snapshot.accepted.snapshot?.id !== head.snapshot.id) await boundary(moduleId(packet.requirements.at(-1)!));
-      }
-    }
-    let grouping = featureGroupPackets(implementationCatalog);
+    const savedGroups = coordinator.checkpoints.snapshot.featureGroups;
+    let grouping = savedGroups ? featureGroupingFromIds(implementationCatalog, savedGroups) : featureGroupPackets(implementationCatalog);
     const grouper = deps.grouper;
-    if (grouper && implementationCatalog.requirements.length && budget.remaining("implementation") > 0) {
+    if (!savedGroups && grouper && implementationCatalog.requirements.length && budget.remaining("implementation") > 0) {
       await state.record({ at: now(), type: "feature_grouping_started", detail: { requirements: implementationCatalog.requirements.length,
         limits: { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20_000 } } });
       const at = Date.now(); let reason: string | undefined; let source: "llm" | "deterministic" = "deterministic";
@@ -383,6 +406,17 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       } catch (error) { reason = message(error); }
       await state.record({ at: now(), type: "feature_grouping_finished", detail: { source, reason, grouping: grouping.stats,
         durationMs: Date.now() - at, groups: grouping.packets.map(item => ({ packetId: item.id, requirementIds: item.requirementIds })) } });
+    }
+    if (!savedGroups) await coordinator.checkpoints.setFeatureGroups(grouping.packets.map(packet => packet.requirementIds));
+    auditGroups = grouping.packets.map(packet => packetFor(packet.id, packet.requirementIds.map(id => byId.get(id)!)));
+    if (coordinator.checkpoints.snapshot.producedHead) {
+      const head = coordinator.checkpoints.snapshot.producedHead!;
+      const packet = packetFor("resume", catalog.requirements.filter(item => implemented.has(item.id)));
+      if (packet.requirements.length) {
+        const job = await coordinator.submit(head, packet, "prepare", checkBudget(), { priority: 0 });
+        await coordinator.report(job); await coordinator.drain();
+        if (coordinator.checkpoints.snapshot.accepted.snapshot?.id !== head.snapshot.id) await boundary(moduleId(packet.requirements.at(-1)!));
+      }
     }
     let previousModule: string | undefined;
     for (const grouped of grouping.packets) {
@@ -414,7 +448,8 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         continue;
       }
       for (const id of packet.requirementIds) implemented.add(id);
-      await coordinator.seal(packet, implemented);
+      const head = await coordinator.seal(packet, implemented);
+      await coordinator.submit(head, auditGroups.find(group => group.id === grouped.id)!, "discover", checkBudget());
     }
     if (previousModule) await boundary(previousModule);
     if (!coordinator.checkpoints.snapshot.producedHead) await coordinator.seal(packetFor("initial", catalog.requirements), implemented);
@@ -433,11 +468,9 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     let delivery: DeliveryReport = { ok: false, stage: "candidate", message: "No sealed application is available" };
     const verifyDelivery = async (candidate: ProducedSnapshot): Promise<DeliveryReport> => {
       const packet = packetFor("delivery", scope.length ? scope : catalog.requirements.slice(0, 1));
-      const job = await coordinator.submit(candidate, packet, "prepare", checkBudget(), undefined, [], 0);
-      await coordinator.report(job); await coordinator.drain();
       const signal = AbortSignal.timeout(Math.max(1, Math.min(720_000, budget.remaining("delivery"))));
       await state.record({ at: now(), type: "delivery_check_started", detail: { snapshotId: candidate.snapshot.id } });
-      const report = await runtime.verifyDelivery(job, signal);
+      const report = await coordinator.verifyDelivery(candidate, packet, checkBudget(), signal);
       await state.record({ at: now(), type: "delivery_check_finished", detail: { snapshotId: candidate.snapshot.id, ...report } });
       return report;
     };

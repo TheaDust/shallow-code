@@ -1,9 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fork, type ForkOptions } from "node:child_process";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Frame, Locator } from "@playwright/test";
 import { getQuickJS } from "quickjs-emscripten";
+import type { WebFileFixture } from "./fixtures.js";
+import { dropFiles, fileMetadata, filePayload, pasteImage, uploadDirectory } from "./file-inputs.js";
+import { renderBinary, renderOptions, type RenderResult } from "./binary-renderer.js";
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface SandboxOptions { signal: AbortSignal; timeoutMs: number; memoryLimitBytes?: number }
@@ -134,6 +137,8 @@ const PRELUDE = String.raw`
     reload: checkpointId => call('reload', {actor, window, frame, checkpointId}),
     inspect: () => call('inspect', {actor, window, frame}),
     url: () => call('url', {actor, window, frame}),
+    setViewport: (size, checkpointId) => call('setViewport', {actor, window, frame, size, checkpointId}),
+    viewport: () => call('viewport', {actor, window, frame}),
     read: (locator, kind = 'text') => call('read', {actor, window, frame, locator, kind}),
     attribute: (locator, name) => call('attribute', {actor, window, frame, locator, name}),
     style: (locator, name) => call('style', {actor, window, frame, locator, name}),
@@ -150,6 +155,9 @@ const PRELUDE = String.raw`
     rightClick: (locator, checkpointId) => call('rightClick', {actor, window, frame, locator, checkpointId}),
     dragTo: (from, to, checkpointId) => call('dragTo', {actor, window, frame, from, to, checkpointId}),
     upload: (locator, files, checkpointId) => call('upload', {actor, window, frame, locator, files, checkpointId}),
+    dropFiles: (locator, files, checkpointId) => call('dropFiles', {actor, window, frame, locator, files, checkpointId}),
+    uploadDirectory: (locator, directory, checkpointId) => call('uploadDirectory', {actor, window, frame, locator, directory, checkpointId}),
+    pasteImage: (locator, file, checkpointId) => call('pasteImage', {actor, window, frame, locator, file, checkpointId}),
     focus: (locator, checkpointId) => call('focus', {actor, window, frame, locator, checkpointId}),
     blur: (locator, checkpointId) => call('blur', {actor, window, frame, locator, checkpointId}),
     scroll: (deltaX = 0, deltaY = 0, checkpointId) => call('scroll', {actor, window, frame, deltaX, deltaY, checkpointId}),
@@ -158,7 +166,10 @@ const PRELUDE = String.raw`
       writeText: (value, checkpointId) => call('clipboardWrite', {actor, window, value, checkpointId}),
       readText: () => call('clipboardRead', {actor, window}),
     }),
+    storage: Object.freeze({ fill: (bytes, checkpointId) => call('storageFill', {actor, window, frame, bytes, checkpointId}) }),
     download: (locator, checkpointId, encoding = 'text') => call('download', {actor, window, frame, locator, checkpointId, encoding}),
+    render: (sourceId, options = {}) => call('render', {actor, window, sourceId, options}),
+    image: (locator, options = {}) => call('image', {actor, window, frame, locator, options}),
     popup: async (locator, checkpointId) => {const opened = await call('popup', {actor, window, frame, locator, checkpointId}); return page(actor, opened.window);},
     frame: name => page(actor, window, name),
   });
@@ -167,19 +178,20 @@ const PRELUDE = String.raw`
 })();`;
 
 export interface WebLocator { role?: string; name?: string; label?: string; text?: string; testId?: string; within?: WebLocator }
-export type WebFile = { name: string; mimeType?: string; text?: string; base64?: string };
+export type WebFile = { name: string; mimeType?: string; text?: string; base64?: string; fixture?: WebFileFixture };
 export interface WebExpectation {
   clauseId: string;
   checkpointId: string;
   expected: { operator: "equal" | "contains" | "greaterThan" | "lessThan" | "match" | "relation"; value: unknown };
 }
-export interface WebCheckpoint { id: string; kind: "precondition" | "action" | "assertion"; expected?: WebExpectation["expected"] }
+export interface WebCheckpoint { id: string; kind: "precondition" | "action" | "condition" | "assertion"; expected?: WebExpectation["expected"] }
 export interface WebRuntimeEvent {
   kind: "action" | "observation" | "assertion" | "precondition";
   checkpointId?: string;
   assertion?: { clauseId: string; result: "satisfied" | "violated" };
   inputs: string[];
   payload: Record<string, unknown>;
+  attachments?: Array<{ bytes: Buffer; mediaType: string }>;
 }
 interface Actor { context: BrowserContext; windows: Map<string, Page> }
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
@@ -190,6 +202,9 @@ export class WebProgramRuntime {
   private readonly actors = new Map<string, Actor>();
   private readonly openingActors = new Set<string>();
   private readonly observations = new Map<string, unknown>();
+  private readonly binaries = new Map<string, { bytes: Buffer; actor: string; window: string }>();
+  private readonly rendered = new Map<string, RenderResult>();
+  private readonly inputCleanup = new Set<() => Promise<void>>();
   private readonly pending = new Set<Promise<unknown>>();
   private active = true;
   constructor(
@@ -206,10 +221,15 @@ export class WebProgramRuntime {
   }
   async close(): Promise<void> {
     this.active = false;
-    await Promise.all([...this.actors.values()].map((actor) => actor.context.close()));
+    const contexts = await Promise.allSettled([...this.actors.values()].map(actor => actor.context.close()));
     await Promise.allSettled([...this.pending]);
+    const cleanup = await Promise.allSettled([...this.inputCleanup].map(async dispose => { await dispose(); this.inputCleanup.delete(dispose); }));
     this.actors.clear();
     this.observations.clear();
+    this.binaries.clear();
+    this.rendered.clear();
+    const failure = [...contexts, ...cleanup].find(result => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
   }
   async captureEvidence(directory: string): Promise<Array<{ bytes: Buffer; mediaType: string }>> {
     const attachments: Array<{ bytes: Buffer; mediaType: string }> = [];
@@ -225,9 +245,9 @@ export class WebProgramRuntime {
     }
     return attachments;
   }
-  private async observation(payload: Record<string, unknown>): Promise<{ id: string; value: unknown }> {
+  private async observation(payload: Record<string, unknown>, inputs: string[] = [], attachments?: WebRuntimeEvent["attachments"]): Promise<{ id: string; value: unknown }> {
     if (!this.active) throw new Error("Web case closed before observation completed");
-    const id = await this.emit({ kind: "observation", inputs: [], payload });
+    const id = await this.emit({ kind: "observation", inputs, payload, ...(attachments ? { attachments } : {}) });
     this.observations.set(id, payload.value);
     return { id, value: payload.value };
   }
@@ -288,6 +308,66 @@ export class WebProgramRuntime {
       url: target.url(), text: (await target.locator("body").innerText()).slice(0, 32_000), accessibility: (await target.locator("body").ariaSnapshot()).slice(0, 32_000),
     } });
     if (method === "url") return this.observation({ actor: actorName, window: windowName, frame: input.frame, kind: "url", value: target.url() });
+    if (method === "render" || method === "image") {
+      const options = renderOptions(input.options ?? {});
+      let bytes: Buffer;
+      const inputs: string[] = [];
+      if (method === "render") {
+        const sourceId = string(input.sourceId, "sourceId");
+        const source = this.binaries.get(sourceId);
+        if (!source || source.actor !== actorName || source.window !== windowName) throw new Error("Render requires a binary download observation from this actor and window");
+        bytes = source.bytes; inputs.push(sourceId);
+      } else {
+        const locator = this.locate(target, input.locator, false);
+        if (await locator.count() !== 1) throw new Error("Image locator must identify exactly one element");
+        const box = await locator.boundingBox();
+        if (!box || box.width > 4096 || box.height > 4096) throw new Error("Image observation requires a visible element of at most 4096 pixels per side");
+        bytes = await locator.screenshot({ timeout: this.timeoutMs });
+      }
+      const key = createHash("sha256").update(bytes).update(JSON.stringify(options)).digest("hex");
+      let result = this.rendered.get(key);
+      if (!result) {
+        result = await renderBinary(bytes, options, signal);
+        if (this.rendered.size >= 16) this.rendered.delete(this.rendered.keys().next().value!);
+        this.rendered.set(key, result);
+      }
+      return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "rendered-content", value: result.value }, inputs, [{ bytes: result.png, mediaType: "image/png" }]);
+    }
+    if (method === "viewport" || method === "setViewport") {
+      if (input.frame !== undefined) throw new Error("Viewport belongs to the owning window");
+      if (method === "setViewport") {
+        const size = input.size as { width?: unknown; height?: unknown } | undefined;
+        const width = finiteNumber(size?.width, "width", 3840), height = finiteNumber(size?.height, "height", 2160);
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 240 || height < 240) throw new Error("Viewport dimensions must be integers of at least 240 pixels");
+        await page.setViewportSize({ width, height });
+        await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, width, height } });
+      }
+      return this.observation({ actor: actorName, window: windowName, kind: "viewport", value: await page.evaluate(() => ({
+        width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
+      })) });
+    }
+    if (method === "storageFill") {
+      if (input.frame !== undefined) throw new Error("Storage fixture belongs to the owning window");
+      const bytes = finiteNumber(input.bytes, "bytes", 16 * 1024 * 1024);
+      if (!Number.isInteger(bytes) || bytes < 2) throw new Error("Storage fixture bytes must be an integer between 2 and 16 MiB");
+      const result = await page.evaluate(({ bytes, prefix }) => {
+        let writtenBytes = 0, index = 0, chunk = 32_768, quotaExceeded = false;
+        while (writtenBytes + 2 <= bytes) {
+          const length = Math.min(chunk, Math.floor((bytes - writtenBytes) / 2));
+          try { localStorage.setItem(prefix + index, "A".repeat(length)); writtenBytes += length * 2; index++; }
+          catch (error) {
+            if (!(error instanceof DOMException) || error.name !== "QuotaExceededError") throw error;
+            quotaExceeded = true;
+            if (length === 1) break;
+            chunk = Math.floor(length / 2);
+          }
+        }
+        return { writtenBytes, quotaExceeded };
+      }, { bytes, prefix: `checker-fixture:${randomUUID()}:` });
+      await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, bytes } });
+      return this.observation({ actor: actorName, window: windowName, kind: "storage-fixture", value: result });
+    }
+    let uploadedFiles: ReturnType<typeof filePayload> | undefined;
     if (method === "clipboardWrite" || method === "clipboardRead") {
       if (input.frame !== undefined) throw new Error("Clipboard belongs to the owning window, not a frame");
       if (method === "clipboardWrite") await page.evaluate(async (value) => navigator.clipboard.writeText(value as string), string(input.value, "value"));
@@ -317,7 +397,7 @@ export class WebProgramRuntime {
     } else if (method === "attribute" || method === "style" || method === "read" || method === "click" || method === "fill" ||
       method === "press" || method === "check" || method === "setChecked" || method === "select" || method === "hover" ||
       method === "doubleClick" || method === "rightClick" || method === "upload" || method === "focus" || method === "blur" ||
-      method === "download" || method === "popup") {
+      method === "download" || method === "popup" || method === "dropFiles" || method === "uploadDirectory" || method === "pasteImage") {
       const locator = this.locate(target, input.locator, !["read", "attribute", "style"].includes(method));
       if (await locator.count() !== 1) throw new Error("Locator must identify exactly one element");
       if (method === "attribute") {
@@ -351,7 +431,19 @@ export class WebProgramRuntime {
       } else if (method === "hover") await locator.hover();
       else if (method === "doubleClick") await locator.dblclick();
       else if (method === "rightClick") await locator.click({ button: "right" });
-      else if (method === "upload") await locator.setInputFiles(await filePayload(input.files));
+      else if (method === "upload") { uploadedFiles = filePayload(input.files); await locator.setInputFiles(uploadedFiles); }
+      else if (method === "dropFiles") { uploadedFiles = filePayload(input.files); await dropFiles(page, locator, uploadedFiles); }
+      else if (method === "uploadDirectory") {
+        const { dispose, ...directory } = await uploadDirectory(locator, input.directory);
+        this.inputCleanup.add(dispose);
+        return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [],
+          payload: { method, actor: actorName, window: windowName, frame: input.frame, locator: input.locator, directory } }) };
+      }
+      else if (method === "pasteImage") {
+        uploadedFiles = filePayload(input.file);
+        if (uploadedFiles.length !== 1) throw new Error("Paste requires one image");
+        await pasteImage(page, locator, uploadedFiles[0]!);
+      }
       else if (method === "focus") await locator.focus();
       else if (method === "blur") await locator.blur();
       else if (method === "popup") {
@@ -382,7 +474,13 @@ export class WebProgramRuntime {
         const value = encoding === "text" ? new TextDecoder("utf-8", { fatal: true }).decode(bytes) : bytes.toString("base64");
         await download.delete();
         await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, locator: input.locator, encoding, filename: download.suggestedFilename(), bytes: size } });
-        return this.observation({ actor: actorName, kind: "download", filename: download.suggestedFilename(), encoding, value });
+        const content = await this.observation({ actor: actorName, kind: "download", filename: download.suggestedFilename(), encoding, value });
+        if (encoding === "base64") {
+          if ([...this.binaries.values()].reduce((total, source) => total + source.bytes.length, bytes.length) > 16 * 1024 * 1024) throw new Error("Binary downloads exceed the 16 MiB case limit");
+          this.binaries.set(content.id, { bytes, actor: actorName, window: windowName });
+        }
+        const filename = await this.observation({ actor: actorName, kind: "download-filename", value: download.suggestedFilename() });
+        return { ...content, filename };
       }
     } else if (method === "goto") {
       if (input.frame !== undefined) throw new Error("Navigate frames through application controls");
@@ -399,7 +497,7 @@ export class WebProgramRuntime {
     this.safeUrl(page.url());
     return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: {
       method, actor: actorName, window: windowName, frame: input.frame, locator: input.locator,
-      ...(method === "upload" ? { files: fileSummary(input.files) } : { value: input.value }),
+      ...(uploadedFiles ? { files: fileMetadata(uploadedFiles) } : { value: input.value }),
     } }) };
   }
   private safeUrl(path: string): string {
@@ -468,42 +566,5 @@ function boolean(value: unknown, field: string): boolean {
 
 function finiteNumber(value: unknown, field: string, maximum: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > maximum) throw new Error(`${field} must be a bounded number`);
-  return value;
-}
-
-function fileSummary(value: unknown): Array<{ name: string; bytes: number; mimeType?: string }> {
-  return filePayload(value).map(file => ({ name: file.name, bytes: file.buffer.length, ...(file.mimeType ? { mimeType: file.mimeType } : {}) }));
-}
-
-function filePayload(value: unknown): Array<{ name: string; mimeType: string; buffer: Buffer }> {
-  const files = Array.isArray(value) ? value : [value];
-  if (!files.length || files.length > 20) throw new Error("Upload requires between one and twenty files");
-  let total = 0;
-  return files.map((raw, index) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`Upload file ${index + 1} must be an object`);
-    const item = raw as Record<string, unknown>;
-    const name = string(item.name, `files[${index}].name`);
-    if (name.includes("\\") || name.includes("/") || name === "." || name === "..") throw new Error("Upload file names must be plain names");
-    if ((item.text === undefined) === (item.base64 === undefined)) throw new Error("Each upload file must provide exactly one of text or base64");
-    const mimeType = item.mimeType === undefined ? undefined : string(item.mimeType, `files[${index}].mimeType`);
-    let buffer: Buffer;
-    if (item.text !== undefined) {
-      if (typeof item.text !== "string" || Buffer.byteLength(item.text, "utf8") > MAX_FILE_BYTES) throw new Error(`files[${index}].text must be a bounded string`);
-      buffer = Buffer.from(item.text, "utf8");
-    }
-    else {
-      const encoded = boundedBase64(item.base64, `files[${index}].base64`);
-      if (encoded.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) throw new Error("Upload base64 is invalid");
-      buffer = Buffer.from(encoded, "base64");
-      if (buffer.toString("base64") !== encoded) throw new Error("Upload base64 is not canonical");
-    }
-    total += buffer.length;
-    if (buffer.length > MAX_FILE_BYTES || total > MAX_FILE_BYTES) throw new Error("Upload exceeds read limit");
-    return { name, mimeType: mimeType ?? "application/octet-stream", buffer };
-  });
-}
-
-function boundedBase64(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > Math.ceil(MAX_FILE_BYTES / 3) * 4) throw new Error(`${field} must be a bounded base64 string`);
   return value;
 }

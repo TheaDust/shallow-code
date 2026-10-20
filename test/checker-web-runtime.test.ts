@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { executeSandboxProgram } from "../src/checker/adapters/web/program-runtime.js";
+import { fileFixture } from "../src/checker/adapters/web/fixtures.js";
+import { webReviewEvidence } from "../src/checker/adapters/web/review-evidence.js";
+import { hashBytes } from "../src/checker/artifacts.js";
+import type { EvidenceReceipt, ReviewEvidence, TypedRef } from "../src/checker/port.js";
 
 const signal = new AbortController().signal;
 test("QuickJS supports ordinary functions, loops and asynchronous JSON host calls", async () => {
@@ -34,4 +38,37 @@ test("QuickJS cancels a pending asynchronous host call without late realm access
   await assert.rejects(promise, /cancelled-case/);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(await executeSandboxProgram("return 'clean'", async () => ({}), { signal, timeoutMs: 1_000 }), "clean");
+});
+
+test("host file fixtures enforce bounded real text and PNG inputs", () => {
+  const text = fileFixture({ kind: "text", bytes: 6 * 1024 * 1024, text: "# Test\n" });
+  assert.equal(text.buffer.length, 6 * 1024 * 1024);
+  assert.equal(text.buffer.subarray(0, 7).toString(), "# Test\n");
+  const png = fileFixture({ kind: "png", bytes: 6 * 1024 * 1024 });
+  assert.equal(png.mimeType, "image/png");
+  assert.equal(png.buffer.length, 6 * 1024 * 1024);
+  for (const value of [
+    { kind: "text", bytes: 9 * 1024 * 1024 }, { kind: "text", bytes: -1 }, { kind: "text", bytes: 1.5 },
+    { kind: "text", bytes: 1, text: 5 }, { kind: "text", bytes: 1, text: "" }, { kind: "png", bytes: 10 },
+    { kind: "png", bytes: 128, path: "private" }, { kind: "other", bytes: 128 },
+  ]) assert.throws(() => fileFixture(value));
+});
+
+test("binary review projection bounds repeated download data while retaining text and original evidence", () => {
+  const bytes = Buffer.alloc(2 * 1024 * 1024, 173), binary = bytes.toString("base64");
+  const artifact: TypedRef = { id: "binary", digest: "binary", schema: { id: "schema", digest: "schema" }, mediaType: "application/json" };
+  const text = "<html>required export content</html>";
+  const evidence: ReviewEvidence[] = [
+    { receipt: { kind: "observation", payload: artifact } as EvidenceReceipt, payload: { kind: "download", encoding: "base64", filename: "export.png", value: binary }, environment: {} },
+    { receipt: { kind: "assertion" } as EvidenceReceipt, payload: { actual: binary, expected: { metadata: "preserved" } }, environment: {} },
+    { receipt: { kind: "observation" } as EvidenceReceipt, payload: { kind: "download", encoding: "text", value: text }, environment: {} },
+  ];
+  const projected = webReviewEvidence(evidence);
+  assert(JSON.stringify(projected).length < 2000);
+  const summary = (projected[0]!.payload as { value: unknown }).value;
+  assert.deepEqual(summary, { encoding: "base64", bytes: bytes.length, sha256: hashBytes(bytes), artifact });
+  assert.deepEqual((projected[1]!.payload as { actual: unknown }).actual, summary);
+  assert.equal((projected[2]!.payload as { value: string }).value, text);
+  assert.equal((evidence[0]!.payload as { value: string }).value, binary);
+  assert.equal((evidence[1]!.payload as { actual: string }).actual, binary);
 });

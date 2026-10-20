@@ -206,3 +206,70 @@ test("Checker Web runtime covers common input, pointer and observation operation
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test("download filenames are independent observations and reject a wrong expected name", async () => {
+  await application(false, async baseUrl => {
+    const browser = await chromium.launch({ headless: true });
+    const events: WebRuntimeEvent[] = [];
+    const runtime = new WebProgramRuntime(browser, baseUrl, async event => { events.push(event); return `host-${events.length}`; }, [
+      { clauseId: "filename", checkpointId: "name-result", expected: { operator: "equal", value: "orders.txt" } },
+      { clauseId: "wrong-name", checkpointId: "wrong-result", expected: { operator: "equal", value: "other.txt" } },
+    ]);
+    try {
+      const result = await runtime.run(`
+        const page = await browser.actor('alice');
+        const download = await page.download({role:'link',name:'Export order'});
+        await check.expect('filename',[download.filename.id]);
+        await check.expect('wrong-name',[download.filename.id]);
+        return {name:download.filename.value,content:download.value};
+      `, { signal: new AbortController().signal, timeoutMs: 10_000 });
+      assert.deepEqual(result, { name: "orders.txt", content: "Order O-17: unpaid" });
+      assert.deepEqual(events.filter(event => event.kind === "assertion").map(event => event.assertion!.result), ["satisfied", "violated"]);
+    } finally { await runtime.close(); await browser.close(); }
+  });
+});
+
+test("host fixtures supply real oversized files, narrow viewports and isolated storage quota", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/html");
+    response.end(`<!doctype html><input type="file" aria-label="Import"><output role="status"></output>
+      <script>localStorage.setItem('existing','keep');document.querySelector('input').onchange=event=>{
+        const file=event.target.files[0];document.querySelector('output').textContent=JSON.stringify({name:file.name,size:file.size,type:file.type});
+      };</script>`);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address(); assert(address && typeof address === "object");
+  const browser = await chromium.launch({ headless: true });
+  const events: WebRuntimeEvent[] = [];
+  const runtime = new WebProgramRuntime(browser, `http://127.0.0.1:${address.port}`, async event => { events.push(event); return `host-${events.length}`; });
+  try {
+    const result = await runtime.run(`
+      const page = await browser.actor('alice');
+      await page.setViewport({width:375,height:700});
+      const viewport = await page.viewport();
+      await page.upload({label:'Import'},[{name:'oversized.png',fixture:{kind:'png',bytes:6*1024*1024}}]);
+      const file = await page.read({role:'status'});
+      return {viewport:viewport.value,file:JSON.parse(file.value)};
+    `, { signal: new AbortController().signal, timeoutMs: 10_000 });
+    assert.deepEqual(result, { viewport: { width: 375, height: 700, scrollWidth: 375, scrollHeight: 700 }, file: { name: "oversized.png", size: 6 * 1024 * 1024, type: "image/png" } });
+    const page = browser.contexts()[0]!.pages()[0]!;
+    assert.deepEqual(await page.evaluate(async () => {
+      const file = document.querySelector('input')!.files![0]!;
+      const bitmap = await createImageBitmap(file);
+      return { width: bitmap.width, height: bitmap.height };
+    }), { width: 1, height: 1 }, "generated >5 MB input must decode as an actual image");
+    await runtime.run(String.raw`const page=await browser.actor('alice'); await page.upload({label:'Import'},[{name:'large.md',mimeType:'text/markdown',fixture:{kind:'text',bytes:6*1024*1024,text:'# Test\n'}}]);`, { signal: new AbortController().signal, timeoutMs: 10_000 });
+    assert.equal(await page.evaluate(async () => (await document.querySelector('input')!.files![0]!.text()).length), 6 * 1024 * 1024);
+    const quota = await runtime.run(`const page=await browser.actor('alice'); return (await page.storage.fill(16*1024*1024)).value;`, { signal: new AbortController().signal, timeoutMs: 10_000 }) as { quotaExceeded: boolean; writtenBytes: number };
+    assert.equal(quota.quotaExceeded, true); assert(quota.writtenBytes > 0);
+    assert.equal(await page.evaluate(() => localStorage.getItem('existing')), "keep");
+    await runtime.run(`await browser.actor('bob');`, { signal: new AbortController().signal, timeoutMs: 10_000 });
+    assert.equal(await browser.contexts()[1]!.pages()[0]!.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('checker-fixture:'))), false);
+    assert(JSON.stringify(events).length < 10_000, "large fixture contents never enter receipts or QuickJS output");
+    await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.upload({label:'Import'},[{name:'bad.png',text:'fake',fixture:{kind:'png',bytes:128}}]);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /exactly one/);
+    await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.upload({label:'Import'},[{name:'bad.png',fixture:{kind:'png',bytes:9*1024*1024}}]);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /8 MiB/);
+  } finally {
+    await runtime.close(); await browser.close(); server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
