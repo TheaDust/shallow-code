@@ -41,9 +41,14 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
       await hook?.(job, signal);
       if (job.mode !== "prepare") await onProgress?.({ stage: "replay" });
       const ready = await readiness(job);
+      const requirements = job.mode === "prepare" ? undefined
+        : await artifacts.getJson<{ requirements: Array<{ id: string; scenarioContracts?: Array<{ id: string }> }> }>(job.requirements);
       return { job: await artifacts.putJson(job), snapshot: job.snapshot, binding, manifest: await artifacts.putJson({ receipts: [ready] }), programs: [],
-        outcomes: job.mode === "prepare" ? [] : await Promise.all(job.requirementIds.map(async requirementId => ({ requirementId,
-          scenarioId: "description", clauseId: `${requirementId}:result`, status: await status?.(job) ?? "pass", evidence: [ready] }))) };
+        outcomes: job.mode === "prepare" ? [] : await Promise.all(job.requirementIds.flatMap(requirementId => {
+          const scenarios = requirements?.requirements.find(item => item.id === requirementId)?.scenarioContracts;
+          return (scenarios?.length ? scenarios : [{ id: "description" }]).map(async scenario => ({ requirementId,
+            scenarioId: scenario.id, clauseId: `${requirementId}:${scenario.id}:result`, status: await status?.(job) ?? "pass", evidence: [ready] }));
+        })) };
     } } };
   f.options.checker = { mode: "active", concurrency: 2 };
   f.deps.checker = runtime;
@@ -273,11 +278,13 @@ test("Group checks overlap Builder while the next module waits for current-versi
     }
     const groupJobs = jobs.filter(job => job.moduleEpoch === 0);
     assert.deepEqual(groupJobs.map(job => job.requirementIds), [["A"], ["B"]]);
+    assert(groupJobs.every(job => job.mode === "discover"));
     assert.equal(groupJobs[0]!.snapshot.id, checkpoint!.snapshots[0].snapshot.id);
     assert.equal(groupJobs[1]!.snapshot.id, checkpoint!.snapshots[1].snapshot.id);
-    assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.budget.timeoutMs === 1_800_000));
+    assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.budget.timeoutMs === 3_600_000));
     const firstModuleJobs = jobs.filter(job => job.moduleEpoch === 1 && job.moduleId === "FIRST");
     assert.equal(firstModuleJobs.length, 3);
+    assert(firstModuleJobs.filter(job => job.mode !== "prepare").every(job => job.mode === "replay"), "boundary jobs remain replay even when no programs were produced");
     assert.ok(firstModuleJobs.every(job => job.snapshot.id === checkpoint!.snapshots[1].snapshot.id));
     assert.deepEqual(firstModuleJobs.filter(job => job.mode !== "prepare").flatMap(job => job.requirementIds).sort(), ["A", "B"]);
     const events = await f.events();
@@ -400,7 +407,7 @@ test("Module boundary rechecks prerequisite behavior changed by a later module",
   });
 });
 
-test("Checker observations update only published current results in the terminal", () => {
+test("Checker observations update published results without resetting them at a module boundary", () => {
   const view = new BuildView({ requirementIds: ["A"], models: { builder: "b", checker: "c" }, onInterrupt() {} }, () => 24, terminalTheme(false));
   const formatter = new HumanRunFormatter();
   const event = { at: "2026-10-16T00:00:00Z", type: "module_check_finished" as const,
@@ -410,7 +417,37 @@ test("Checker observations update only published current results in the terminal
   view.receive({ ...event, detail: { ...event.detail, published: false, requirementResults: { A: "failed" } } }, "历史结果");
   assert.match(view.render(100).join("\n"), /已验证 1\/1/);
   view.receive({ at: event.at, type: "snapshot_sealed", detail: { snapshotId: "new", sourceSha: "new-sha", requirementIds: ["A"], sequence: 2 } }, "新版本");
-  assert.match(view.render(100).join("\n"), /已验证 0\/1/);
+  assert.match(view.render(100).join("\n"), /已验证 1\/1/, "a sealed module keeps prior coverage until new results replace it");
+});
+
+test("Module and final events report cumulative scenario coverage", async () => {
+  await withModulePipeline(async f => {
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    const scenario = (id: string, name: string) => ({ id, name, steps: [
+      { keyword: "GIVEN", content: "The workspace is open" },
+      { keyword: "WHEN", content: "The user acts" },
+      { keyword: "THEN", content: "The result is visible" },
+    ] });
+    input.children[0].children[0].scenarios = [scenario("A-1", "First"), scenario("A-2", "Second")];
+    input.children[1].children[0].scenarios = [scenario("C-1", "Third")];
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    await attach(f);
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    const events = await f.events();
+    const first = events.find(event => event.type === "module_check_finished" && event.detail?.moduleId === "FIRST");
+    assert.equal(first?.type, "module_check_finished");
+    if (first?.type !== "module_check_finished") return;
+    assert.deepEqual(first.detail?.scenarioCoverage, { total: 3, verified: 2, failed: 0, inconclusive: 0, notRun: 1 },
+      "the first module reports only its own implementation and leaves later scenarios unrun");
+    assert.deepEqual(first.detail?.scenarioResults?.map(item => [item.requirementId, item.scenarioId, item.status]),
+      [["A", "A-1", "verified"], ["A", "A-2", "verified"]]);
+    const final = events.find(event => event.type === "pipeline_finished");
+    assert.equal(final?.type, "pipeline_finished");
+    if (final?.type !== "pipeline_finished") return;
+    assert.deepEqual(final.detail?.scenarioCoverage, { total: 3, verified: 3, failed: 0, inconclusive: 0, notRun: 0 });
+    assert.equal(result.scenarioResults?.filter(item => item.status === "verified").length, 3);
+  });
 });
 
 test("Rejected repair restores the complete module, including B produced after A", async () => {
@@ -501,7 +538,7 @@ test("Repair retains partial improvement and checks each packet once per round f
     assert.ok(result.verifiedRequirementIds.includes("B"));
     assert.ok((await f.events()).some(item => item.type === "repair_batch_finished" && item.detail?.retained === true));
     assert.ok(jobs.every(job => job.initialState.id === runtime.initialState.id));
-    assert.ok(jobs.every(job => job.budget.timeoutMs === 1_800_000));
+    assert.ok(jobs.every(job => job.budget.timeoutMs === 3_600_000));
     const audit = jobs.filter(job => job.mode !== "prepare");
     for (const epoch of new Set(audit.map(job => job.moduleEpoch))) {
       const round = audit.filter(job => job.moduleEpoch === epoch);
@@ -514,11 +551,11 @@ test("Checker execution allowances are independent of queue time and share only 
   await withModulePipeline(async f => {
     const jobs: CheckJob[] = [];
     await attach(f, async job => { jobs.push(job); });
-    f.options.totalBudgetMs = 3_600_000;
+    f.options.totalBudgetMs = 7_200_000;
     assert.equal((await f.run()).status, "delivered");
     assert.ok(jobs.length > 0);
-    assert.ok(jobs.every(job => job.budget.timeoutMs === 1_800_000));
-    assert.ok(jobs.every(job => job.budget.deadlineAt - Date.now() > 1_800_000));
+    assert.ok(jobs.every(job => job.budget.timeoutMs === 3_600_000));
+    assert.ok(jobs.every(job => job.budget.deadlineAt - Date.now() > 3_600_000));
   });
 });
 

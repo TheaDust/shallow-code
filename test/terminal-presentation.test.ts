@@ -15,8 +15,10 @@ import { withTempDir } from "./helpers/temp-dir.js";
 
 const options = { requirementIds: ["A", "B", "C"], models: { builder: "gateway/builder-model", checker: "gateway/checker-model" }, onInterrupt() {} };
 const formatter = new HumanRunFormatter();
-function requirementNode(id: string, name: string, type: RequirementNode["type"], children: RequirementNode[] = []): RequirementNode {
-  return { id, name, type, description: "", dependencies: [], children, visual_reference: [], scenarios: [] };
+function requirementNode(id: string, name: string, type: RequirementNode["type"], children: RequirementNode[] = [],
+  scenarioIds: string[] = []): RequirementNode {
+  return { id, name, type, description: "", dependencies: [], children, visual_reference: [],
+    scenarios: scenarioIds.map(scenarioId => ({ id: scenarioId, name: scenarioId, steps: [] })) };
 }
 const requirementTree = requirementNode("root", "示例产品", "ROOT", [
   requirementNode("orders", "订单管理", "FOLDER", [
@@ -397,10 +399,14 @@ test("Interactive presentation keeps human-readable logs on disk and routes live
 
 test("Result card offers applicable commands, quotes paths and separates skips from verification", () => {
   const summary = { status: "partial" as const, verifiedRequirementIds: ["A"], blockedRequirementIds: [], acceptedSha: "sha",
-    inconclusiveRequirementIds: ["B"], skippedRequirementIds: ["C"] };
+    inconclusiveRequirementIds: ["B"], skippedRequirementIds: ["C"],
+    scenarioResults: [{ requirementId: "A", scenarioId: "a-1", name: "a-1", status: "verified" as const, caseIds: [] },
+      { requirementId: "A", scenarioId: "a-2", name: "a-2", status: "failed" as const, caseIds: [] },
+      { requirementId: "B", scenarioId: "b-1", name: "b-1", status: "inconclusive" as const, caseIds: [] }] };
   const partial = buildResult(summary, "E:\\runs\\user's run", "changes.patch", "demo", 65_000, false);
   assert.match(partial, /总耗时\s+01:05/);
   assert.match(partial, /已验证 1.*证据不足 1/);
+  assert.match(partial, /场景覆盖 1\/3 · 失败 1 · 无法判断 1/);
   assert.match(partial, /沿用跳过 1/);
   assert.match(partial, /shallow build resume.*user''s run/);
   assert.doesNotMatch(partial, /shallow build apply/);
@@ -577,12 +583,46 @@ test("Requirement tree shows builder implementation independently from verificat
   assert.match(text, /创建订单\s+\[已验证\]/);
   assert.match(view.render(80).join("\n"), /已实现 2\/4.*已验证 1\/4/);
 
-  // 新快照会撤销旧版本的验证结果，但不会撤销 Builder 已完成的实现。
+  // 新模块封存不会清空此前模块的验证结果；只有后续验收明确不通过时才扣减。
   receive(view, "snapshot_sealed", { snapshotId: "s2", authoritative: true, implementedRequirementIds: ["A", "B", "C"] });
   text = view.requirementTreeText(terminalTheme(false));
-  assert.match(text, /总体\s+已实现 3\/4.*已验证 0\/4/);
+  assert.match(text, /总体\s+已实现 3\/4.*已验证 1\/4/);
   assert.match(text, /登录\s+\[已实现\]/);
-  assert.match(view.render(80).join("\n"), /已实现 3\/4.*已验证 0\/4/);
+  assert.match(view.render(80).join("\n"), /已实现 3\/4.*已验证 1\/4/);
+});
+
+test("Scenario coverage accumulates across module boundaries and decreases only with explicit results", () => {
+  const scenarioTree = requirementNode("root", "示例产品", "ROOT", [
+    requirementNode("A", "创建订单", "ATOMIC", [], ["a-create", "a-cancel"]),
+    requirementNode("B", "取消订单", "ATOMIC", [], ["b-cancel"]),
+  ]);
+  const view = new BuildView({ ...options, requirementIds: ["A", "B"], requirementTree: scenarioTree }, () => 30, terminalTheme(false));
+  receive(view, "module_check_finished", { requirementIds: ["A"], status: "verified",
+    scenarioResults: [
+      { requirementId: "A", scenarioId: "a-create", name: "创建", status: "verified", caseIds: [] },
+      { requirementId: "A", scenarioId: "a-cancel", name: "取消", status: "failed", caseIds: [] },
+    ],
+    scenarioCoverage: { total: 3, verified: 1, failed: 1, inconclusive: 0, notRun: 1 } });
+  assert.match(view.render(80).join("\n"), /已验证 1\/2.*场景覆盖 1\/3/);
+  assert.match(view.requirementTreeText(terminalTheme(false)), /创建订单\s+\[已验证\]\s+场景 1\/2/);
+
+  receive(view, "snapshot_sealed", { snapshotId: "s2", authoritative: true, implementedRequirementIds: ["A", "B"] });
+  assert.match(view.render(80).join("\n"), /已验证 1\/2.*场景覆盖 1\/3/,
+    "sealing a new module must not reset requirement or scenario coverage");
+
+  receive(view, "module_check_finished", { requirementIds: ["A", "B"], status: "inconclusive",
+    requirementResults: { A: "failed", B: "verified" },
+    scenarioResults: [
+      { requirementId: "A", scenarioId: "a-create", name: "创建", status: "verified", caseIds: [] },
+      { requirementId: "A", scenarioId: "a-cancel", name: "取消", status: "failed", caseIds: [] },
+      { requirementId: "B", scenarioId: "b-cancel", name: "取消", status: "verified", caseIds: [] },
+    ],
+    scenarioCoverage: { total: 3, verified: 2, failed: 1, inconclusive: 0, notRun: 0 } });
+  assert.match(view.render(80).join("\n"), /已验证 1\/2.*场景覆盖 2\/3/,
+    "explicit failures remove requirement coverage while independently verified scenarios stay counted");
+  const tree = view.requirementTreeText(terminalTheme(false));
+  assert.match(tree, /取消订单\s+\[已验证\]\s+场景 1\/1/);
+  assert.match(tree, /创建订单\s+\[失败\]\s+场景 1\/2/);
 });
 
 test("Interactive tree key opens the requirement page and Esc closes it", (t) => {

@@ -21,6 +21,7 @@ export interface CheckJob {
   binding: ExecutionBindingRef;
   initialState: TypedRef;
   requirementIds: string[];
+  /** Only discover may explore or request semantic reviews; replay/confirm require cached approval. */
   mode: "prepare" | "discover" | "replay" | "confirm";
   programs: ProgramRef[];
   budget: {

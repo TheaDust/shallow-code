@@ -15,7 +15,8 @@ import type { PipelineDeps, PipelineOptions, RunSummary } from "./pipeline.js";
 import { RunBudget, type PipelinePhase } from "./run-budget.js";
 import { RunStateStore } from "./run-state.js";
 import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket } from "./scheduler.js";
-import type { AtomicRequirement, RequirementCatalog, RequirementStatus, RunEvent, WorkPacket } from "./types.js";
+import type { AtomicRequirement, RequirementCatalog, RequirementStatus, RunEvent, RunScenarioResult,
+  ScenarioCoverageCounts, WorkPacket } from "./types.js";
 import type { ArtifactStore } from "./checker/artifacts.js";
 import { atomicWrite, canonicalJson, sameRef } from "./checker/artifacts.js";
 import type { AcceptanceContract, CheckerProgramDescriptor } from "./checker/evidence.js";
@@ -109,7 +110,7 @@ export class CheckerCoordinator {
     const programs = options.programs ?? (mode === "prepare" ? [] : await this.programs(requirementIds, this.runtime.initialState, requirements));
     return { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
       packetId: packet.id, attempt: packet.attempt, moduleEpoch: options.epoch ?? this.checkpoints.snapshot.epoch, snapshot: head.snapshot, requirements,
-      binding: this.runtime.binding, initialState: this.runtime.initialState, requirementIds, mode: mode === "discover" && programs.length ? "replay" : mode, programs,
+      binding: this.runtime.binding, initialState: this.runtime.initialState, requirementIds, mode, programs,
       budget };
   }
 
@@ -222,7 +223,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   let auditGroups: WorkPacket[] = [];
   const byId = new Map(catalog.requirements.map(item => [item.id, item]));
   let implementationCatalog: RequirementCatalog = catalog;
-  const checkBudget = (): CheckJob["budget"] => ({ timeoutMs: 1_800_000,
+  const checkBudget = (): CheckJob["budget"] => ({ timeoutMs: 3_600_000,
     deadlineAt: Number.isFinite(budget.remaining("delivery")) ? Date.now() + budget.remaining("delivery") : Number.MAX_SAFE_INTEGER });
   const emitPhase = (phase: PipelinePhase) => state.record({ at: now(), type: "phase_started", detail: { phase, remainingMs: finite(budget.remaining(phase)) } });
   const packetFor = (id: string, requirements: AtomicRequirement[], attempt: 1 | 2 | 3 = 1): WorkPacket => ({
@@ -276,7 +277,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     const packets = [...auditGroups, ...auditPackets({ requirements: requirements.filter(item => !grouped.has(item.id)), statusById: catalog.statusById })];
     for (const packet of packets.filter(packet => packet.requirementIds.some(id => scope.has(id)))) {
       const full = packetFor(packet.id, packet.requirements);
-      jobs.push(await coordinator.submit(head, full, "discover", checkBudget(), { epoch, priority: 1,
+      jobs.push(await coordinator.submit(head, full, "replay", checkBudget(), { epoch, priority: 1,
         requirementIds: packet.requirementIds.filter(id => scope.has(id)) }));
     }
     const reports = await Promise.all(jobs.map(job => coordinator.report(job)));
@@ -294,9 +295,13 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       currentResults.set(requirement.id, clauses);
       state.markRequirements([requirement.id], outcomeStatus(clauses));
     }
+    const selected = catalog.requirements.filter(item => !skipped.has(item.id));
+    const allOutcomes = [...currentResults.values()].flat();
     await state.record({ at: now(), type: "module_check_finished", detail: { moduleId: module, moduleEpoch: epoch,
       snapshotId: head.snapshot.id, published: true,
-      requirementResults: Object.fromEntries(scope.map(item => [item.id, outcomeStatus(currentResults.get(item.id) ?? [])])) } });
+      requirementResults: Object.fromEntries(scope.map(item => [item.id, outcomeStatus(currentResults.get(item.id) ?? [])])),
+      scenarioResults: scenarioResults(scope, allOutcomes, implemented),
+      scenarioCoverage: scenarioCoverage(selected, allOutcomes, implemented) } });
   };
   const boundary = async (module: string, allowRepair = true): Promise<void> => {
     await coordinator.drain();
@@ -541,15 +546,9 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       auditRequirementIds: selected.map(item => item.id), skippedRequirementIds: [...skipped],
       checker: { mode: "active", producedHead: coordinator.checkpoints.snapshot.producedHead,
         verifiedSnapshotId: delivery.ok ? head?.snapshot.id : undefined, outcomes: [...currentResults.values()].flat() },
-      scenarioResults: selected.flatMap(requirement => (requirement.scenarioContracts ?? []).map(scenario => {
-        const clauses = (currentResults.get(requirement.id) ?? []).filter(item => item.scenarioId === scenario.id);
-        const status = outcomeStatus(clauses);
-        return { requirementId: requirement.id, scenarioId: scenario.id, name: scenario.name,
-          status: !implemented.has(requirement.id) ? "not_run" as const : status === "verified" ? "verified" as const
-            : status === "failed" ? "failed" as const : "inconclusive" as const,
-          caseIds: [...new Set(clauses.map(item => item.clauseId))], reason: clauses.filter(item => item.status !== "pass").map(item => item.reason).filter(Boolean).join("; ") };
-      })) };
-    await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo") } });
+      scenarioResults: scenarioResults(selected, [...currentResults.values()].flat(), implemented) };
+    await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo"),
+      scenarioCoverage: scenarioCoverage(selected, [...currentResults.values()].flat(), implemented) } });
     return summary;
   } catch (error) {
     // A cleanup fault means the writer may still be active; no checkout is safe then.
@@ -586,6 +585,26 @@ export function outcomeStatus(outcomes: CheckOutcome[]): RequirementStatus {
   if (outcomes.every(item => item.status === "pass")) return "verified";
   if (outcomes.every(item => item.status === "blocked")) return "blocked";
   return "inconclusive";
+}
+/** Scenario identities stay source-derived; implementation alone cannot grant coverage. */
+function scenarioResults(requirements: AtomicRequirement[], outcomes: CheckOutcome[],
+  implemented: ReadonlySet<string>): RunScenarioResult[] {
+  return requirements.flatMap(requirement => (requirement.scenarioContracts ?? []).map(scenario => {
+    const clauses = outcomes.filter(item => item.requirementId === requirement.id && item.scenarioId === scenario.id);
+    const status = outcomeStatus(clauses);
+    return { requirementId: requirement.id, scenarioId: scenario.id, name: scenario.name,
+      status: !implemented.has(requirement.id) ? "not_run" as const : status === "verified" ? "verified" as const
+        : status === "failed" ? "failed" as const : "inconclusive" as const,
+      caseIds: [...new Set(clauses.map(item => item.clauseId))],
+      reason: clauses.filter(item => item.status !== "pass").map(item => item.reason).filter(Boolean).join("; ") };
+  }));
+}
+function scenarioCoverage(requirements: AtomicRequirement[], outcomes: CheckOutcome[],
+  implemented: ReadonlySet<string>): ScenarioCoverageCounts {
+  const results = scenarioResults(requirements, outcomes, implemented);
+  const count = (status: RunScenarioResult["status"]) => results.filter(item => item.status === status).length;
+  return { total: results.length, verified: count("verified"), failed: count("failed"),
+    inconclusive: count("inconclusive"), notRun: count("not_run") };
 }
 function outcomeKey(item: ScopedOutcome): string { return JSON.stringify([item.requirementId, item.scenarioId, item.clauseId, item.initialState?.digest]); }
 async function repairObservation(artifacts: ArtifactStore, packet: WorkPacket, outcomes: CheckOutcome[], startup: boolean,

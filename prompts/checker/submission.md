@@ -1,5 +1,5 @@
 本次会话尚未提交。保留当前会话已有的观察、合同与程序，按最新工具错误修正并完成本次角色的提交前检查后，调用独立工具 finish。
 
-探索提交前，先核对每个最终 program 引用已在本次会话的干净 case 中完整试跑并检查真实断言与错误；尚未完成时必须先补做。程序、合同或映射修改后须重新保存并重新试跑最终引用，不能用旧版本、片段运行或文字声明代替。定位、脚本和接线错误在当前会话中有界修正；忠实测试观察到业务失败仍可提交，无法完成验证时如实提交 unsupported。
+探索提交前检查 check_program 返回的 checks 与 diagnostics。源码或合同修改后重新调用 check_program，提交其返回的最终 program；无需手工 reset_case 或再次运行。忠实测试观察到业务失败仍可提交，无法验证时如实报告 unsupported。
 
-参数须符合当前 finish 的 schema：探索提交 {programs:[已保存的完整程序引用]}；独立复核提交 {approved,reasons,clauseIds}，clauseIds 恰好枚举当前合同中的每个子句一次。invoke 只执行声明的能力，finish 是独立工具。文字解释和 JSON 文本不构成提交。finish 返回 {accepted:true} 后结束会话。
+参数须符合当前 finish 的 schema：探索提交 {programs:[check_program 返回的完整程序引用],unsupported?}；独立复核提交 {reviews:[{programId,approved,reasons,clauseIds}]}，每份程序一次，每份合同的子句恰好枚举一次。finish 是独立工具，文字解释与 JSON 文本不构成提交。finish 返回 {accepted:true} 后结束会话。

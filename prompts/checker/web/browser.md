@@ -65,8 +65,6 @@ Checkpoint 与期望来自验收合同。用 `await check.precondition(checkpoin
 
 使用当前页面观察到的 role、label 与完整对象身份定位。结果断言表达需求的可观察语义：单个已有元素可用 `read(locator,'visible')` 检查可见性；要求视觉隐藏时须结合能定位该对象的 label/testId 或容器可见性观察，不能只看 role 的 count=0。需求允许隐藏时，不能额外强制原文未要求的 DOM 移除或 ARIA 属性值。测试样例与 UI 探针可以用于建立关系证据，例如在隔离 case 中追加一个字符以检查光标位置，但须保留操作前后的真实观察，并保持原文规定动作与结果的含义。
 
-`run` 能力接受 `{source}` 或 `{program}`。探索页面使用 source；试运行已保存程序优先仅传完整 ProgramRef，由宿主读取已保存源码；同时传 source 和 program 时二者的源码字节必须一致。只有传入已保存的 program 时，`check.precondition` 与 `check.expect` 才从其合同加载 checkpoint 与 expected；仅探索页面时不要调用 `check.*`。先用 save_artifact kind=contract 保存合同，再用 save_artifact kind=program 提交合同引用、完整 source 字符串与 clauses 映射；宿主保存源码与描述并返回完整 ProgramRef。
+`run` 能力接受 `{source}` 或 `{program}`。探索页面使用 source；试运行已保存程序优先仅传完整 ProgramRef，由宿主读取已保存源码；同时传 source 和 program 时二者的源码字节必须一致。只有传入已保存的 program 时，`check.precondition` 与 `check.expect` 才从其合同加载 checkpoint 与 expected；仅探索页面时不要调用 `check.*`。最终场景使用 check_program {contract,source}。宿主自动保存完整程序、从合同生成 clauses 映射，并在独立干净 case 中运行，不需要先保存合同、手工 reset_case 或再次 run。检查返回 checks 中每条前置/结果断言的 actual、expected、passed 与 diagnostics；修改后重新调用 check_program。正确观察到业务失败仍可提交，不要求全部 passed:true；不得跳过失败前置或放宽期望，无法验证时提交 unsupported。
 
-提交前必须逐程序执行以下顺序：先用 save_artifact kind=contract 保存合同，再用 save_artifact kind=program 保存完整 source 与 clauses 映射，取得完整 ProgramRef；调用 invoke {capabilityId:"reset_case",input:{}} 恢复声明的干净初态，再调用 invoke {capabilityId:"run",input:{program:该完整引用}} 完整试跑。检查返回的 output 中有无执行错误，并核对 checks 中每条前置/结果断言的实际执行情况及 actual、expected、passed。参数、定位、谓词与合同接线错误必须在当前探索会话内有界修正；任何源码、合同或映射修改后，都须重新保存，再 reset_case 和 run 最终引用，不能沿用旧版本的试跑记录。每个程序都完成自检后才调用 finish；语义正确的程序观察到真实业务失败时仍应提交，不要求 passed 全为 true，也不得跳过失败前置条件或放宽原文期望。无法完成验证时如实提交 unsupported，不得将未试跑程序作为已完成自检的成果。
-
-格式 `shallow.web.javascript@1` 是程序格式标识；Web 的执行能力 id 为 inspect、run、reset_case。inspect 接受可选的 actor 名称；reset_case 接受 `{}` 并使所有旧句柄失效。上一个 case 的收据 id 不能在新 case 中用于断言。探索自检之后，宿主仍会从声明初态在全新的应用与数据环境中独立重放。
+格式 shallow.web.javascript@1 是程序格式标识。Web 执行能力仍为 inspect、run、reset_case；inspect 接受可选 actor，run {source} 用于探索，reset_case 会使旧句柄失效。最终程序由 check_program 在独立环境执行，旧 case 的句柄与观察 id 不可带入；其执行直接供独立复核使用。批准后的业务失败仍须在第二个独立环境复现。

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { matchesKey, ProcessTerminal, Text, TuiMainScreen, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
 import type { RunSummary } from "../pipeline.js";
-import type { RequirementNode, RequirementStatus, RunEvent } from "../types.js";
+import type { RequirementNode, RequirementStatus, RunEvent, RunScenarioResult } from "../types.js";
 import type { PiWorkerProgress } from "../builder/pi-worker-client.js";
 import { ModelUsageTotals, UsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage, type UsageSummary } from "../model-usage.js";
 import { setMouseTracking } from "./mouse-wheel.js";
@@ -19,6 +19,7 @@ const ACTIVITY_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
 const RENDER_INTERVAL_MS = 200;
 
 type TreeStatus = RequirementStatus | "implemented" | "skipped";
+type ScenarioStatus = RunScenarioResult["status"];
 interface TreeCounts {
   total: number;
   implemented: number;
@@ -27,6 +28,13 @@ interface TreeCounts {
   inconclusive: number;
   blocked: number;
   skipped: number;
+  scenarioTotal: number;
+  scenarioVerified: number;
+}
+
+/** Requirement ids and scenario ids are independent namespaces; never join with a separator that can appear in either. */
+function scenarioKey(requirementId: string, scenarioId: string): string {
+  return JSON.stringify([requirementId, scenarioId]);
 }
 
 const TREE_STATUS_LABEL: Record<TreeStatus, string> = {
@@ -66,6 +74,9 @@ export interface BuildTuiOptions {
 /** A projection of emitted facts; presentation never grants verification. */
 export class BuildView implements Component {
   private readonly statuses: Map<string, RequirementStatus>;
+  /** 场景来源（需求树）与累积验收结果；模块边界只更新时间，不重置历史覆盖。 */
+  private readonly scenariosByRequirement = new Map<string, string[]>();
+  private readonly scenarioStatuses = new Map<string, ScenarioStatus>();
   /** Builder 已完成实现的需求；与独立验收结果无关，可同时出现在已验证/失败等状态中。 */
   private readonly implemented = new Set<string>();
   private scope: Set<string>;
@@ -93,14 +104,18 @@ export class BuildView implements Component {
   ) {
     this.statuses = new Map(options.requirementIds.map(id => [id, "todo"]));
     this.scope = new Set(options.requirementIds);
+    if (options.requirementTree) this.collectScenarios(options.requirementTree);
   }
 
   receive(event: RunEvent, line: string): void {
     const detail = event.detail as Record<string, unknown> | undefined;
     const ids = (key: string) => Array.isArray(detail?.[key]) ? detail![key] as string[] : [];
+    const scenarioAuthoritative = event.type === "module_check_finished" ? detail?.published === true
+      : event.type === "repair_batch_finished" ? detail?.retained === true : true;
+    if (scenarioAuthoritative && Array.isArray(detail?.scenarioResults)) this.receiveScenarioResults(detail.scenarioResults);
     if (event.type === "snapshot_sealed" && detail?.authoritative !== false) {
       for (const id of ids("implementedRequirementIds")) this.implemented.add(id);
-      for (const [id, status] of this.statuses) if (status === "verified") this.statuses.set(id, "inconclusive");
+      // 封存新模块只代表源码更新；旧覆盖保留到后续验收明确给出失败或无法判断。
       this.checkerTasks.clear();
     }
     if (event.type === "evolution_scope_selected") {
@@ -238,6 +253,28 @@ export class BuildView implements Component {
 
   invalidate(): void {}
 
+  private collectScenarios(node: RequirementNode): void {
+    if (node.type === "ATOMIC" && node.scenarios.length) {
+      this.scenariosByRequirement.set(node.id, node.scenarios.map(scenario => scenario.id));
+    }
+    for (const child of node.children) this.collectScenarios(child);
+  }
+
+  private receiveScenarioResults(value: unknown[]): void {
+    for (const raw of value) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const item = raw as Partial<RunScenarioResult>;
+      if (typeof item.requirementId !== "string" || typeof item.scenarioId !== "string") continue;
+      if (item.status !== "verified" && item.status !== "failed" && item.status !== "inconclusive" && item.status !== "not_run") continue;
+      this.scenarioStatuses.set(scenarioKey(item.requirementId, item.scenarioId), item.status);
+    }
+  }
+
+  private scenarioStatusesFor(requirementId: string): ScenarioStatus[] {
+    return (this.scenariosByRequirement.get(requirementId) ?? []).map(scenarioId =>
+      this.scenarioStatuses.get(scenarioKey(requirementId, scenarioId)) ?? "not_run");
+  }
+
   private setSkipped(ids: string[]): void {
     this.skippedIds.clear();
     for (const id of ids) this.skippedIds.add(id);
@@ -262,7 +299,8 @@ export class BuildView implements Component {
   }
 
   private emptyCounts(): TreeCounts {
-    return { total: 0, implemented: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0, skipped: 0 };
+    return { total: 0, implemented: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0, skipped: 0,
+      scenarioTotal: 0, scenarioVerified: 0 };
   }
 
   private addCounts(target: TreeCounts, source: TreeCounts): void {
@@ -273,6 +311,8 @@ export class BuildView implements Component {
     target.inconclusive += source.inconclusive;
     target.blocked += source.blocked;
     target.skipped += source.skipped;
+    target.scenarioTotal += source.scenarioTotal;
+    target.scenarioVerified += source.scenarioVerified;
   }
 
   private aggregateStatus(counts: TreeCounts): TreeStatus {
@@ -290,6 +330,10 @@ export class BuildView implements Component {
     if (status === "skipped") { counts.skipped += 1; return; }
     counts.total += 1;
     if (this.isImplemented(id)) counts.implemented += 1;
+    for (const scenario of this.scenarioStatusesFor(id)) {
+      counts.scenarioTotal += 1;
+      if (scenario === "verified") counts.scenarioVerified += 1;
+    }
     switch (status) {
       case "verified": counts.verified += 1; break;
       case "failed": counts.failed += 1; break;
@@ -318,6 +362,9 @@ export class BuildView implements Component {
     const parts = [
       counts.implemented ? theme.builder(`已实现 ${counts.implemented}/${counts.total}`) : theme.muted(`已实现 0/${counts.total}`),
       counts.verified ? theme.success(`已验证 ${counts.verified}/${counts.total}`) : theme.muted(`已验证 0/${counts.total}`),
+      ...(counts.scenarioTotal ? [counts.scenarioVerified
+        ? theme.success(`场景 ${counts.scenarioVerified}/${counts.scenarioTotal}`)
+        : theme.muted(`场景 0/${counts.scenarioTotal}`)] : []),
     ];
     if (counts.failed) parts.push(`${theme.error(`失败 ${counts.failed}`)}`);
     if (counts.inconclusive) parts.push(`${theme.warning(`证据不足 ${counts.inconclusive}`)}`);
@@ -330,6 +377,9 @@ export class BuildView implements Component {
     return [
       counts.implemented ? theme.builder(`已实现 ${counts.implemented}/${counts.total}`) : theme.muted(`已实现 0/${counts.total}`),
       counts.verified ? theme.success(`已验证 ${counts.verified}/${counts.total}`) : theme.muted(`已验证 0/${counts.total}`),
+      ...(counts.scenarioTotal ? [counts.scenarioVerified
+        ? theme.success(`场景覆盖 ${counts.scenarioVerified}/${counts.scenarioTotal}`)
+        : theme.muted(`场景覆盖 0/${counts.scenarioTotal}`)] : []),
       counts.failed ? theme.error(`失败 ${counts.failed}`) : theme.muted("失败 0"),
       counts.inconclusive ? theme.warning(`证据不足 ${counts.inconclusive}`) : theme.muted("证据不足 0"),
       counts.blocked ? theme.blocked(`阻塞 ${counts.blocked}`) : theme.muted("阻塞 0"),
@@ -343,8 +393,12 @@ export class BuildView implements Component {
     const status = this.aggregateStatus(counts);
     const connector = root ? "" : `${prefix}${last ? "└─ " : "├─ "}`;
     const icon = node.type === "ATOMIC" ? TREE_STATUS_ICON[status] : status === "todo" ? "○" : TREE_STATUS_ICON[status];
+    const scenario = counts.scenarioTotal
+      ? `  ${counts.scenarioVerified ? theme.success(`场景 ${counts.scenarioVerified}/${counts.scenarioTotal}`)
+        : theme.muted(`场景 0/${counts.scenarioTotal}`)}`
+      : "";
     const suffix = node.type === "ATOMIC"
-      ? `  ${theme.muted(`[${TREE_STATUS_LABEL[status]}]`)}`
+      ? `  ${theme.muted(`[${TREE_STATUS_LABEL[status]}]`)}${scenario}`
       : `  ${this.treeSuffix(counts, theme)}`;
     lines.push(theme.border(connector) + treeColour(theme, status)(`${icon} ${node.name}`) + suffix);
     const childPrefix = root ? "" : `${prefix}${last ? "   " : "│  "}`;
@@ -371,15 +425,18 @@ export class BuildView implements Component {
     return { colour, text: colour(role) + text.slice(role.length) };
   }
 
-  private progressLines(width: number, counts: { implemented: number; verified: number; failed: number; inconclusive: number; blocked: number }, t: TerminalTheme): string[] {
+  private progressLines(width: number, counts: { implemented: number; verified: number; failed: number; inconclusive: number;
+    blocked: number; scenarioTotal: number; scenarioVerified: number }, t: TerminalTheme): string[] {
     const total = this.scope.size;
     const bar = progressBar(counts.implemented, total, Math.max(5, Math.min(18, Math.floor(width / 8))), t);
     const implemented = `已实现 ${counts.implemented}/${total}`;
     const verified = `已验证 ${counts.verified}/${total}`;
+    const scenarios = counts.scenarioTotal ? `场景覆盖 ${counts.scenarioVerified}/${counts.scenarioTotal}` : undefined;
     const progress = `${t.accent("进度")} ${bar} ${counts.implemented ? t.strong(t.builder(implemented)) : t.accent(t.strong(implemented))}`;
     const pending = total - counts.implemented;
     const summary = [
       counts.verified ? t.strong(t.success(verified)) : t.muted(verified),
+      ...(scenarios ? [counts.scenarioVerified ? t.strong(t.success(scenarios)) : t.muted(scenarios)] : []),
       counts.failed ? t.strong(t.error(`失败 ${counts.failed}`)) : t.muted(`失败 ${counts.failed}`),
       counts.inconclusive ? t.strong(t.warning(`证据不足 ${counts.inconclusive}`)) : t.muted(`证据不足 ${counts.inconclusive}`),
       `${t.muted(`阻塞 ${counts.blocked} · `)}${pending ? t.accent(`未实现 ${pending}`) : t.muted("未实现 0")}`,
@@ -389,11 +446,15 @@ export class BuildView implements Component {
 
   render(width: number): string[] {
     const t = this.theme;
-    const counts = { implemented: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0 };
+    const counts = { implemented: 0, verified: 0, failed: 0, inconclusive: 0, blocked: 0, scenarioTotal: 0, scenarioVerified: 0 };
     for (const id of this.scope) {
       if (this.isImplemented(id)) counts.implemented += 1;
       const status = this.statuses.get(id) ?? "todo";
       if (status !== "todo") counts[status] += 1;
+      for (const scenario of this.scenarioStatusesFor(id)) {
+        counts.scenarioTotal += 1;
+        if (scenario === "verified") counts.scenarioVerified += 1;
+      }
     }
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
     const activityRole = this.highlightRole(this.activity, t);
@@ -611,7 +672,7 @@ export class BuildTui {
     this.treeViewer = undefined;
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
       "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求树与每个需求的实现/验收状态\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
-      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Checker：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
+      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，模块推进时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Checker：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
@@ -629,11 +690,17 @@ export function buildResult(summary: RunSummary, runDirectory: string, patch: st
   const t = terminalTheme(colour);
   const status = summary.status === "delivered" ? t.success("✓ 交付完成")
     : summary.status === "partial" ? t.warning("◐ 部分完成") : t.error("× 交付失败");
+  const scenarios = summary.scenarioResults ?? [];
+  const scenarioVerified = scenarios.filter(item => item.status === "verified").length;
+  const scenarioDetails = [["失败", "failed"], ["无法判断", "inconclusive"], ["未运行", "not_run"]]
+    .map(([label, key]) => ({ label, count: scenarios.filter(item => item.status === key).length }))
+    .filter(item => item.count > 0).map(item => `${item.label} ${item.count}`).join(" · ");
   const lines = ["", ...terminalHeader("Result", width, t), "", " " + t.strong(status),
     ` 已实现 ${summary.implementedRequirementIds?.length ?? summary.verifiedRequirementIds.length} · ` +
       `已验证 ${summary.verifiedRequirementIds.length} · 业务失败 ${summary.failedRequirementIds?.length ?? 0} · ` +
       `证据不足 ${summary.inconclusiveRequirementIds?.length ?? 0}`,
     ` 阻塞 ${summary.blockedRequirementIds.length} · 待处理 ${summary.pendingRequirementIds?.length ?? 0} · 沿用跳过 ${summary.skippedRequirementIds?.length ?? 0}`,
+    ...(scenarios.length ? [` 场景覆盖 ${scenarioVerified}/${scenarios.length}${scenarioDetails ? ` · ${scenarioDetails}` : ""}`] : []),
     ` 总耗时  ${elapsedTime(elapsedMs)}`,
     ...(summary.modelUsage ? formatModelUsageSummary(summary.modelUsage, { includePlanner: false }).map(line => ` ${line}`) : []),
     "", ` 报告  ${join(runDirectory, "report.md")}`, ` 日志  ${join(runDirectory, "run-log.txt")}`,

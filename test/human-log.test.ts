@@ -69,6 +69,26 @@ test("Runtime grouping logs show its validated source, fallback reason and actua
   })), /使用确定性分组.*16.*Unknown ID/);
 });
 
+test("Module and final logs report scenario coverage alongside requirement results", () => {
+  const formatter = new HumanRunFormatter();
+  const at = "2026-10-12T00:00:00Z";
+  const moduleLine = formatLine(formatter, eventLine(at, "module_check_finished", {
+    detail: { moduleId: "orders", snapshotId: "s1", published: true,
+      requirementResults: { A: "verified", B: "failed" },
+      scenarioResults: [{ requirementId: "A", scenarioId: "a-1", status: "verified" },
+        { requirementId: "B", scenarioId: "b-1", status: "failed" }],
+      scenarioCoverage: { total: 3, verified: 1, failed: 1, inconclusive: 0, notRun: 1 } },
+  }));
+  assert.match(moduleLine, /场景覆盖 1\/3（失败 1，未运行 1）/);
+  const finalLine = formatLine(formatter, eventLine(at, "pipeline_finished", {
+    detail: { status: "partial", implementedRequirementIds: ["A", "B"], verifiedRequirementIds: ["A"],
+      failedRequirementIds: ["B"], blockedRequirementIds: [], inconclusiveRequirementIds: [], pendingRequirementIds: [],
+      acceptedSha: "sha", scenarioResults: [{ requirementId: "A", scenarioId: "a-1", status: "verified" },
+        { requirementId: "B", scenarioId: "b-1", status: "failed" }] },
+  }));
+  assert.match(finalLine, /场景覆盖 1\/2（失败 1）/);
+});
+
 test("Repair logs distinguish case improvement from a fully verified requirement", () => {
   const line = formatLine(new HumanRunFormatter(), eventLine("2026-09-29T00:00:00Z", "repair_batch_finished", {
     detail: { round: 1, retained: true, improvedCases: 1, resolvedGaps: 2, reason: "verified improvement with regression coverage" },

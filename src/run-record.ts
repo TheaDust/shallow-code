@@ -150,7 +150,14 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary, 
     `运行结果：${summary.status}`, ``, `可运行检查点：${summary.acceptedSha}`, ``,
     ...(summary.delivery ? [`交付检查：${summary.delivery.stage} — ${summary.delivery.message}`, ``] : []),
     "| 需求 | 当前状态 |", "| --- | --- |", ...rows, "",
-    ...((summary.scenarioResults?.length ?? 0) > 0 ? ["| 需求 / 场景 | 当前状态 | 原因 |", "| --- | --- | --- |",
+    ...((summary.scenarioResults?.length ?? 0) > 0 ? [
+      `场景覆盖：已验证 ${summary.scenarioResults!.filter(item => item.status === "verified").length}/${summary.scenarioResults!.length}` +
+        (["failed", "inconclusive", "not_run"] as const).map(status => {
+          const labels = { failed: "失败", inconclusive: "无法判断", not_run: "未运行" } as const;
+          const count = summary.scenarioResults!.filter(item => item.status === status).length;
+          return count ? `，${labels[status]} ${count}` : "";
+        }).join(""), "",
+      "| 需求 / 场景 | 当前状态 | 原因 |", "| --- | --- | --- |",
       ...summary.scenarioResults!.map(s => `| ${s.requirementId} / ${s.scenarioId} | ${s.status} | ${(s.reason ?? "").replace(/[\r\n|]/g, " ")} |`), ""] : []),
     ...(summary.modelUsage ? ["模型用量：", "", ...formatModelUsageSummary(summary.modelUsage).map(line => `- ${line}`), ""] : []),
     "完整执行记录与失败证据见同目录 run-ledger.jsonl 和 evidence/。", "",

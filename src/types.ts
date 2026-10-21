@@ -12,6 +12,15 @@ export interface RunScenarioResult {
   reason?: string;
 }
 
+/** Cumulative scenario coverage over the current audit scope. */
+export interface ScenarioCoverageCounts {
+  total: number;
+  verified: number;
+  failed: number;
+  inconclusive: number;
+  notRun: number;
+}
+
 export type ProductKind =
   | "repository_collaboration"
   | "spreadsheet"
@@ -141,7 +150,11 @@ interface RunEventDetails {
   check_cancelled: CheckEventDetail;
   module_check_started: { moduleId: string; moduleEpoch: number; snapshotId: string; requirementIds: string[] };
   module_check_finished: { moduleId: string; moduleEpoch: number; snapshotId: string;
-    requirementResults: Record<string, RequirementStatus>; published: boolean };
+    requirementResults: Record<string, RequirementStatus>; published: boolean;
+    /** Scenario results for the module scope that was just checked. */
+    scenarioResults?: RunScenarioResult[];
+    /** Cumulative scenario coverage across the current audit scope. */
+    scenarioCoverage?: ScenarioCoverageCounts };
   checker_usage: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
     total: number; cost?: number; reasoning?: number };
   /** 进行中 Checker 会话的累计用量；仅投递交互终端实时展示，不写账本或日志，最终以 checker_usage 结算。 */
@@ -168,7 +181,8 @@ interface RunEventDetails {
   module_rescued: { requirementIds: string[]; reason: string };
   repair_batch_started: { round: number; requirementIds: string[] };
   repair_batch_finished: { round: number; retained: boolean; reason: string; improvedCases?: number; resolvedGaps?: number;
-    requirementResults?: Record<string, "verified" | "failed" | "inconclusive"> };
+    requirementResults?: Record<string, "verified" | "failed" | "inconclusive">;
+    scenarioResults?: RunScenarioResult[]; scenarioCoverage?: ScenarioCoverageCounts };
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
 
   pipeline_started: { requirements?: number; totalBudgetMs?: number; adapterId?: string; model?: string;
@@ -212,6 +226,8 @@ interface RunEventDetails {
     blockedRequirementIds: string[]; implementedRequirementIds?: string[]; failedRequirementIds?: string[]; inconclusiveRequirementIds?: string[]; pendingRequirementIds: string[]; acceptedSha: string; memory?: Record<string, unknown>;
     inconclusiveByKind?: Partial<Record<InconclusiveKind, string[]>>;
     auditRequirementIds?: string[]; skippedRequirementIds?: string[];
+    scenarioResults?: RunScenarioResult[];
+    scenarioCoverage?: ScenarioCoverageCounts;
     modelUsage?: import("./model-usage.js").ModelUsageSummary;
   };
   pipeline_failed: DiagnosticDetail;

@@ -46,34 +46,33 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
       roles.push(request.role);
       const invoke = (name: string, args: unknown) => request.tools.find(tool => tool.name === name)!.execute(args);
       if (request.role === "semantic_review") {
-        const evidence = JSON.parse(request.prompt) as { receipts: Array<{ receipt: EvidenceReceipt; payload: unknown }> };
+        const evidence = JSON.parse(request.prompt).programs[0] as { programId: string; receipts: Array<{ receipt: EvidenceReceipt; payload: unknown }> };
         assert(evidence.receipts.some(item => item.receipt.kind === "observation" && JSON.stringify(item.payload).includes("cancelled")));
-        await invoke("finish", { approved: true, reasons: [], clauseIds: clauses.map(clause => clause.id) });
+        await invoke("finish", { reviews: [{ programId: evidence.programId, approved: true, reasons: [], clauseIds: clauses.map(clause => clause.id) }] });
       } else {
-        assert.match(request.systemPrompt, /提交前必须逐程序执行以下顺序/);
-        assert.match(request.systemPrompt, /capabilityId:"reset_case",input:\{\}/);
-        assert.match(request.systemPrompt, /capabilityId:"run",input:\{program:该完整引用\}/);
+        assert.match(request.systemPrompt, /最终场景使用 check_program/);
+        assert.match(request.systemPrompt, /独立干净 case 中运行/);
         const observed = await invoke("invoke", { capabilityId: "inspect", input: { actor: "alice" } });
         assert.match(JSON.stringify(observed), /unpaid/);
         await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('bob');const o=await p.read({role:'status',name:'Train T-6 seats'});return o.value;" } });
+        // Dirty exploration state must never become the initial state of a submitted program.
+        await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('alice');await p.click({role:'button',name:'Cancel O-17'});" } });
         const contract: AcceptanceContract = { requirements: job.requirements,
           checkpoints: [{ id: "given", kind: "precondition", requirementId: "r1", scenarioId: "cancel", dependsOn: [], basis: "Order O-17 is unpaid", expected: { operator: "equal", value: "unpaid" } },
             { id: "when", kind: "action", requirementId: "r1", scenarioId: "cancel", dependsOn: ["given"], basis: "Alice clicks button Cancel O-17" },
             ...clauses.map((clause, index) => ({ id: `result-${index}`, kind: "assertion" as const, requirementId: "r1", scenarioId: "cancel", clauseId: clause.id, basis: clause.basis, dependsOn: ["when"] }))],
           clauses: clauses.map((clause, index) => ({ ...clause, checkpointId: `result-${index}`, expected: { operator: "equal", value: index === 1 ? "5" : "cancelled" } })) };
-        const contractRef = await invoke("save_artifact", { kind: "contract", contract });
         const programSource = `const alice=await browser.actor('alice');const bob=await browser.actor('bob');
           const before=await alice.read({role:'status',name:'Order O-17'});await check.precondition('given',[before.id]);
           await alice.click({role:'button',name:'Cancel O-17'},'when');await bob.reload();
           const order=await bob.read({role:'status',name:'Order O-17'});await check.expect('${clauses[0]!.id}',[order.id]);
           const seats=await bob.read({role:'status',name:'Train T-6 seats'});await check.expect('${clauses[1]!.id}',[seats.id]);
           await alice.reload();const persisted=await alice.read({role:'status',name:'Order O-17'});await check.expect('${clauses[2]!.id}',[persisted.id]);`;
-        const program = await invoke("save_artifact", { kind: "program", contract: contractRef, source: programSource,
-          clauses: contract.clauses.map(clause => ({ clauseId: clause.id, checkpointId: clause.checkpointId })) });
-        await invoke("invoke", { capabilityId: "reset_case", input: {} });
-        const preview = await invoke("invoke", { capabilityId: "run", input: { program } }) as {
+        const preview = await invoke("check_program", { contract, source: programSource }) as {
+          program: unknown;
           checks: Array<{ receipt: { digest: string }; kind: string; checkpointId: string; payload: { result: string; actual: unknown } }>;
         };
+        const program = preview.program;
         assert.equal(preview.checks.length, 4, "exploration sees each GIVEN and result check before submission");
         assert.equal(preview.checks[0]!.payload.result, "satisfied");
         assert.deepEqual(preview.checks.slice(1).map(check => check.payload.result), mutant ? ["satisfied", "violated", "satisfied"] : ["satisfied", "satisfied", "satisfied"]);
@@ -89,6 +88,11 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
     if (mutant) assert.match(report.outcomes[1]!.reason!, /independent fresh environment/);
     assert.deepEqual(roles, ["exploration", "semantic_review"]);
     assert.equal(manifest.reviews.length, 1);
+    const receipts = await Promise.all(manifest.receipts.map(ref => artifacts.getJson<EvidenceReceipt>(ref)));
+    const assertions = receipts.filter(receipt => receipt.kind === "assertion");
+    assert.equal(assertions.length, clauses.length * (mutant ? 2 : 1), "the submitted clean execution is reused; only business failures get a second execution");
+    assert.equal(new Set(assertions.map(receipt => receipt.environment.id)).size, mutant ? 2 : 1);
+
     assert.deepEqual(await readdir(workspace), []);
   });
 });

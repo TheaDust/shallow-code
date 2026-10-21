@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { Type } from "typebox";
 import { CheckerCleanupError, createCheckerAgent, createPiCheckerModel } from "../src/checker/agent.js";
 import { GatewayRecovery } from "../src/gateway-recovery.js";
-import { ArtifactStore } from "../src/checker/artifacts.js";
+import { ArtifactStore, contentDigest } from "../src/checker/artifacts.js";
 import { type AcceptanceContract, type CheckerManifest, type CheckerRequirements, type SourceClause } from "../src/checker/evidence.js";
 import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../src/checker/model.js";
 import type { AdapterDeclaration, CheckerProgress, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef } from "../src/checker/port.js";
@@ -78,13 +78,13 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
       return definition.execute(definition.prepareArguments?.(args) ?? args);
     };
     const argument = (value: unknown) => config.stringifyToolArguments ? JSON.stringify(value) : value;
-    const promptInput = JSON.parse(request.prompt) as { sourceClauses: SourceClause[]; contract?: AcceptanceContract };
-    const clauses = (request.role === "semantic_review" ? promptInput.contract!.clauses : promptInput.sourceClauses).slice(0, config.omitSecond ? 1 : undefined);
+    const promptInput = JSON.parse(request.prompt);
+    const clauses = (promptInput.sourceClauses as SourceClause[]).slice(0, config.omitSecond ? 1 : undefined);
     if (request.role === "semantic_review") {
       assert.deepEqual(request.tools.map(item => item.name), ["finish"]);
-      await tool("finish", { approved: !config.rejectReview, reasons: config.rejectReview ? ["Constant predicate does not test source result"] : [], clauseIds: clauses.map(item => item.id) });
+      await tool("finish", { reviews: promptInput.programs.map((item: { programId: string; contract: AcceptanceContract }) => ({ programId: item.programId, approved: !config.rejectReview, reasons: config.rejectReview ? ["Constant predicate does not test source result"] : [], clauseIds: item.contract.clauses.map(clause => clause.id) })) });
     } else {
-      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "save_artifact", "finish"]);
+      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish"]);
       await assert.rejects(tool("invoke", { capabilityId: "shell", input: {} }), /Undeclared/);
       await assert.rejects(tool("invoke", { capabilityId: "inspect", input: "{not json" }), /not valid JSON/);
       await tool("invoke", { capabilityId: "inspect", input: argument({}) });
@@ -104,9 +104,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
           contract.checkpoints = contract.checkpoints.filter(item => item.kind === "assertion");
           contract.checkpoints.forEach(item => { item.dependsOn = []; });
         }
-        const contractRef = await tool("save_artifact", { kind: "contract", contract: argument(contract) });
-        const program = await tool("save_artifact", { kind: "program", contract: argument(contractRef), source: config.source ?? "await check.expect('source-result', [observation.id]);",
-          clauses: contract.clauses.map(clause => ({ clauseId: clause.id, checkpointId: clause.checkpointId })) });
+        const { program } = await tool("check_program", { contract: argument(contract), source: config.source ?? "await check.expect('source-result', [observation.id]);" }) as { program: ProgramRef };
         programs.push(program);
       }
       await tool("finish", { programs: argument(programs) });
@@ -149,10 +147,10 @@ test("Checker tool schemas keep an object root because the gateway rejects a roo
       assert.equal(schema.type, "object", `${tool.role}/${tool.name} must declare an object root`);
       for (const keyword of ["anyOf", "oneOf", "allOf"]) assert.equal(schema[keyword], undefined, `${tool.role}/${tool.name} must not use a root ${keyword}`);
     }
-    const save = f.toolSchemas.find(item => item.name === "save_artifact")!;
+    const save = f.toolSchemas.find(item => item.name === "check_program")!;
     assert.deepEqual(Object.keys((save.parameters as { properties: Record<string, unknown> }).properties).sort(),
-      ["clauses", "contract", "kind", "source"]);
-    assert.deepEqual((save.parameters as { required: string[] }).required, ["kind", "contract"]);
+      ["contract", "source"]);
+    assert.deepEqual((save.parameters as { required: string[] }).required, ["contract", "source"]);
     const invoke = f.toolSchemas.find(item => item.name === "invoke")!;
     assert.equal(((invoke.parameters as { properties: Record<string, { type?: string }> }).properties.input.type), "object");
     assert.deepEqual((invoke.parameters as { properties: { capabilityId: { enum: string[] } } }).properties.capabilityId.enum, ["inspect"]);
@@ -167,11 +165,11 @@ test("Checker assembles final-program self-check guidance with its exploration s
     const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "exploration") {
         explored = true;
-        assert.match(request.systemPrompt, /每个最终提交的已保存程序.*完整 program 引用.*干净 case 中完整试跑/);
-        assert.match(request.systemPrompt, /源码、合同或映射有任何修改后，必须重新保存/);
+        assert.match(request.systemPrompt, /check_program.*独立干净环境/);
+        assert.match(request.systemPrompt, /源码或合同修改后，重新调用 check_program/);
         assert.match(request.systemPrompt, /业务断言失败不要求把正确程序改到通过/);
-        assert.match(request.tools.find(tool => tool.name === "save_artifact")!.description, /dry-run each final saved program reference in a clean case/);
-        assert.match(request.tools.find(tool => tool.name === "finish")!.description, /required clean-case self-check/);
+        assert.match(request.tools.find(tool => tool.name === "check_program")!.description, /execute the saved program in an independent clean environment/);
+        assert.match(request.tools.find(tool => tool.name === "finish")!.description, /returned by check_program/);
       }
       return f.model.run(request);
     } } });
@@ -192,9 +190,10 @@ test("Checker corrects a nested finish call and permits a corrected independent 
         await assert.rejects(invoke.execute(args), /Call the separate Checker tools.*finish directly/);
       } else {
         const finish = request.tools[0]!;
-        const ids = (JSON.parse(request.prompt).contract as AcceptanceContract).clauses.map(clause => clause.id);
+        const entry = JSON.parse(request.prompt).programs[0];
+        const ids = (entry.contract as AcceptanceContract).clauses.map(clause => clause.id);
         for (const clauseIds of [[ids[0]], [ids[0], ids[0]], [ids[0], "unknown-clause"]]) {
-          await assert.rejects(finish.execute({ approved: true, reasons: [], clauseIds }), /each contract clause exactly once/);
+          await assert.rejects(finish.execute({ reviews: [{ programId: entry.programId, approved: true, reasons: [], clauseIds }] }), /each contract clause exactly once/);
         }
       }
       return f.model.run(request);
@@ -282,11 +281,13 @@ test("Checker semantic review payload is scoped and stably ordered", async () =>
   const f = await fixture();
   try {
     const report = await f.checker.check(f.job, new AbortController().signal);
-    const payload = JSON.parse(f.reviewPrompts[0]!);
-    assert.deepEqual(Object.keys(payload), ["requirements", "sourceClauses", "capabilities", "contract", "descriptor", "source", "environments", "receipts"]);
-    assert.equal(payload.requirements.length, 1);
-    assert.equal(payload.requirements[0].guidance, undefined);
-    assert.equal(payload.requirements[0].product.guidance, undefined);
+    const batch = JSON.parse(f.reviewPrompts[0]!);
+    const payload = batch.programs[0];
+    assert.deepEqual(Object.keys(batch), ["requirements", "sourceClauses", "capabilities", "programs"]);
+    assert.deepEqual(Object.keys(payload), ["programId", "contract", "descriptor", "source", "environments", "receipts"]);
+    assert.equal(batch.requirements.length, 1);
+    assert.equal(batch.requirements[0].guidance, undefined);
+    assert.equal(batch.requirements[0].product.guidance, undefined);
     assert.equal(payload.receipts[0].receipt.job, undefined);
     assert.equal(payload.receipts[0].receipt.attachments, undefined);
     assert.equal(payload.receipts[0].receipt.recordedAt, undefined);
@@ -306,20 +307,20 @@ test("Checker semantic review payload is scoped and stably ordered", async () =>
   } finally { await f.cleanup(); }
 });
 
-test("Checker rediscovers only missing clauses on replay and replaces incompatible requirement contracts", async () => {
+test("explicit discovery fills missing clauses and replaces incompatible requirement contracts", async () => {
   const f = await fixture({ omitSecond: true });
   try {
     const first = await f.checker.check(f.job, new AbortController().signal);
-    const second = await f.checker.check({ ...f.job, jobId: "partial-replay", mode: "replay", programs: first.programs }, new AbortController().signal);
+    const second = await f.checker.check({ ...f.job, jobId: "partial-discovery", mode: "discover", programs: first.programs }, new AbortController().signal);
     assert(second.outcomes.every(outcome => outcome.status === "pass"));
     assert.equal(second.programs.length, 2);
     assert.deepEqual(f.roles, ["exploration", "semantic_review", "exploration", "semantic_review"]);
     const original = await f.store.getJson<CheckerRequirements>(f.job.requirements);
     const changedInput = await f.store.putJson({ ...original, browserEntry: "/new-entry" });
-    const third = await f.checker.check({ ...f.job, jobId: "changed-input", requirements: changedInput, mode: "replay", programs: second.programs }, new AbortController().signal);
+    const third = await f.checker.check({ ...f.job, jobId: "changed-input", requirements: changedInput, mode: "discover", programs: second.programs }, new AbortController().signal);
     assert.equal(third.programs.length, 1);
     const manifest = await f.store.getJson<CheckerManifest>(third.manifest);
-    assert(manifest.diagnostics.some(message => /requires rediscovery/.test(message)));
+    assert(manifest.diagnostics.some(message => /is incompatible/.test(message)));
     assert.equal(f.roles.filter(role => role === "exploration").length, 3);
   } finally { await f.cleanup(); }
 });
@@ -354,8 +355,9 @@ test("Checker replays reusable programs without another model session and invali
     const descriptor = await f.store.readTypedJson<{ source: ContentRef }>(first.programs[0]!.descriptor);
     const modified = { ...await f.store.readTypedJson<Record<string, unknown>>(first.programs[0]!.descriptor), source: await f.store.putBytes("// changed\n" + (await f.store.getBytes(descriptor.source)).toString()) };
     const changed: ProgramRef = { ...first.programs[0]!, descriptor: await f.store.putTypedJson(modified, first.programs[0]!.descriptor.schema) };
-    await f.checker.check({ ...f.job, jobId: "job-3", mode: "replay", programs: [changed] }, new AbortController().signal);
-    assert.deepEqual(f.roles, ["exploration", "semantic_review", "semantic_review"]);
+    const unapproved = await f.checker.check({ ...f.job, jobId: "job-3", mode: "replay", programs: [changed] }, new AbortController().signal);
+    assert(unapproved.outcomes.every(item => item.status === "inconclusive" && /requires an approved program/.test(item.reason!)));
+    assert.deepEqual(f.roles, ["exploration", "semantic_review"]);
   } finally { await f.cleanup(); }
 });
 
@@ -403,7 +405,7 @@ test("rejected programs survive restart as feedback and cannot be replayed or re
     const first = await f.checker.check(f.job, new AbortController().signal);
     const checker = createCheckerAgent({ artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model: f.model });
     const progress: CheckerProgress[] = [];
-    const second = await checker.check({ ...f.job, jobId: "job-retry", mode: "replay", programs: first.programs }, new AbortController().signal,
+    const second = await checker.check({ ...f.job, jobId: "job-retry", mode: "discover", programs: first.programs }, new AbortController().signal,
       async detail => { progress.push(detail); });
     assert(progress.some(item => item.stage === "review_rejected" && item.cached && item.reason?.includes("Constant predicate")));
     assert(progress.some(item => item.stage === "rediscovery"));
@@ -432,7 +434,7 @@ test("rejected coverage is rediscovered, revised programs are reviewed, and appr
   try {
     const first = await f.checker.check(f.job, new AbortController().signal);
     config.rejectReview = false; config.omitSecond = false; config.source = "// revised test";
-    const second = await f.checker.check({ ...f.job, jobId: "module-boundary", mode: "replay", programs: first.programs,
+    const second = await f.checker.check({ ...f.job, jobId: "explicit-retry", mode: "discover", programs: first.programs,
       snapshot: await f.store.putJson({ sha: "source-2" }) }, new AbortController().signal);
     assert(second.outcomes.every(item => item.status === "pass"));
     assert.deepEqual(JSON.parse(f.explorationPrompts.at(-1)!).sourceClauses.map((item: SourceClause) => item.id), first.outcomes.map(item => item.clauseId));
@@ -453,7 +455,7 @@ test("changed requirement context invalidates a cached rejection", async () => {
     const first = await f.checker.check(f.job, new AbortController().signal);
     config.rejectReview = false;
     const input = await f.store.getJson<CheckerRequirements>(f.job.requirements);
-    const second = await f.checker.check({ ...f.job, jobId: "changed-context", mode: "replay", programs: first.programs,
+    const second = await f.checker.check({ ...f.job, jobId: "changed-context", mode: "discover", programs: first.programs,
       requirements: await f.store.putJson({ ...input, browserEntry: "/new-entry" }) }, new AbortController().signal);
     assert(second.outcomes.every(item => item.status === "pass"));
     assert.equal(f.replays, 2);
@@ -468,9 +470,9 @@ test("failed rediscovery leaves approved sibling programs eligible for current r
   try {
     const first = await f.checker.check(f.job, new AbortController().signal);
     config.rejectReview = true;
-    const second = await f.checker.check({ ...f.job, jobId: "partial", mode: "replay", programs: first.programs }, new AbortController().signal);
+    const second = await f.checker.check({ ...f.job, jobId: "partial", mode: "discover", programs: first.programs }, new AbortController().signal);
     assert.deepEqual(second.outcomes.map(item => item.status), ["pass", "inconclusive"]);
-    const third = await f.checker.check({ ...f.job, jobId: "retry", mode: "replay", programs: second.programs }, new AbortController().signal);
+    const third = await f.checker.check({ ...f.job, jobId: "retry", mode: "discover", programs: second.programs }, new AbortController().signal);
     assert.deepEqual(third.outcomes.map(item => item.status), ["pass", "inconclusive"]);
     assert.match(third.outcomes[1]!.reason!, /Program was rejected/);
     assert.equal(f.replays, 4, "approved sibling still replays while the rejected program is skipped");
@@ -479,7 +481,7 @@ test("failed rediscovery leaves approved sibling programs eligible for current r
   } finally { await f.cleanup(); }
 });
 
-test("an unsubmitted review leaves sibling programs verifiable and can be retried without rediscovery", async () => {
+test("an unsubmitted batch is not cached and explicit discovery retries without rediscovery", async () => {
   const f = await fixture();
   try {
     const original = (await f.checker.check(f.job, new AbortController().signal)).programs[0]!;
@@ -495,13 +497,13 @@ test("an unsubmitted review leaves sibling programs verifiable and can be retrie
       if (request.role === "semantic_review" && reviews++ === 0) return { totalTokens: 100 };
       return f.model.run(request);
     } } });
-    const partial = await checker.check({ ...f.job, jobId: "partial-review", mode: "replay", programs }, new AbortController().signal);
-    assert.deepEqual(partial.outcomes.map(outcome => outcome.status), ["inconclusive", "pass"]);
+    const partial = await checker.check({ ...f.job, jobId: "partial-review", mode: "discover", programs }, new AbortController().signal);
+    assert.deepEqual(partial.outcomes.map(outcome => outcome.status), ["inconclusive", "inconclusive"]);
     assert.match(partial.outcomes[0]!.reason!, /Independent semantic review did not call finish/);
     assert.equal(partial.programs.length, 2, "both programs remain available for retry");
     const manifest = await f.store.getJson<CheckerManifest>(partial.manifest);
-    assert.equal(manifest.reviews.length, 1, "an unsubmitted review is not cached");
-    const retried = await f.checker.check({ ...f.job, jobId: "review-retry", mode: "replay", programs: partial.programs }, new AbortController().signal);
+    assert.equal(manifest.reviews.length, 0, "an unsubmitted batch is not cached");
+    const retried = await f.checker.check({ ...f.job, jobId: "review-retry", mode: "discover", programs: partial.programs }, new AbortController().signal);
     assert(retried.outcomes.every(outcome => outcome.status === "pass"));
     assert.equal(f.roles.filter(role => role === "exploration").length, 1);
     assert.equal(f.closed, f.environments);
@@ -525,8 +527,11 @@ test("one local correction repairs only rejected coverage and retains approved s
     const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       requests.push(request);
       const payload = JSON.parse(request.prompt);
-      if (request.role === "semantic_review" && payload.source === "// invalid") {
-        await request.tools[0]!.execute({ approved: false, reasons: ["Incorrect source expectation"], clauseIds: payload.contract.clauses.map((clause: SourceClause) => clause.id) });
+      if (request.role === "semantic_review") {
+        await request.tools[0]!.execute({ reviews: payload.programs.map((entry: { programId: string; source: string; contract: AcceptanceContract }) => ({
+          programId: entry.programId, approved: entry.source !== "// invalid", reasons: entry.source === "// invalid" ? ["Incorrect source expectation"] : [],
+          clauseIds: entry.contract.clauses.map(clause => clause.id),
+        })) });
         return { totalTokens: 100 };
       }
       if (request.role === "exploration") {
@@ -541,14 +546,14 @@ test("one local correction repairs only rejected coverage and retains approved s
       }
       return f.model.run(request);
     } } });
-    const report = await checker.check({ ...f.job, mode: "replay", programs: split }, new AbortController().signal);
+    const report = await checker.check({ ...f.job, mode: "discover", programs: split }, new AbortController().signal);
     assert(report.outcomes.every(outcome => outcome.status === "pass"));
-    assert.deepEqual(requests.map(request => request.role), ["semantic_review", "semantic_review", "exploration", "semantic_review"]);
+    assert.deepEqual(requests.map(request => request.role), ["semantic_review", "exploration", "semantic_review"]);
     assert.equal(report.programs.length, 3, "rejected history is retained with the sibling and replacement");
     assert.equal(f.replays, 4, "one initial fixture replay, then each sibling and the replacement exactly once");
     const final = await checker.check({ ...f.job, jobId: "final-local-repair", mode: "replay", programs: report.programs }, new AbortController().signal);
     assert(final.outcomes.every(outcome => outcome.status === "pass"));
-    assert.equal(requests.length, 4, "the approved replacement is reused without rediscovery or review");
+    assert.equal(requests.length, 3, "the approved replacement is reused without rediscovery or review");
     assert.equal(f.replays, 6);
     assert.equal(f.closed, f.environments);
   } finally { await f.cleanup(); }
@@ -665,11 +670,106 @@ test("unverifiable gaps retry only when explicitly marked as a transient problem
   } finally { await f.cleanup(); }
 });
 
-async function groupJob(f: Awaited<ReturnType<typeof fixture>>): Promise<CheckJob> {
+async function groupJob(f: Awaited<ReturnType<typeof fixture>>, count = 2): Promise<CheckJob> {
   const input = await f.store.getJson<CheckerRequirements>(f.job.requirements);
-  const second = { ...input.requirements[0]!, id: "r2", name: "Second cancellation", declarationIndex: 1 };
-  return { ...f.job, requirementIds: ["r1", "r2"], requirements: await f.store.putJson({ ...input, requirements: [...input.requirements, second] }) };
+  const requirements = Array.from({ length: count }, (_, i) => ({ ...input.requirements[0]!, id: `r${i + 1}`, declarationIndex: i }));
+  return { ...f.job, requirementIds: requirements.map(item => item.id), requirements: await f.store.putJson({ ...input, requirements }) };
 }
+
+test("replay never starts a model for missing, unapproved, incompatible or rejected programs", async () => {
+  const config = { rejectReview: false, failures: [] as number[] };
+  const f = await fixture(config);
+  try {
+    const first = await f.checker.check(f.job, new AbortController().signal);
+    const original = first.programs[0]!;
+    const descriptor = await f.store.readTypedJson<Record<string, unknown>>(original.descriptor);
+    const pending = { ...original, descriptor: await f.store.putTypedJson({ ...descriptor, source: await f.store.putBytes("// unreviewed") }, original.descriptor.schema) };
+    let modelCalls = 0;
+    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run() { modelCalls++; assert.fail("pure replay called the model"); } } });
+    for (const programs of [[], [pending]]) {
+      const report = await checker.check({ ...f.job, jobId: `missing-${programs.length}`, mode: "replay", programs }, new AbortController().signal);
+      assert(report.outcomes.every(item => item.status === "inconclusive"));
+    }
+    const input = await f.store.getJson<CheckerRequirements>(f.job.requirements);
+    const incompatible = await checker.check({ ...f.job, jobId: "changed-contract", mode: "replay", programs: [original],
+      requirements: await f.store.putJson({ ...input, version: 2 }) }, new AbortController().signal);
+    assert(incompatible.outcomes.every(item => item.status === "inconclusive"));
+    config.failures = [1, 2];
+    const snapshot = await f.store.putJson({ sha: "changed-business-behavior" });
+    const failed = await checker.check({ ...f.job, jobId: "current-failure", mode: "replay", programs: [original], snapshot }, new AbortController().signal);
+    assert.deepEqual(failed.outcomes.map(item => item.status), ["pass", "fail"]);
+    assert.equal(f.replays, 3, "current behavior is executed and its failure independently confirmed");
+    config.rejectReview = true;
+    const rejected = await f.checker.check({ ...f.job, jobId: "reject-new", programs: [pending] }, new AbortController().signal);
+    const before = f.replays;
+    assert(rejected.programs.some(program => program.descriptor.id === pending.descriptor.id));
+    const repeated = await checker.check({ ...f.job, jobId: "rejected-replay", mode: "replay", programs: [pending] }, new AbortController().signal);
+    assert(repeated.outcomes.every(item => item.status === "inconclusive" && /Semantic review rejected/.test(item.reason!)));
+    assert.equal(f.replays, before);
+    assert.equal(modelCalls, 0);
+    assert.equal(f.closed, f.environments);
+  } finally { await f.cleanup(); }
+});
+
+test("group reviews validate each whole-program decision before accepting the batch", async () => {
+  const f = await fixture();
+  try {
+    const job = await groupJob(f);
+    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+      if (request.role === "semantic_review") {
+        const entries = JSON.parse(request.prompt).programs as Array<{ programId: string; contract: AcceptanceContract }>;
+        assert.equal(entries.length, 2);
+        const decisions = entries.map(item => ({ programId: item.programId, approved: true, reasons: [], clauseIds: item.contract.clauses.map(clause => clause.id) }));
+        const finish = request.tools[0]!;
+        for (const reviews of [[decisions[0]], [decisions[0], decisions[0]], [{ ...decisions[0], programId: "invented" }, decisions[1]]]) {
+          await assert.rejects(finish.execute({ reviews }), /each program exactly once/);
+        }
+        await assert.rejects(finish.execute({ reviews: [{ ...decisions[0], clauseIds: decisions[1]!.clauseIds }, decisions[1]] }), /each contract clause exactly once/);
+      }
+      return f.model.run(request);
+    } } });
+    const report = await checker.check(job, new AbortController().signal);
+    assert(report.outcomes.every(item => item.status === "pass"));
+    assert.deepEqual(JSON.parse(f.reviewPrompts[0]!).programs.map((item: { programId: string }) => item.programId), report.programs.map(contentDigest));
+    assert.equal(f.reviewPrompts.length, 1);
+  } finally { await f.cleanup(); }
+});
+
+test("review batches bound program count and input bytes and cache decisions individually", async () => {
+  for (const config of [{ count: 5, source: "// ordinary" }, { count: 2, source: "//" + "x".repeat(150_000) }]) {
+    const f = await fixture({ source: config.source });
+    try {
+      const job = await groupJob(f, config.count);
+      const report = await f.checker.check(job, new AbortController().signal);
+      assert(report.outcomes.every(item => item.status === "pass"));
+      assert.equal(f.reviewPrompts.length, 2);
+      const replay = await f.checker.check({ ...job, jobId: "batch-replay", mode: "replay", programs: report.programs }, new AbortController().signal);
+      assert(replay.outcomes.every(item => item.status === "pass"));
+      assert.equal(f.reviewPrompts.length, 2, "batch membership is not part of per-program review identity");
+      assert.equal(f.closed, f.environments);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test("a later review batch failure retains earlier approved programs and leaves its own programs pending", async () => {
+  const f = await fixture();
+  try {
+    const job = await groupJob(f, 5);
+    let reviews = 0;
+    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+      if (request.role === "semantic_review" && ++reviews === 2) throw new Error("Review connection failed");
+      return f.model.run(request);
+    } } });
+    const report = await checker.check(job, new AbortController().signal);
+    assert.deepEqual(report.outcomes.map(item => item.status), [...Array(8).fill("pass"), "inconclusive", "inconclusive"]);
+    assert(report.outcomes.slice(8).every(item => /Review connection failed/.test(item.reason!)));
+    const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
+    assert.equal(manifest.reviews.length, 4);
+    const replay = await checker.check({ ...job, jobId: "pending-batch-replay", mode: "replay", programs: report.programs }, new AbortController().signal);
+    assert.deepEqual(replay.outcomes.map(item => item.status), report.outcomes.map(item => item.status));
+    assert.equal(reviews, 2, "pure replay does not retry the unfinished review");
+  } finally { await f.cleanup(); }
+});
 
 test("one group exploration produces independent scenario programs and scoped replay reuses its context", async () => {
   const f = await fixture();
@@ -681,12 +781,12 @@ test("one group exploration produces independent scenario programs and scoped re
         const mixed = { checkpoints: sources.map((source, i) => ({ id: `mixed-${i}`, kind: "assertion", requirementId: source.requirementId,
           scenarioId: source.scenarioId, clauseId: source.id, dependsOn: [], basis: source.basis })),
           clauses: sources.map((source, i) => ({ ...source, checkpointId: `mixed-${i}`, expected: { operator: "equal", value: 5 } })) };
-        await assert.rejects(request.tools.find(tool => tool.name === "save_artifact")!.execute({ kind: "contract", contract: mixed }), /one requirement scenario/);
+        await assert.rejects(request.tools.find(tool => tool.name === "check_program")!.execute({ contract: mixed, source: "// invalid mixed contract" }), /one requirement scenario/);
       }
       return f.model.run(request);
     } } });
     const report = await checker.check(job, new AbortController().signal);
-    assert.deepEqual(f.roles, ["exploration", "semantic_review", "semantic_review"]);
+    assert.deepEqual(f.roles, ["exploration", "semantic_review"]);
     assert.equal(JSON.parse(f.explorationPrompts[0]!).sourceClauses.length, 4);
     assert.equal(report.programs.length, 2);
     assert.equal(f.environments, 3, "one shared discovery and one independent replay per scenario");
@@ -694,7 +794,7 @@ test("one group exploration produces independent scenario programs and scoped re
     const first = report.programs[0]!;
     const scoped = await checker.check({ ...job, jobId: "scope-r1", requirementIds: ["r1"], programs: [first] }, new AbortController().signal);
     assert(scoped.outcomes.every(outcome => outcome.requirementId === "r1" && outcome.status === "pass"));
-    assert.equal(f.roles.length, 3, "scope-only replay retains the group context and cached review");
+    assert.equal(f.roles.length, 2, "scope-only replay retains the group context and cached review");
     assert.equal(f.replays, 3);
   } finally { await f.cleanup(); }
 });
@@ -710,7 +810,7 @@ test("merged history prefers an approved program over a newer unreviewed candida
       source: await f.store.putBytes("// unfinished newer candidate") }, approved.descriptor.schema) };
     const report = await f.checker.check({ ...job, jobId: "merged-candidates", programs: [pending, ...original.programs] }, new AbortController().signal);
     assert(report.outcomes.every(outcome => outcome.status === "pass"));
-    assert.deepEqual(f.roles, ["exploration", "semantic_review", "semantic_review"]);
+    assert.deepEqual(f.roles, ["exploration", "semantic_review"]);
     assert.equal(report.programs.length, 2);
     assert(report.programs.some(program => program.descriptor.id === approved.descriptor.id));
     assert(!report.programs.some(program => program.descriptor.id === pending.descriptor.id));
@@ -734,7 +834,7 @@ test("a failed scenario closes its environment and leaves sibling programs verif
     const report = await checker.check({ ...job, jobId: "isolated-failure", programs: original.programs }, new AbortController().signal);
     assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["inconclusive", "inconclusive", "pass", "pass"]);
     assert(report.outcomes.slice(0, 2).every(outcome => /Scenario r1 preparation failed/.test(outcome.reason!)));
-    assert.equal(f.roles.length, 3, "an infrastructure error does not trigger another exploration or review");
+    assert.equal(f.roles.length, 2, "an infrastructure error does not trigger another exploration or review");
     assert.equal(f.closed, f.environments);
   } finally { await f.cleanup(); }
 });

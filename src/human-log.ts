@@ -77,7 +77,7 @@ function describe(event: RunEvent): string | null {
     case "module_check_started":
       return `开始模块集中检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "module_check_finished":
-      return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}`;
+      return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
     case "checker_usage": {
       const tokens = tokenUsageParts(detail);
       const role = pickString(detail, "role");
@@ -115,7 +115,7 @@ function describe(event: RunEvent): string | null {
     case "repair_batch_started":
       return `开始第 ${detail?.round} 轮修复；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "repair_batch_finished":
-      return `第 ${detail?.round} 轮修复${detail?.retained ? "已保存" : "已恢复原检查点"}${detail?.retained && (detail.improvedCases || detail.resolvedGaps) ? `；新增通过用例 ${detail.improvedCases ?? 0}，已解决准备/控件缺口 ${detail.resolvedGaps ?? 0}` : ""}${reason ? `；${reason}` : ""}`;
+      return `第 ${detail?.round} 轮修复${detail?.retained ? "已保存" : "已恢复原检查点"}${detail?.retained && (detail.improvedCases || detail.resolvedGaps) ? `；新增通过用例 ${detail.improvedCases ?? 0}，已解决准备/控件缺口 ${detail.resolvedGaps ?? 0}` : ""}${scenarioCoverageText(detail)}${reason ? `；${reason}` : ""}`;
     case "repair_paused":
       return `模型网关故障，暂停本轮修复并等待恢复后重试（${packetId}）；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "pipeline_started": {
@@ -234,7 +234,7 @@ function describe(event: RunEvent): string | null {
         ? `；本轮验收范围 ${strings(detail.auditRequirementIds).length} 条；跳过旧需求验收 ${strings(detail.skippedRequirementIds).length} 条` : "";
       const usage = modelUsageSummary(detail?.modelUsage);
       const usageText = usage ? `；模型用量 ${formatModelUsageSummary(usage).join("；")}` : "";
-      return `流水线结束${detail ? `；结果 ${pickString(detail, "status")}；已实现 ${strings(detail.implementedRequirementIds).length}，已验证 ${strings(detail.verifiedRequirementIds).length}，业务失败 ${strings(detail.failedRequirementIds).length}，无法判断 ${strings(detail.inconclusiveRequirementIds).length}，阻塞 ${strings(detail.blockedRequirementIds).length}，待处理 ${strings(detail.pendingRequirementIds).length}；阻塞 ID：${strings(detail.blockedRequirementIds).join("、") || "无"}；待处理 ID：${strings(detail.pendingRequirementIds).join("、") || "无"}${categories ? `；无法判断分类：${categories}` : ""}${auditScope}；接受 SHA ${pickString(detail, "acceptedSha")}${usageText}` : ""}`;
+      return `流水线结束${detail ? `；结果 ${pickString(detail, "status")}；已实现 ${strings(detail.implementedRequirementIds).length}，已验证 ${strings(detail.verifiedRequirementIds).length}，业务失败 ${strings(detail.failedRequirementIds).length}，无法判断 ${strings(detail.inconclusiveRequirementIds).length}，阻塞 ${strings(detail.blockedRequirementIds).length}，待处理 ${strings(detail.pendingRequirementIds).length}${scenarioCoverageText(detail)}；阻塞 ID：${strings(detail.blockedRequirementIds).join("、") || "无"}；待处理 ID：${strings(detail.pendingRequirementIds).join("、") || "无"}${categories ? `；无法判断分类：${categories}` : ""}${auditScope}；接受 SHA ${pickString(detail, "acceptedSha")}${usageText}` : ""}`;
     }
     default:
       return null;
@@ -382,6 +382,24 @@ function strings(value: unknown): string[] {
 function pickNumber(detail: Record<string, unknown> | undefined, key: string): number | null {
   const value = detail?.[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Cumulative scenario coverage; older events may only carry per-scope scenario results. */
+function scenarioCoverageText(detail: Record<string, unknown> | undefined): string {
+  const coverage = asRecord(detail?.scenarioCoverage);
+  const results = Array.isArray(detail?.scenarioResults)
+    ? detail.scenarioResults.map(item => asRecord(item)).filter((item): item is Record<string, unknown> => item !== undefined)
+    : [];
+  const total = asNumber(coverage?.total) ?? results.length;
+  const verified = asNumber(coverage?.verified) ?? results.filter(item => item.status === "verified").length;
+  if (total <= 0) return "";
+  const count = (key: string, status: string) => asNumber(coverage?.[key]) ?? results.filter(item => item.status === status).length;
+  const failed = count("failed", "failed");
+  const inconclusive = count("inconclusive", "inconclusive");
+  const notRun = count("notRun", "not_run");
+  const extras = [failed ? `失败 ${failed}` : null, inconclusive ? `无法判断 ${inconclusive}` : null,
+    notRun ? `未运行 ${notRun}` : null].filter((item): item is string => item !== null);
+  return `；场景覆盖 ${verified}/${total}${extras.length ? `（${extras.join("，")}）` : ""}`;
 }
 
 function renderClock(atMs: number): string {
