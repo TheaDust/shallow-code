@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -12,8 +12,10 @@ import { type AcceptanceContract, type CheckerManifest, type CheckerRequirements
 import type { CheckerModel, CheckerModelRequest, CheckerModelUsage } from "../src/checker/model.js";
 import type { AdapterDeclaration, CheckerProgress, CheckJob, ContentRef, EvidenceReceipt, ExecutionAdapter, ExecutionBinding, ExecutionBindingRef, ProgramRef } from "../src/checker/port.js";
 import type { AtomicRequirement } from "../src/types.js";
+import { CheckerSourceIndex } from "../src/checker/source-index.js";
+import { SnapshotStore } from "../src/snapshot-store.js";
 
-async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean } = {}) {
+async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean; sourceTools?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "checker-agent-"));
   const store = new ArtifactStore(directory, "run-1");
   const schema = await store.putJson(Type.Unknown());
@@ -34,6 +36,15 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   const job: CheckJob = { jobId: "job-1", runId: store.runId, moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
     snapshot: await store.putJson({ sha: "source-1" }), requirements: await store.putJson(input), binding, initialState,
     requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 30_000 } };
+  let sourceIndex: CheckerSourceIndex | undefined;
+  if (config.sourceTools) {
+    const source = join(directory, "application"); await mkdir(source);
+    await writeFile(join(source, "cancel.ts"), "export const SOURCE_ONLY_SENTINEL = 'private implementation';\nexport function cancelOrder() {}\n");
+    await writeFile(join(source, "cancel.test.ts"), "builder-test-only");
+    const snapshots = new SnapshotStore(join(directory, "snapshots"));
+    job.snapshot = (await snapshots.seal({ sourceDirectory: source, sourceSha: "source-1", packetId: "packet" })).ref;
+    sourceIndex = new CheckerSourceIndex(snapshots);
+  }
   let environments = 0, closed = 0, replays = 0;
   const roles: string[] = [];
   const reviewPrompts: string[] = [];
@@ -84,7 +95,14 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
       assert.deepEqual(request.tools.map(item => item.name), ["finish"]);
       await tool("finish", { reviews: promptInput.programs.map((item: { programId: string; contract: AcceptanceContract }) => ({ programId: item.programId, approved: !config.rejectReview, reasons: config.rejectReview ? ["Constant predicate does not test source result"] : [], clauseIds: item.contract.clauses.map(clause => clause.id) })) });
     } else {
-      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish"]);
+      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish", ...config.sourceTools ? ["source_tree", "source_search", "source_read"] : []]);
+      if (config.sourceTools) {
+        const tree = await tool("source_tree", { depth: 1 }) as { entries: Array<{ path: string; kind: string }> };
+        assert.deepEqual(tree.entries.map(entry => [entry.path, entry.kind]), [["cancel.ts", "file"]]);
+        const result = await tool("source_search", { terms: ["cancelOrder"] }) as { matches: Array<{ fileId: string }> };
+        const read = await tool("source_read", { fileId: result.matches[0]!.fileId, startLine: 1, lineCount: 2 }) as { content: string };
+        assert.match(read.content, /SOURCE_ONLY_SENTINEL/);
+      }
       await assert.rejects(tool("invoke", { capabilityId: "shell", input: {} }), /Undeclared/);
       await assert.rejects(tool("invoke", { capabilityId: "inspect", input: "{not json" }), /not valid JSON/);
       await tool("invoke", { capabilityId: "inspect", input: argument({}) });
@@ -112,8 +130,31 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     return { totalTokens: 100 };
   } };
   return { directory, store, job, adapter, model, roles, reviewPrompts, explorationPrompts, toolSchemas, get environments() { return environments; }, get closed() { return closed; }, get replays() { return replays; },
-    checker: createCheckerAgent({ artifacts: store, adapter, model }), cleanup: () => rm(directory, { recursive: true, force: true }) };
+    checker: createCheckerAgent({ artifacts: store, adapter, model, sourceIndex }), sourceIndex,
+    cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
+
+test("source lookups aid discovery without reaching semantic review, behavior evidence or replay", async () => {
+  const f = await fixture({ sourceTools: true, failures: [0, 1] });
+  try {
+    const report = await f.checker.check(f.job, new AbortController().signal);
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "fail"]);
+    for (const prompt of [...f.reviewPrompts, ...f.explorationPrompts]) {
+      assert.doesNotMatch(prompt, /SOURCE_ONLY_SENTINEL|private implementation/);
+    }
+    assert(f.toolSchemas.some(tool => tool.role === "exploration" && tool.name === "source_tree"));
+    assert(f.toolSchemas.some(tool => tool.role === "exploration" && tool.name === "source_read"));
+    assert(!f.toolSchemas.some(tool => tool.role === "semantic_review" && (tool.name === "source_tree" || tool.name === "source_search" || tool.name === "source_read")));
+    const roles = f.roles.length;
+    const open = f.sourceIndex!.open;
+    f.sourceIndex!.open = async () => { throw new Error("Replay must not open source"); };
+    await f.checker.check({ ...f.job, jobId: "replay", mode: "replay", programs: report.programs }, new AbortController().signal);
+    assert.equal(f.roles.length, roles);
+    const ready = await f.checker.check({ ...f.job, jobId: "prepare", mode: "prepare", programs: [] }, new AbortController().signal);
+    assert.deepEqual(ready.outcomes, []); assert.equal(f.roles.length, roles);
+    f.sourceIndex!.open = open;
+  } finally { await f.cleanup(); }
+});
 
 test("Checker discovers, replays, independently reviews and reproduces one failed AND clause", async () => {
   const f = await fixture({ failures: [0, 1] });
@@ -165,9 +206,15 @@ test("Checker assembles final-program self-check guidance with its exploration s
     const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "exploration") {
         explored = true;
+        assert.match(request.systemPrompt, /优先源码定位/);
+        assert.match(request.systemPrompt, /直接调用 check_program/);
+        assert.match(request.systemPrompt, /没有源码索引或源码无法确定.*才用 invoke/);
+        assert.match(request.systemPrompt, /提交前自检/);
+        assert.doesNotMatch(request.systemPrompt, /先检查应用并建立规定的初始状态。用 invoke/);
         assert.match(request.systemPrompt, /check_program.*独立干净环境/);
         assert.match(request.systemPrompt, /源码或合同修改后，重新调用 check_program/);
         assert.match(request.systemPrompt, /业务断言失败不要求把正确程序改到通过/);
+        assert.match(request.systemPrompt, /checker-tools@5/);
         assert.match(request.tools.find(tool => tool.name === "check_program")!.description, /execute the saved program in an independent clean environment/);
         assert.match(request.tools.find(tool => tool.name === "finish")!.description, /returned by check_program/);
       }
@@ -283,7 +330,7 @@ test("Checker semantic review payload is scoped and stably ordered", async () =>
     const report = await f.checker.check(f.job, new AbortController().signal);
     const batch = JSON.parse(f.reviewPrompts[0]!);
     const payload = batch.programs[0];
-    assert.deepEqual(Object.keys(batch), ["requirements", "sourceClauses", "capabilities", "programs"]);
+    assert.deepEqual(Object.keys(batch), ["capabilities", "requirements", "sourceClauses", "programs"]);
     assert.deepEqual(Object.keys(payload), ["programId", "contract", "descriptor", "source", "environments", "receipts"]);
     assert.equal(batch.requirements.length, 1);
     assert.equal(batch.requirements[0].guidance, undefined);
@@ -743,6 +790,12 @@ test("review batches bound program count and input bytes and cache decisions ind
       const report = await f.checker.check(job, new AbortController().signal);
       assert(report.outcomes.every(item => item.status === "pass"));
       assert.equal(f.reviewPrompts.length, 2);
+      const [firstReview, secondReview] = f.reviewPrompts;
+      assert(firstReview!.startsWith('{"capabilities":'));
+      const requirementsBoundary = ',"requirements":';
+      assert.equal(firstReview!.slice(0, firstReview!.indexOf(requirementsBoundary)),
+        secondReview!.slice(0, secondReview!.indexOf(requirementsBoundary)),
+        "review batches share the job-invariant capabilities prefix");
       const replay = await f.checker.check({ ...job, jobId: "batch-replay", mode: "replay", programs: report.programs }, new AbortController().signal);
       assert(replay.outcomes.every(item => item.status === "pass"));
       assert.equal(f.reviewPrompts.length, 2, "batch membership is not part of per-program review identity");

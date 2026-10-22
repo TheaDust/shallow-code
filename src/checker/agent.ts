@@ -8,6 +8,7 @@ import { checkerSourceClauses, evaluateProgramEvidence, sameRef, validateAccepta
   type AcceptanceContract, type CheckerManifest, type CheckerProgramDescriptor, type CheckerRequirements, type SemanticReview, type UnsupportedClause } from "./evidence.js";
 import type { CheckerModel, CheckerTool } from "./model.js";
 import type { AtomicRequirement } from "../types.js";
+import { SOURCE_TREE_MAX_DEPTH, SOURCE_TREE_MAX_LIMIT, type CheckerSourceIndex, type CheckerSourceView } from "./source-index.js";
 
 export { createPiCheckerModel } from "./model.js";
 export type { CheckerModel, CheckerModelUsage } from "./model.js";
@@ -61,7 +62,8 @@ function semanticReviewRequirements(input: CheckerRequirements, contract: Pick<A
 
 function reviewProgramPayload(program: ProgramRef, contract: AcceptanceContract,
   descriptor: CheckerProgramDescriptor, source: string, evidence: ReviewEvidence[]): Record<string, unknown> {
-  const environments = new Map(evidence.map(item => [item.receipt.environment.id, item.environment]));
+  const environments = [...new Map(evidence.map(item => [item.receipt.environment.id, item.environment])).entries()]
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
   return {
     programId: contentDigest(program),
     contract: {
@@ -94,7 +96,7 @@ function reviewReceipt(receipt: EvidenceReceipt, payload: unknown): Record<strin
 }
 
 /** Exploration, semantic review and replay share one immutable task, with separate model sessions. */
-export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter: ExecutionAdapter; model: CheckerModel }): CheckerPort {
+export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter: ExecutionAdapter; model: CheckerModel; sourceIndex?: CheckerSourceIndex }): CheckerPort {
   const { artifacts: store, adapter, model } = options;
   const invocationInput = async (capabilityId: string, schema: ContentRef, input: unknown): Promise<unknown> => {
     try { await store.validateSchema(schema, input); return input; }
@@ -123,6 +125,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
       requirementId: id, scenarioId: "unknown", clauseId: `${id}:missing-source`, status: "inconclusive", evidence: [], reason: "Requirement has no source result clause" });
     let cleanupFailure: CheckerCleanupError | undefined;
     const sessions = new Set<ExecutionSession>();
+    let sourceView: CheckerSourceView | undefined;
     const progress = async (detail: CheckerProgress): Promise<void> => {
       try { await onProgress?.(detail); } catch { /* Presentation failures must not change evidence or prevent cleanup. */ }
     };
@@ -161,10 +164,20 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
       const binding = await store.validateBinding(job.binding);
       const declaration = await store.getJson<AdapterDeclaration>(binding.declaration);
       const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission"].map(promptAsset));
+      const adapterPrompts = await Promise.all(declaration.prompts.map(ref => store.getBytes(ref).then(bytes => bytes.toString("utf8"))));
       const promptDigest = hashBytes(genericPrompts.join("\n\n"));
+      // Review uses only review/tools/adapter prompts. Keep its cache key independent
+      // from exploration and submission edits so unrelated prompt changes do not
+      // invalidate already approved review decisions.
+      const reviewPromptDigest = hashBytes([genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"));
+      // The content-addressed binding also covers exploration/submission prompt
+      // edits. Use a review-specific binding identity so only execution semantics
+      // and prompts visible to review invalidate its decisions.
+      const reviewBindingDigest = contentDigest({ schemaVersion: binding.schemaVersion, declaration: binding.declaration,
+        executor: binding.executor, schemas: binding.schemas, dependencies: binding.dependencies, promptDigest: reviewPromptDigest });
       const cachedReview = async (program: ProgramRef) => {
         const key = store.reviewKey({ requirements: job.requirements, contract: program.contract, program: program.descriptor,
-          binding: job.binding, promptDigest });
+          binding: reviewBindingDigest, promptDigest: reviewPromptDigest });
         const path = join(store.directory, "reviews", key + ".json");
         try {
           const ref = JSON.parse(await readFile(path, "utf8")) as ContentRef;
@@ -173,12 +186,14 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           return { key, path, ref, review };
         } catch { return { key, path, ref: undefined, review: undefined }; }
       };
-      const adapterPrompts = await Promise.all(declaration.prompts.map(ref => store.getBytes(ref).then(bytes => bytes.toString("utf8"))));
       const capabilities = await Promise.all(declaration.capabilities.map(async capability => ({ ...capability,
         inputSchema: await store.getJson(capability.inputSchema), outputSchema: await store.getJson(capability.outputSchema) })));
+      // Capabilities are invariant across exploration sessions and review batches.
+      // Put them first so each request shares the longest possible prompt prefix.
+      const orderedCapabilities = [...capabilities].sort(compareId);
       const executionCapability = (id: string) => {
         const capability = declaration.capabilities.find(item => item.id === id);
-        if (!capability) throw new Error(`Undeclared execution capability "${id}". invoke only accepts: ${declaration.capabilities.map(item => item.id).join(", ")}. Call the separate Checker tools check_program and finish directly by their tool names.`);
+        if (!capability) throw new Error(`Undeclared execution capability "${id}". invoke only accepts: ${declaration.capabilities.map(item => item.id).join(", ")}. Call the separate Checker tools check_program and finish directly by their tool names; source_tree/source_search/source_read are also separate tools when provided.`);
         return capability;
       };
       if (job.mode === "prepare") { const session = await prepare(); await close(session); }
@@ -367,12 +382,47 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               } },
           ];
           try {
+            if (options.sourceIndex) {
+              const index = options.sourceIndex;
+              const source = async () => sourceView ??= await index.open(job.snapshot, explorationSignal);
+              tools.push({ name: "source_tree", description: "List indexed implementation directories and files under an optional path prefix. Results are navigation context, not behavior evidence. Narrow pathPrefix or reduce depth when truncated.",
+                parameters: Type.Object({ pathPrefix: Type.Optional(Type.String()), depth: Type.Optional(Type.Integer({ minimum: 1, maximum: SOURCE_TREE_MAX_DEPTH })),
+                  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: SOURCE_TREE_MAX_LIMIT })) }),
+                async execute(raw) {
+                  if (finished) throw new Error("Checker exploration already finished");
+                  explorationSignal.throwIfAborted();
+                  const args = raw as { pathPrefix?: string; depth?: number; limit?: number };
+                  return (await source()).tree(args.pathPrefix, args.depth, args.limit);
+                } }, { name: "source_search", description: "Find implementation files and literal text in this job's sealed source index. Results are navigation context, not behavior evidence.",
+                parameters: Type.Object({ terms: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }), pathPrefix: Type.Optional(Type.String()) }),
+                async execute(raw) {
+                  if (finished) throw new Error("Checker exploration already finished");
+                  explorationSignal.throwIfAborted();
+                  const args = raw as { terms: string[]; pathPrefix?: string };
+                  return (await source()).search(args.terms, args.pathPrefix);
+                } }, { name: "source_read", description: "Read a line range from a fileId in the current sealed source index. Prefer the relevant function or control, then verify behavior with declared execution capabilities.",
+                parameters: Type.Object({ fileId: Type.String({ minLength: 1 }), startLine: Type.Integer({ minimum: 1 }), lineCount: Type.Optional(Type.Integer({ minimum: 1 })) }),
+                async execute(raw) {
+                  if (finished) throw new Error("Checker exploration already finished");
+                  explorationSignal.throwIfAborted();
+                  const args = raw as { fileId: string; startLine: number; lineCount?: number };
+                  return (await source()).read(args.fileId, args.startLine, args.lineCount);
+                } });
+            }
             const context = repair ? { requirements: input.requirements.filter(requirement => discoverySources.some(source => source.requirementId === requirement.id)),
               prerequisites: input.prerequisites ?? [] } : input;
-            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({ requirements: context,
-              sourceClauses: discoverySources, capabilities, programFormat: declaration.programFormat, initialState: await store.readTypedJson(job.initialState),
-              remainingMs: Math.max(0, explorationDeadline - Date.now()), repair,
-              ...(feedback.length ? { rejectedPrograms: feedback } : {}) }), tools, explorationSignal);
+            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({
+              // Keep session-invariant fields first; discovery scope and feedback
+              // are the parts that change between initial and repair sessions.
+              capabilities: orderedCapabilities,
+              programFormat: declaration.programFormat,
+              initialState: await store.readTypedJson(job.initialState),
+              requirements: context,
+              sourceClauses: discoverySources,
+              repair,
+              remainingMs: Math.max(0, explorationDeadline - Date.now()),
+              ...(feedback.length ? { rejectedPrograms: feedback } : {}),
+            }), tools, explorationSignal);
             if (!finished) throw new Error("Checker exploration did not finish with saved programs");
           } catch (error) {
             const reason = error instanceof Error ? error.message : String(error);
@@ -494,9 +544,14 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           const batchPayload = (batch: Executed[]): string => {
             const clauses = batch.flatMap(item => item.contract.clauses);
             const ids = new Set(clauses.map(clause => clause.id));
-            return JSON.stringify({ requirements: semanticReviewRequirements(input, { clauses }),
-              sourceClauses: eligibleSources.filter(clause => ids.has(clause.id)).sort(compareId), capabilities: [...capabilities].sort(compareId),
-              programs: batch.map(item => reviewProgramPayload(item.program, item.contract, item.descriptor, item.source, item.projected!)) });
+            return JSON.stringify({
+              // Keep job-invariant capabilities first. Requirements and source
+              // clauses are scoped to this batch and therefore follow them.
+              capabilities: orderedCapabilities,
+              requirements: semanticReviewRequirements(input, { clauses }),
+              sourceClauses: eligibleSources.filter(clause => ids.has(clause.id)).sort(compareId),
+              programs: batch.map(item => reviewProgramPayload(item.program, item.contract, item.descriptor, item.source, item.projected!)),
+            });
           };
           while (pending.length) {
             const batch = [pending.shift()!];

@@ -14,7 +14,7 @@
 ### Builder 与 Checker
 
 - Pi Worker 是唯一实现目标应用业务代码的 Builder；控制器只调度、验收及安装任务无关脚手架和批准能力。
-- Checker 依据需求与声明能力的实际观察探索和验收，保持与目标源码、diff、Builder 会话及官方测试隔离。Builder 输入通过白名单失败观测装配。
+- Checker 探索可只读查询当前封存快照的实现文件结构与片段用于定位；预期来自需求，验收来自实际观察。独立语义复核不接触目标源码，全部 Checker 会话与 diff、Builder 会话及官方测试隔离。Builder 输入通过白名单失败观测装配。
 - 控制器的私有证据不放进工作区：运行日志、Checker 合同、程序、证据与 Pi 会话位于工作区外的 run 目录，`pi-tools.ts` 与候选快照据此屏蔽私有路径。`shallow-progress/` 保持 untracked，用于对外可见的进度记录。ARC 事件投影与平台打包约定由原项目维护，本仓库不再生成 `.arc/` 产物。
 - Builder 自述、构建成功和历史记录均不能授予 `verified`。历史计划与进度只提供需求 ID 来源，本轮按当前需求重新规划与执行。
 
@@ -50,7 +50,7 @@
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
 | 应用适配、配置、运行与 Builder 能力 | `src/application/port.ts`、`registry.ts`、`candidate-runtime.ts`；`src/adapters/web/`；注册装配 `src/adapters/index.ts`、`src/adapters/checker.ts` |
 | Checker 调度、产物、证据与恢复 | `src/checker-pipeline.ts`、`src/snapshot-store.ts`、`src/checker/port.ts`、`queue.ts`、`checkpoints.ts`、`artifacts.ts`、`agent.ts`、`evidence.ts`（后六项在 `src/checker/`） |
-| Checker 模型、Web 能力与程序 | `src/checker/model.ts`、`src/checker/adapters/web/`、`prompts/checker/` |
+| Checker 模型、源码索引、Web 能力与程序 | `src/checker/model.ts`、`src/checker/source-index.ts`、`src/checker/adapters/web/`、`prompts/checker/` |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
 | 模型用量与单价 | `src/model-usage.ts`、`src/builder/pi-execution-stats.ts`、`src/planner-json-client.ts` |
 | 继承数据 | `src/inherited-data.ts` |

@@ -10,6 +10,7 @@ import type { CheckerModel } from "../../src/checker/model.js";
 import type { CheckJob, EvidenceReceipt } from "../../src/checker/port.js";
 import type { ProjectSpec } from "../../src/project-spec.js";
 import { SnapshotStore } from "../../src/snapshot-store.js";
+import { CheckerSourceIndex } from "../../src/checker/source-index.js";
 import type { AtomicRequirement } from "../../src/types.js";
 import { withTempDir } from "../helpers/temp-dir.js";
 
@@ -46,12 +47,22 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
       roles.push(request.role);
       const invoke = (name: string, args: unknown) => request.tools.find(tool => tool.name === name)!.execute(args);
       if (request.role === "semantic_review") {
+        assert.deepEqual(request.tools.map(tool => tool.name), ["finish"]);
+        assert(!request.prompt.includes("require('node:http')"));
         const evidence = JSON.parse(request.prompt).programs[0] as { programId: string; receipts: Array<{ receipt: EvidenceReceipt; payload: unknown }> };
         assert(evidence.receipts.some(item => item.receipt.kind === "observation" && JSON.stringify(item.payload).includes("cancelled")));
         await invoke("finish", { reviews: [{ programId: evidence.programId, approved: true, reasons: [], clauseIds: clauses.map(clause => clause.id) }] });
       } else {
         assert.match(request.systemPrompt, /最终场景使用 check_program/);
         assert.match(request.systemPrompt, /独立干净 case 中运行/);
+        const tree = await invoke("source_tree", { depth: 1 }) as { entries: Array<{ path: string; kind: string }> };
+        assert(tree.entries.some(entry => entry.path === "server.cjs" && entry.kind === "file"));
+        assert(!tree.entries.some(entry => entry.path === "data"));
+        const matches = await invoke("source_search", { terms: ["/cancel"] }) as { matches: Array<{ fileId: string; path: string }> };
+        const implementation = matches.matches.find(file => file.path === "server.cjs")!;
+        assert(implementation);
+        const excerpt = await invoke("source_read", { fileId: implementation.fileId, startLine: 1, lineCount: 10 }) as { content: string };
+        assert.match(excerpt.content, /createServer/);
         const observed = await invoke("invoke", { capabilityId: "inspect", input: { actor: "alice" } });
         assert.match(JSON.stringify(observed), /unpaid/);
         await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('bob');const o=await p.read({role:'status',name:'Train T-6 seats'});return o.value;" } });
@@ -81,7 +92,8 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
       }
       return { totalTokens: 100 };
     } };
-    const report = await createCheckerAgent({ artifacts, adapter, model }).check(job, new AbortController().signal);
+    const sourceIndex = new CheckerSourceIndex(snapshots, spec.dataPaths);
+    const report = await createCheckerAgent({ artifacts, adapter, model, sourceIndex }).check(job, new AbortController().signal);
     const manifest = await artifacts.getJson<CheckerManifest>(report.manifest);
     assert.deepEqual(manifest.diagnostics, []);
     assert.deepEqual(report.outcomes.map(outcome => outcome.status), mutant ? ["pass", "fail", "pass"] : ["pass", "pass", "pass"]);
