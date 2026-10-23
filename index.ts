@@ -10,7 +10,7 @@ import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
 import { discoverRequirementsDir, parseInvocation, type CliOptions } from "./src/cli.js";
 import { SnapshotStore } from "./src/snapshot-store.js";
-import { CheckerSourceIndex } from "./src/checker/source-index.js";
+import { CheckerSourceIndex, checkerSourceExclusions } from "./src/checker/source-index.js";
 import { ArtifactStore, atomicWrite } from "./src/checker/artifacts.js";
 import type { ContentRef } from "./src/checker/port.js";
 import { createCheckerAgent, createPiCheckerModel, type CheckerModelUsage } from "./src/checker/agent.js";
@@ -494,9 +494,7 @@ async function executeProduction(
         recovery: gatewayRecovery,
         ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item),
         onProgress: item => recordUsageProgress(item) });
-      const sourceIndex = new CheckerSourceIndex(snapshots,
-        [...pipelineOptions.applicationContract.dependencyPaths ?? [], ...pipelineOptions.applicationContract.generatedPaths ?? [],
-          ...pipelineOptions.applicationContract.dataPaths ?? []]);
+      const sourceIndex = new CheckerSourceIndex(snapshots, checkerSourceExclusions(pipelineOptions.applicationContract));
       checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model, sourceIndex }),
         binding: execution.adapter.binding, initialState: execution.initialState, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },

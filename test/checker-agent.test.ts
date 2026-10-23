@@ -15,7 +15,7 @@ import type { AtomicRequirement } from "../src/types.js";
 import { CheckerSourceIndex } from "../src/checker/source-index.js";
 import { SnapshotStore } from "../src/snapshot-store.js";
 
-async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean; sourceTools?: boolean } = {}) {
+async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean; sourceTools?: boolean; emptySource?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "checker-agent-"));
   const store = new ArtifactStore(directory, "run-1");
   const schema = await store.putJson(Type.Unknown());
@@ -39,7 +39,8 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
   let sourceIndex: CheckerSourceIndex | undefined;
   if (config.sourceTools) {
     const source = join(directory, "application"); await mkdir(source);
-    await writeFile(join(source, "cancel.ts"), "export const SOURCE_ONLY_SENTINEL = 'private implementation';\nexport function cancelOrder() {}\n");
+    if (!config.emptySource) await writeFile(join(source, "cancel.ts"), "export const SOURCE_ONLY_SENTINEL = 'private implementation';\nexport function cancelOrder() {}\n");
+    else await writeFile(join(source, "README.md"), "no indexed implementation\n");
     await writeFile(join(source, "cancel.test.ts"), "builder-test-only");
     const snapshots = new SnapshotStore(join(directory, "snapshots"));
     job.snapshot = (await snapshots.seal({ sourceDirectory: source, sourceSha: "source-1", packetId: "packet" })).ref;
@@ -95,8 +96,8 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
       assert.deepEqual(request.tools.map(item => item.name), ["finish"]);
       await tool("finish", { reviews: promptInput.programs.map((item: { programId: string; contract: AcceptanceContract }) => ({ programId: item.programId, approved: !config.rejectReview, reasons: config.rejectReview ? ["Constant predicate does not test source result"] : [], clauseIds: item.contract.clauses.map(clause => clause.id) })) });
     } else {
-      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish", ...config.sourceTools ? ["source_tree", "source_search", "source_read"] : []]);
-      if (config.sourceTools) {
+      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish", ...config.sourceTools && !config.emptySource ? ["source_tree", "source_search", "source_read"] : []]);
+      if (config.sourceTools && !config.emptySource) {
         const tree = await tool("source_tree", { depth: 1 }) as { entries: Array<{ path: string; kind: string }> };
         assert.deepEqual(tree.entries.map(entry => [entry.path, entry.kind]), [["cancel.ts", "file"]]);
         const result = await tool("source_search", { terms: ["cancelOrder"] }) as { matches: Array<{ fileId: string }> };
@@ -139,6 +140,7 @@ test("source lookups aid discovery without reaching semantic review, behavior ev
   try {
     const report = await f.checker.check(f.job, new AbortController().signal);
     assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "fail"]);
+    assert.deepEqual(JSON.parse(f.explorationPrompts[0]!).sourceIndex, { available: true, fileCount: 1 });
     for (const prompt of [...f.reviewPrompts, ...f.explorationPrompts]) {
       assert.doesNotMatch(prompt, /SOURCE_ONLY_SENTINEL|private implementation/);
     }
@@ -153,6 +155,57 @@ test("source lookups aid discovery without reaching semantic review, behavior ev
     const ready = await f.checker.check({ ...f.job, jobId: "prepare", mode: "prepare", programs: [] }, new AbortController().signal);
     assert.deepEqual(ready.outcomes, []); assert.equal(f.roles.length, roles);
     f.sourceIndex!.open = open;
+  } finally { await f.cleanup(); }
+});
+
+test("empty source indexes are surfaced before exploration and do not expose empty lookup tools", async () => {
+  const f = await fixture({ sourceTools: true, emptySource: true });
+  try {
+    const report = await f.checker.check(f.job, new AbortController().signal);
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "pass"]);
+    assert.deepEqual(JSON.parse(f.explorationPrompts[0]!).sourceIndex, { available: false, fileCount: 0 });
+    assert(!f.toolSchemas.some(tool => tool.name === "source_tree" || tool.name === "source_search" || tool.name === "source_read"));
+    const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
+    assert(manifest.diagnostics.some(item => /source index is empty/.test(item)));
+  } finally { await f.cleanup(); }
+});
+
+test("source index open failures preserve page discovery, review and independent failure confirmation", async () => {
+  const config = { sourceTools: true, failures: [0, 1] };
+  const f = await fixture(config);
+  const events: CheckerProgress[] = [];
+  try {
+    f.sourceIndex!.open = async () => { throw new Error("Source snapshot cannot be indexed"); };
+    config.sourceTools = false; // The fake model now expects only execution and submission tools.
+    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, sourceIndex: f.sourceIndex,
+      model: { async run(request) {
+        if (request.role === "exploration") {
+          assert.deepEqual(JSON.parse(request.prompt).sourceIndex, { available: false });
+          assert.match(request.systemPrompt, /源码索引为空或不可用不是验收缺口，不能仅据此提交 unsupported/);
+        }
+        return f.model.run(request);
+      } } });
+    const report = await checker.check(f.job, new AbortController().signal, async event => { events.push(event); });
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "fail"]);
+    assert.deepEqual(f.roles, ["exploration", "semantic_review"]);
+    assert.equal(f.replays, 2);
+    assert.equal(f.closed, f.environments);
+    const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
+    assert(manifest.diagnostics.some(item => /source index could not be opened.*Source snapshot cannot be indexed/.test(item)));
+    assert(events.some(item => item.stage === "diagnostic" && /source index could not be opened/.test(item.reason ?? "")));
+    assert(!manifest.unsupported?.length);
+  } finally { await f.cleanup(); }
+});
+
+test("cancellation while opening a source index still stops discovery and closes its environment", async () => {
+  const f = await fixture({ sourceTools: true });
+  const abort = new AbortController();
+  try {
+    f.sourceIndex!.open = async () => { abort.abort(new Error("Cancelled during source indexing")); abort.signal.throwIfAborted(); throw new Error("unreachable"); };
+    const report = await f.checker.check(f.job, abort.signal);
+    assert.deepEqual(f.roles, []);
+    assert(report.outcomes.every(item => item.status === "inconclusive"));
+    assert.equal(f.closed, f.environments);
   } finally { await f.cleanup(); }
 });
 
@@ -424,7 +477,11 @@ test("source GIVEN/WHEN omissions cannot claim an initial state and failed setup
     try {
       const report = await f.checker.check(f.job, new AbortController().signal);
       assert(report.outcomes.every(item => item.status === (config.omitSetup ? "inconclusive" : "blocked")));
-      if (config.omitSetup) assert.match(report.outcomes[0]!.reason!, /omitted a source initial condition/);
+      if (config.omitSetup) {
+        assert.match(report.outcomes[0]!.reason!, /omitted a source initial condition/);
+        assert.match(report.outcomes[0]!.reason!, /requirementId=r1, scenarioId=cancel, phase=given/);
+        assert.match(report.outcomes[0]!.reason!, /Order is unpaid/);
+      }
     } finally { await f.cleanup(); }
   });
 });

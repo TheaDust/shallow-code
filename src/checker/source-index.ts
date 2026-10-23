@@ -13,6 +13,14 @@ const DEFAULT_TREE_LIMIT = 200;
 export const SOURCE_TREE_MAX_DEPTH = 10;
 export const SOURCE_TREE_MAX_LIMIT = 500;
 
+/** Only generated output and persisted data are hidden from Checker source lookup.
+ * dependencyPaths describe application roots whose manifests provide dependency
+ * inputs; they are not source exclusions.
+ */
+export function checkerSourceExclusions(contract: { generatedPaths?: readonly string[]; dataPaths?: readonly string[] }): string[] {
+  return [...contract.generatedPaths ?? [], ...contract.dataPaths ?? []];
+}
+
 export interface SourceFile { fileId: string; path: string; lineCount: number }
 export interface SourceTreeEntry {
   path: string;

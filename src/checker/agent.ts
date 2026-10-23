@@ -382,9 +382,27 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               } },
           ];
           try {
+            let sourceIndexInfo: { available: boolean; fileCount?: number } | undefined;
             if (options.sourceIndex) {
-              const index = options.sourceIndex;
-              const source = async () => sourceView ??= await index.open(job.snapshot, explorationSignal);
+              sourceIndexInfo = { available: false };
+              try {
+                sourceView ??= await options.sourceIndex.open(job.snapshot, explorationSignal);
+                const fileCount = sourceView.list().length;
+                sourceIndexInfo = { available: fileCount > 0, fileCount };
+                if (!fileCount) {
+                  const reason = "Checker source index is empty; continuing exploration with declared execution capabilities";
+                  manifest.diagnostics.push(reason);
+                  await progress({ stage: "diagnostic", reason });
+                }
+              } catch (error) {
+                explorationSignal.throwIfAborted();
+                const reason = `Checker source index could not be opened; continuing exploration with declared execution capabilities: ${errorMessage(error)}`;
+                manifest.diagnostics.push(reason);
+                await progress({ stage: "diagnostic", reason });
+              }
+            }
+            const source = sourceIndexInfo?.available ? sourceView : undefined;
+            if (source) {
               tools.push({ name: "source_tree", description: "List indexed implementation directories and files under an optional path prefix. Results are navigation context, not behavior evidence. Narrow pathPrefix or reduce depth when truncated.",
                 parameters: Type.Object({ pathPrefix: Type.Optional(Type.String()), depth: Type.Optional(Type.Integer({ minimum: 1, maximum: SOURCE_TREE_MAX_DEPTH })),
                   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: SOURCE_TREE_MAX_LIMIT })) }),
@@ -392,21 +410,21 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                   if (finished) throw new Error("Checker exploration already finished");
                   explorationSignal.throwIfAborted();
                   const args = raw as { pathPrefix?: string; depth?: number; limit?: number };
-                  return (await source()).tree(args.pathPrefix, args.depth, args.limit);
+                  return source.tree(args.pathPrefix, args.depth, args.limit);
                 } }, { name: "source_search", description: "Find implementation files and literal text in this job's sealed source index. Results are navigation context, not behavior evidence.",
                 parameters: Type.Object({ terms: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }), pathPrefix: Type.Optional(Type.String()) }),
                 async execute(raw) {
                   if (finished) throw new Error("Checker exploration already finished");
                   explorationSignal.throwIfAborted();
                   const args = raw as { terms: string[]; pathPrefix?: string };
-                  return (await source()).search(args.terms, args.pathPrefix);
+                  return source.search(args.terms, args.pathPrefix);
                 } }, { name: "source_read", description: "Read a line range from a fileId in the current sealed source index. Prefer the relevant function or control, then verify behavior with declared execution capabilities.",
                 parameters: Type.Object({ fileId: Type.String({ minLength: 1 }), startLine: Type.Integer({ minimum: 1 }), lineCount: Type.Optional(Type.Integer({ minimum: 1 })) }),
                 async execute(raw) {
                   if (finished) throw new Error("Checker exploration already finished");
                   explorationSignal.throwIfAborted();
                   const args = raw as { fileId: string; startLine: number; lineCount?: number };
-                  return (await source()).read(args.fileId, args.startLine, args.lineCount);
+                  return source.read(args.fileId, args.startLine, args.lineCount);
                 } });
             }
             const context = repair ? { requirements: input.requirements.filter(requirement => discoverySources.some(source => source.requirementId === requirement.id)),
@@ -419,6 +437,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               initialState: await store.readTypedJson(job.initialState),
               requirements: context,
               sourceClauses: discoverySources,
+              ...(sourceIndexInfo ? { sourceIndex: sourceIndexInfo } : {}),
               repair,
               remainingMs: Math.max(0, explorationDeadline - Date.now()),
               ...(feedback.length ? { rejectedPrograms: feedback } : {}),

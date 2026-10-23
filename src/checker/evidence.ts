@@ -94,8 +94,8 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
       const checkpoint = contract.checkpoints.find(item => item.requirementId === requirement.id && item.scenarioId === scenario.id
         && item.basis === step.content
         && (phase === "given" ? item.kind === "precondition" : item.kind === "action" || item.kind === "condition"));
-      if (!checkpoint) throw new Error(phase === "given" ? "Contract omitted a source initial condition" : "Contract omitted a source action or condition");
-      if (phase === "given" && checkpoint.expected === undefined) throw new Error("Source initial condition has no expectation");
+      if (!checkpoint) throw new Error(`${phase === "given" ? "Contract omitted a source initial condition" : "Contract omitted a source action or condition"} for requirementId=${requirement.id}, scenarioId=${scenario.id}, phase=${phase}, step=${JSON.stringify(step.content)}`);
+      if (phase === "given" && checkpoint.expected === undefined) throw new Error(`Source initial condition has no expectation for requirementId=${requirement.id}, scenarioId=${scenario.id}, phase=${phase}, step=${JSON.stringify(step.content)}`);
     });
   }
   for (const checkpoint of checkpoints.values()) {

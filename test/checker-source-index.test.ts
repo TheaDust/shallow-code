@@ -3,7 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { CheckerSourceIndex } from "../src/checker/source-index.js";
+import { CheckerSourceIndex, checkerSourceExclusions } from "../src/checker/source-index.js";
+import { minimalWebContract } from "../src/adapters/web/project-spec.js";
 import { SnapshotStore } from "../src/snapshot-store.js";
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, inputs: Record<string, string | Buffer>,
@@ -50,6 +51,17 @@ test("source index exposes implementation files and excludes tests, data, genera
   assert.deepEqual(f.view.search(["导入"], "backend").matches, []);
   assert.throws(() => f.view.read("../.env", 1), /fileId/);
   assert.throws(() => f.view.read(join(f.sealed.sourceDirectory, ".env"), 1), /fileId/);
+});
+
+test("production Web source exclusions keep dependency roots indexable", async t => {
+  const contract = minimalWebContract({ port: 31_001 });
+  const f = await fixture(t, {
+    "frontend/src/App.tsx": "export function App() { return <main />; }\n",
+    "frontend/dist/index.js": "generated output",
+    "backend/src/server.mjs": "export function start() {}\n",
+    "backend/data/seed.json": "persisted data",
+  }, checkerSourceExclusions(contract));
+  assert.deepEqual(f.view.list().map(file => file.path), ["backend/src/server.mjs", "frontend/src/App.tsx"]);
 });
 
 test("source tree lists indexed directories and files with bounded depth and deterministic order", async t => {
