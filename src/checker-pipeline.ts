@@ -38,7 +38,7 @@ export interface CheckerRuntime {
   setUsageProgressRecorder?(recorder: (usage: CheckerModelUsage) => void): void;
   verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<{ report: DeliveryReport; receipts: ContentRef[] }>;
 }
-type ScopedOutcome = CheckOutcome & { initialState?: TypedRef };
+type ScopedOutcome = CheckOutcome & { initialState?: TypedRef; snapshotId?: string };
 
 /** Controller-side orchestration; all domain operations are provided by the execution adapter. */
 export class CheckerCoordinator {
@@ -107,7 +107,7 @@ export class CheckerCoordinator {
     const requirements = await this.runtime.artifacts.putJson(JSON.parse(JSON.stringify({ requirements: packet.requirements,
       prerequisites: packet.prerequisites ?? [], implementedRequirementIds: head.implementedRequirementIds.filter(id => contextualIds.has(id)) })));
     const requirementIds = options.requirementIds ?? packet.requirementIds;
-    const programs = options.programs ?? (mode === "prepare" ? [] : await this.programs(requirementIds, this.runtime.initialState, requirements));
+    const programs = options.programs ?? (mode === "prepare" || !this.options.checker.replay ? [] : await this.programs(requirementIds, this.runtime.initialState, requirements));
     return { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
       packetId: packet.id, attempt: packet.attempt, moduleEpoch: options.epoch ?? this.checkpoints.snapshot.epoch, snapshot: head.snapshot, requirements,
       binding: this.runtime.binding, initialState: this.runtime.initialState, requirementIds, mode, programs,
@@ -220,6 +220,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
   const inherited = new Set<string>();
   const skipped = new Set<string>();
   const currentResults = new Map<string, ScopedOutcome[]>();
+  const replay = options.checker.replay === true;
   let auditGroups: WorkPacket[] = [];
   const byId = new Map(catalog.requirements.map(item => [item.id, item]));
   let implementationCatalog: RequirementCatalog = catalog;
@@ -270,14 +271,42 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     coordinator.assertHealthy();
     return result;
   };
-  const inspect = async (head: ProducedSnapshot, requirements: AtomicRequirement[], epoch: number): Promise<ScopedOutcome[]> => {
+  const inspect = async (head: ProducedSnapshot, requirements: AtomicRequirement[], epoch: number, discover = false): Promise<ScopedOutcome[]> => {
+    if (!replay && !discover) {
+      // Aggregate original reports only from ancestors of the delivered candidate.
+      // Rejected repair branches and newer descendants of a restored head do not apply.
+      const ancestors = new Set<string>();
+      let ancestor: ProducedSnapshot | undefined = head;
+      while (ancestor) {
+        ancestors.add(ancestor.snapshot.id);
+        const parentSnapshotId: string | undefined = ancestor.parentSnapshotId;
+        ancestor = coordinator.checkpoints.snapshot.snapshots.find(item => item.snapshot.id === parentSnapshotId);
+      }
+      const records = coordinator.queue.records().reverse();
+      const outcomes: ScopedOutcome[] = [];
+      for (const requirement of requirements) {
+        const record = records.find(item => item.job.mode !== "prepare" && ancestors.has(item.job.snapshot.id)
+          && item.job.requirementIds.includes(requirement.id) && sameRef(item.job.binding, runtime.binding)
+          && sameRef(item.job.initialState, runtime.initialState));
+        const report = record?.status === "completed" && record.report
+          ? await runtime.artifacts.getJson<CheckReport>(record.report) : undefined;
+        if (report) {
+          await runtime.artifacts.validateReport(record!.job, report);
+          outcomes.push(...report.outcomes.filter(item => item.requirementId === requirement.id)
+            .map(item => ({ ...item, initialState: record!.job.initialState, snapshotId: record!.job.snapshot.id })));
+        } else outcomes.push({ requirementId: requirement.id, scenarioId: "<execution>", clauseId: "<execution>",
+          status: "inconclusive", evidence: [], reason: "Checker did not commit a feature-group report" });
+      }
+      return outcomes;
+    }
     const jobs: CheckJob[] = [];
     const scope = new Set(requirements.map(item => item.id));
     const grouped = new Set(auditGroups.flatMap(packet => packet.requirementIds));
     const packets = [...auditGroups, ...auditPackets({ requirements: requirements.filter(item => !grouped.has(item.id)), statusById: catalog.statusById })];
     for (const packet of packets.filter(packet => packet.requirementIds.some(id => scope.has(id)))) {
       const full = packetFor(packet.id, packet.requirements);
-      jobs.push(await coordinator.submit(head, full, "replay", checkBudget(), { epoch, priority: 1,
+      jobs.push(await coordinator.submit(head, full, discover ? "discover" : "replay", checkBudget(), { epoch, priority: 1,
+        ...(discover ? { programs: [] } : {}),
         requirementIds: packet.requirementIds.filter(id => scope.has(id)) }));
     }
     const reports = await Promise.all(jobs.map(job => coordinator.report(job)));
@@ -286,7 +315,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       const outcomes = report?.outcomes ?? jobs[index].requirementIds.map(requirementId => ({
         requirementId, scenarioId: "<execution>", clauseId: "<execution>", status: "inconclusive" as const,
         evidence: [], reason: "Checker did not commit a current report" }));
-      return outcomes.map(outcome => ({ ...outcome, initialState: jobs[index].initialState }));
+      return outcomes.map(outcome => ({ ...outcome, initialState: jobs[index].initialState, snapshotId: jobs[index].snapshot.id }));
     });
   };
   const publish = async (head: ProducedSnapshot, module: string, epoch: number, outcomes: CheckOutcome[], scope: AtomicRequirement[]): Promise<void> => {
@@ -298,7 +327,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     const selected = catalog.requirements.filter(item => !skipped.has(item.id));
     const allOutcomes = [...currentResults.values()].flat();
     await state.record({ at: now(), type: "module_check_finished", detail: { moduleId: module, moduleEpoch: epoch,
-      snapshotId: head.snapshot.id, published: true,
+      snapshotId: head.snapshot.id, published: true, replay,
       requirementResults: Object.fromEntries(scope.map(item => [item.id, outcomeStatus(currentResults.get(item.id) ?? [])])),
       scenarioResults: scenarioResults(scope, allOutcomes, implemented),
       scenarioCoverage: scenarioCoverage(selected, allOutcomes, implemented) } });
@@ -343,10 +372,11 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", checkBudget(), { epoch, priority: 0 });
         await coordinator.report(readyJob); await coordinator.drain();
         if (coordinator.checkpoints.snapshot.accepted.snapshot?.id === repaired.snapshot.id) {
-          const regressionScope = catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id) &&
-            (moduleId(item) === module || currentResults.get(item.id)?.some(outcome => outcome.status === "pass")));
-          const checked = await inspect(repaired, regressionScope, epoch);
-          const guards = [...baselineOutcomes, ...[...currentResults.values()].flat()].filter(item => item.status === "pass");
+          const regressionScope = replay ? catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id) &&
+            (moduleId(item) === module || currentResults.get(item.id)?.some(outcome => outcome.status === "pass"))) : repairRequirements;
+          const checked = await inspect(repaired, regressionScope, epoch, !replay);
+          const guards = [...baselineOutcomes, ...[...currentResults.values()].flat()].filter(item => item.status === "pass"
+            && regressionScope.some(requirement => requirement.id === item.requirementId));
           const preserved = guards.every(previous => checked.filter(item => outcomeKey(item) === outcomeKey(previous)).length > 0 &&
             checked.filter(item => outcomeKey(item) === outcomeKey(previous)).every(item => item.status === "pass"));
           const improved = !runnable || baselineOutcomes.some(previous => previous.status === "fail" &&
@@ -354,7 +384,8 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
             checked.filter(item => outcomeKey(item) === outcomeKey(previous)).every(item => item.status === "pass"));
           if (preserved && improved) {
             retained = true; runnable = true; head = repaired;
-            outcomes = checked.filter(item => scope.some(requirement => requirement.id === item.requirementId));
+            outcomes = [...baselineOutcomes.filter(item => !regressionScope.some(requirement => requirement.id === item.requirementId)),
+              ...checked.filter(item => scope.some(requirement => requirement.id === item.requirementId))];
             for (const requirement of regressionScope.filter(item => moduleId(item) !== module)) currentResults.set(requirement.id,
               checked.filter(item => item.requirementId === requirement.id));
           }
@@ -369,11 +400,14 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         head = baseline;
         epoch = coordinator.checkpoints.snapshot.epoch;
         runnable = coordinator.checkpoints.snapshot.accepted.snapshot?.id === baseline.snapshot.id;
-        outcomes = runnable ? await inspect(baseline, scope, epoch) : baselineOutcomes.map(item => ({ ...item,
+        if (runnable) outcomes = replay ? await inspect(baseline, scope, epoch) : baselineOutcomes;
+        else outcomes = baselineOutcomes.map(item => ({ ...item,
           status: "inconclusive" as const, evidence: [], reason: "Restored module readiness remains unconfirmed" }));
       }
-      await state.record({ at: now(), type: "repair_batch_finished", detail: { round, retained,
-        reason: retained ? "Current-version improvement and regression replay confirmed" : "Repair did not establish improvement with complete regression evidence" } });
+      const reason = retained
+        ? (replay ? "Current-version improvement and regression replay confirmed" : "Repaired feature-group improvement confirmed")
+        : "Repair did not establish improvement with the required evidence";
+      await state.record({ at: now(), type: "repair_batch_finished", detail: { round, retained, reason } });
       if (!retained) break;
     }
     await publish(head!, module, epoch, outcomes, scope);
@@ -460,7 +494,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
     if (!coordinator.checkpoints.snapshot.producedHead) await coordinator.seal(packetFor("initial", catalog.requirements), implemented);
     await coordinator.drain();
     await emitPhase("audit");
-    // Freeze and replay the complete current scope, including earlier modules.
+    // Replay the final scope when enabled; otherwise publish original group evidence.
     let head = coordinator.checkpoints.snapshot.producedHead;
     const scope = catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id));
     if (head) {
@@ -492,7 +526,7 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
           const epoch = await coordinator.checkpoints.nextEpoch();
           const outcomes = await inspect(repaired, scope, epoch);
           const guards = [...currentResults.values()].flat().filter(item => item.status === "pass");
-          if (guards.every(item => outcomes.filter(next => outcomeKey(next) === outcomeKey(item)).length > 0 &&
+          if (!replay || guards.every(item => outcomes.filter(next => outcomeKey(next) === outcomeKey(item)).length > 0 &&
             outcomes.filter(next => outcomeKey(next) === outcomeKey(item)).every(next => next.status === "pass"))) {
             head = repaired; delivery = checked; await publish(repaired, "<delivery>", epoch, outcomes, scope); break;
           }
@@ -544,8 +578,9 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
       blockedRequirementIds: ids("blocked"), failedRequirementIds: ids("failed"), inconclusiveRequirementIds: ids("inconclusive"), pendingRequirementIds: ids("todo"),
       implementedRequirementIds: [...implemented].filter(id => !skipped.has(id)), modelUsage: usage.summary(),
       auditRequirementIds: selected.map(item => item.id), skippedRequirementIds: [...skipped],
-      checker: { mode: "active", producedHead: coordinator.checkpoints.snapshot.producedHead,
-        verifiedSnapshotId: delivery.ok ? head?.snapshot.id : undefined, outcomes: [...currentResults.values()].flat() },
+      checker: { mode: "active", semanticReview: options.checker.semanticReview === true, replay,
+        producedHead: coordinator.checkpoints.snapshot.producedHead,
+        verifiedSnapshotId: delivery.ok && replay ? head?.snapshot.id : undefined, outcomes: [...currentResults.values()].flat() },
       scenarioResults: scenarioResults(selected, [...currentResults.values()].flat(), implemented) };
     await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo"),
       scenarioCoverage: scenarioCoverage(selected, [...currentResults.values()].flat(), implemented) } });

@@ -1,6 +1,6 @@
 ---
 name: identity-and-permissions
-description: Implement or repair authentication, ownership, membership, visibility, operation permissions or independent browser sessions in a Web application.
+description: Implement or repair authentication, ownership, membership, visibility, operation permissions or independent application sessions.
 ---
 
 # 身份与权限
@@ -9,6 +9,6 @@ description: Implement or repair authentication, ownership, membership, visibili
 
 对象身份包含其明确归属、父对象与名称。同名对象分别保存，URL 标识符与显示名分别使用。按需求规定的身份和公开入口检查目标内容与操作；有权读取的对象应能沿允许路径进入。未规定登录的流程保持其公开可用性。
 
-多身份浏览器会话分别维护。需求涉及会话撤销、失效或身份切换时，在受影响会话核对后续请求和刷新结果，并复查仍有效的会话。当前标记、设备、活动及状态的表达由需求决定。
+多身份会话分别维护。需求涉及会话撤销、失效或身份切换时，在受影响会话核对后续请求和刷新结果，并复查仍有效的会话。当前标记、设备、活动及状态的表达由需求决定。
 
 检查授权、拒绝与身份变化后的路径，核对受保护内容、可用操作和失败保留状态。种子中的账号与业务关系通过正常身份及授权机制生效，不能把示例用户名当作授权规则。

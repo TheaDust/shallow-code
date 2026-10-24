@@ -350,6 +350,8 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
         "OPENAI_BASE_URL=https://file.example/v1",
         'MODEL="file/model"',
         "SHALLOW_CHECKER_MODEL=file/judge",
+        "SHALLOW_CHECKER_SEMANTIC_REVIEW=1",
+        "SHALLOW_CHECKER_REPLAY=1",
         'SHALLOW_PROBE_PORT=3210',
       ].join("\n"),
     );
@@ -378,12 +380,16 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
     assert.equal(received?.builderGateway.model, "file/model");
     assert.equal(received?.checkerGateway.model, "file/judge");
     assert.equal(received?.checkerGateway.apiKey, "file-key");
+    assert.equal(received?.pipelineOptions.checker.semanticReview, true);
+    assert.equal(received?.pipelineOptions.checker.replay, true);
     assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3210);
 
-    await main(argv, { MODEL: "env/model", SHALLOW_CHECKER_MODEL: "env/judge" }, execute, join(directory, "gateway.env"));
+    await main(argv, { MODEL: "env/model", SHALLOW_CHECKER_MODEL: "env/judge", SHALLOW_CHECKER_SEMANTIC_REVIEW: "0", SHALLOW_CHECKER_REPLAY: "0" }, execute, join(directory, "gateway.env"));
     assert.equal(received?.builderGateway.model, "env/model");
     assert.equal(received?.builderGateway.apiKey, "file-key");
     assert.equal(received?.checkerGateway.model, "env/judge");
+    assert.equal(received?.pipelineOptions.checker.semanticReview, false);
+    assert.equal(received?.pipelineOptions.checker.replay, false);
   });
 });
 

@@ -19,3 +19,13 @@ test("Core modules cannot import concrete application adapters, browser implemen
     assert.doesNotMatch(source, /\.(?:browserPath|healthPath|browserEntry|extraPorts)\b/, path);
   }
 });
+
+test("Generic prompt assets keep execution-specific instructions in their owning adapters", async () => {
+  const files = await readdir("prompts", { recursive: true });
+  for (const file of files.filter(file => file.endsWith(".md"))) {
+    const path = file.replaceAll("\\", "/");
+    if (path.startsWith("adapters/") || path.startsWith("checker/web/")) continue;
+    const source = await readFile(join("prompts", file), "utf8");
+    assert.doesNotMatch(source, /\b(?:Web|Playwright|JavaScript|DOM|ARIA|PDF|PNG|OCR|browser|viewport)\b|\b(?:page|locator)\.\w+|\brole\s*\/\s*label\b/, path);
+  }
+});

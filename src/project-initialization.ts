@@ -149,8 +149,10 @@ export async function initializeProject(options: InitializationOptions): Promise
       await options.onEvent?.("initialization_attempt", { path, attempt });
       verificationAttempt = attempt;
       builder ??= options.createBuilder();
+      const adapterId = workingContract?.adapterId ?? (explicitConfig === undefined ? "web" : (JSON.parse(explicitConfig) as { adapter?: string }).adapter ?? "web");
+      const initializationInstructions = applications.get(adapterId).initializationInstructions;
       const result = await builder.run({
-        systemPrompt: await readFile(new URL("../prompts/system/project-initialization.md", import.meta.url), "utf8"),
+        systemPrompt: [await readFile(new URL("../prompts/system/project-initialization.md", import.meta.url), "utf8"), initializationInstructions].filter(Boolean).join("\n\n"),
         taskPrompt: [
           `初始化路径：${path}`,
           `用户明确技术要求：\n${options.intent ?? "无；沿用现有项目技术栈与目录"}`,

@@ -15,7 +15,7 @@ import type { AtomicRequirement } from "../../src/types.js";
 import { withTempDir } from "../helpers/temp-dir.js";
 
 // A scripted model fixes the intended interpretation; actual adapter/browser execution supplies every receipt.
-for (const mutant of [false, true]) test(`Checker Agent full Web exploration/review/replay ${mutant ? "reproduces seat defect" : "passes correct cross-actor persistence"}`, async () => {
+for (const semanticReview of [false, true]) for (const mutant of [false, true]) test(`Checker Agent Web review=${semanticReview} ${mutant ? "reproduces seat defect" : "passes correct cross-actor persistence"}`, async () => {
   await withTempDir("checker-agent-web-", async root => {
     const source = join(root, "source"), workspace = join(root, "workers");
     await mkdir(join(source, "data"), { recursive: true });
@@ -45,6 +45,10 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
     const roles: string[] = [];
     const model: CheckerModel = { async run(request) {
       roles.push(request.role);
+      assert.match(request.systemPrompt, /通用 Web 应用/);
+      assert.match(request.systemPrompt, /Authorized Playwright interface/);
+      assert.match(request.systemPrompt, /Web 的二进制下载/);
+      assert.match(request.systemPrompt, /Web rendered-content/);
       const invoke = (name: string, args: unknown) => request.tools.find(tool => tool.name === name)!.execute(args);
       if (request.role === "semantic_review") {
         assert.deepEqual(request.tools.map(tool => tool.name), ["finish"]);
@@ -65,20 +69,20 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
         assert.match(excerpt.content, /createServer/);
         const observed = await invoke("invoke", { capabilityId: "inspect", input: { actor: "alice" } });
         assert.match(JSON.stringify(observed), /unpaid/);
-        await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('bob');const o=await p.read({role:'status',name:'Train T-6 seats'});return o.value;" } });
+        await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('bob');const o=await p.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();return o.value;" } });
         // Dirty exploration state must never become the initial state of a submitted program.
-        await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('alice');await p.click({role:'button',name:'Cancel O-17'});" } });
+        await invoke("invoke", { capabilityId: "run", input: { source: "const p=await browser.actor('alice');await p.getByRole('button',{name:'Cancel O-17',exact:true}).click();" } });
         const contract: AcceptanceContract = { requirements: job.requirements,
           checkpoints: [{ id: "given", kind: "precondition", requirementId: "r1", scenarioId: "cancel", dependsOn: [], basis: "Order O-17 is unpaid", expected: { operator: "equal", value: "unpaid" } },
             { id: "when", kind: "action", requirementId: "r1", scenarioId: "cancel", dependsOn: ["given"], basis: "Alice clicks button Cancel O-17" },
             ...clauses.map((clause, index) => ({ id: `result-${index}`, kind: "assertion" as const, requirementId: "r1", scenarioId: "cancel", clauseId: clause.id, basis: clause.basis, dependsOn: ["when"] }))],
           clauses: clauses.map((clause, index) => ({ ...clause, checkpointId: `result-${index}`, expected: { operator: "equal", value: index === 1 ? "5" : "cancelled" } })) };
         const programSource = `const alice=await browser.actor('alice');const bob=await browser.actor('bob');
-          const before=await alice.read({role:'status',name:'Order O-17'});await check.precondition('given',[before.id]);
-          await alice.click({role:'button',name:'Cancel O-17'},'when');await bob.reload();
-          const order=await bob.read({role:'status',name:'Order O-17'});await check.expect('${clauses[0]!.id}',[order.id]);
-          const seats=await bob.read({role:'status',name:'Train T-6 seats'});await check.expect('${clauses[1]!.id}',[seats.id]);
-          await alice.reload();const persisted=await alice.read({role:'status',name:'Order O-17'});await check.expect('${clauses[2]!.id}',[persisted.id]);`;
+          const before=await alice.getByRole('status',{name:'Order O-17',exact:true}).innerText();await check.precondition('given',[before.id]);
+          await check.action('when',()=>alice.getByRole('button',{name:'Cancel O-17',exact:true}).click());await bob.reload();
+          const order=await bob.getByRole('status',{name:'Order O-17',exact:true}).innerText();await check.expect('${clauses[0]!.id}',[order.id]);
+          const seats=await bob.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();await check.expect('${clauses[1]!.id}',[seats.id]);
+          await alice.reload();const persisted=await alice.getByRole('status',{name:'Order O-17',exact:true}).innerText();await check.expect('${clauses[2]!.id}',[persisted.id]);`;
         const preview = await invoke("check_program", { contract, source: programSource }) as {
           program: unknown;
           checks: Array<{ receipt: { digest: string }; kind: string; checkpointId: string; payload: { result: string; actual: unknown } }>;
@@ -93,13 +97,13 @@ for (const mutant of [false, true]) test(`Checker Agent full Web exploration/rev
       return { totalTokens: 100 };
     } };
     const sourceIndex = new CheckerSourceIndex(snapshots, spec.dataPaths);
-    const report = await createCheckerAgent({ artifacts, adapter, model, sourceIndex }).check(job, new AbortController().signal);
+    const report = await createCheckerAgent({ semanticReview, artifacts, adapter, model, sourceIndex }).check(job, new AbortController().signal);
     const manifest = await artifacts.getJson<CheckerManifest>(report.manifest);
     assert.deepEqual(manifest.diagnostics, []);
     assert.deepEqual(report.outcomes.map(outcome => outcome.status), mutant ? ["pass", "fail", "pass"] : ["pass", "pass", "pass"]);
     if (mutant) assert.match(report.outcomes[1]!.reason!, /independent fresh environment/);
-    assert.deepEqual(roles, ["exploration", "semantic_review"]);
-    assert.equal(manifest.reviews.length, 1);
+    assert.deepEqual(roles, semanticReview ? ["exploration", "semantic_review"] : ["exploration"]);
+    assert.equal(manifest.reviews.length, semanticReview ? 1 : 0);
     const receipts = await Promise.all(manifest.receipts.map(ref => artifacts.getJson<EvidenceReceipt>(ref)));
     const assertions = receipts.filter(receipt => receipt.kind === "assertion");
     assert.equal(assertions.length, clauses.length * (mutant ? 2 : 1), "the submitted clean execution is reused; only business failures get a second execution");

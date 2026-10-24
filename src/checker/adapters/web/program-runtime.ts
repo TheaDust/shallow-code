@@ -2,13 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { fork, type ForkOptions } from "node:child_process";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { Browser, BrowserContext, Page, Frame, Locator } from "@playwright/test";
+import type { Browser, BrowserContext, Page, Locator, Download } from "@playwright/test";
 import { getQuickJS } from "quickjs-emscripten";
-import type { WebFileFixture } from "./fixtures.js";
-import { dropFiles, fileMetadata, filePayload, pasteImage, uploadDirectory } from "./file-inputs.js";
 import { renderBinary, renderOptions, type RenderResult } from "./binary-renderer.js";
+import { PLAYWRIGHT_GUEST, PlaywrightInterface } from "./playwright-interface.js";
 
-export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export interface SandboxOptions { signal: AbortSignal; timeoutMs: number; memoryLimitBytes?: number }
 
 /** A disposable OS process contains interpreter failures; only serialized capability calls cross IPC. */
@@ -132,53 +130,21 @@ const PRELUDE = String.raw`
   const host = __bridge;
   delete globalThis.__bridge;
   const call = async (method, input) => JSON.parse(await host(method, JSON.stringify(input)));
-  const page = (actor, window = 'main', frame) => Object.freeze({
-    goto: (path, checkpointId) => call('goto', {actor, window, frame, path, checkpointId}),
-    reload: checkpointId => call('reload', {actor, window, frame, checkpointId}),
-    inspect: () => call('inspect', {actor, window, frame}),
-    url: () => call('url', {actor, window, frame}),
-    setViewport: (size, checkpointId) => call('setViewport', {actor, window, frame, size, checkpointId}),
-    viewport: () => call('viewport', {actor, window, frame}),
-    read: (locator, kind = 'text') => call('read', {actor, window, frame, locator, kind}),
-    attribute: (locator, name) => call('attribute', {actor, window, frame, locator, name}),
-    style: (locator, name) => call('style', {actor, window, frame, locator, name}),
-    count: locator => call('count', {actor, window, frame, locator}),
-    waitFor: (locator, state = 'visible', timeoutMs) => call('waitFor', {actor, window, frame, locator, state, timeoutMs}),
-    click: (locator, checkpointId) => call('click', {actor, window, frame, locator, checkpointId}),
-    fill: (locator, value, checkpointId) => call('fill', {actor, window, frame, locator, value, checkpointId}),
-    press: (locator, value, checkpointId) => call('press', {actor, window, frame, locator, value, checkpointId}),
-    check: (locator, checkpointId) => call('check', {actor, window, frame, locator, checkpointId}),
-    setChecked: (locator, checked, checkpointId) => call('setChecked', {actor, window, frame, locator, checked, checkpointId}),
-    select: (locator, value, checkpointId) => call('select', {actor, window, frame, locator, value, checkpointId}),
-    hover: (locator, checkpointId) => call('hover', {actor, window, frame, locator, checkpointId}),
-    doubleClick: (locator, checkpointId) => call('doubleClick', {actor, window, frame, locator, checkpointId}),
-    rightClick: (locator, checkpointId) => call('rightClick', {actor, window, frame, locator, checkpointId}),
-    dragTo: (from, to, checkpointId) => call('dragTo', {actor, window, frame, from, to, checkpointId}),
-    upload: (locator, files, checkpointId) => call('upload', {actor, window, frame, locator, files, checkpointId}),
-    dropFiles: (locator, files, checkpointId) => call('dropFiles', {actor, window, frame, locator, files, checkpointId}),
-    uploadDirectory: (locator, directory, checkpointId) => call('uploadDirectory', {actor, window, frame, locator, directory, checkpointId}),
-    pasteImage: (locator, file, checkpointId) => call('pasteImage', {actor, window, frame, locator, file, checkpointId}),
-    focus: (locator, checkpointId) => call('focus', {actor, window, frame, locator, checkpointId}),
-    blur: (locator, checkpointId) => call('blur', {actor, window, frame, locator, checkpointId}),
-    scroll: (deltaX = 0, deltaY = 0, checkpointId) => call('scroll', {actor, window, frame, deltaX, deltaY, checkpointId}),
-    dialog: (accept = true, promptText) => call('dialog', {actor, window, accept, promptText}),
-    clipboard: Object.freeze({
-      writeText: (value, checkpointId) => call('clipboardWrite', {actor, window, value, checkpointId}),
-      readText: () => call('clipboardRead', {actor, window}),
-    }),
-    storage: Object.freeze({ fill: (bytes, checkpointId) => call('storageFill', {actor, window, frame, bytes, checkpointId}) }),
-    download: (locator, checkpointId, encoding = 'text') => call('download', {actor, window, frame, locator, checkpointId, encoding}),
-    render: (sourceId, options = {}) => call('render', {actor, window, sourceId, options}),
-    image: (locator, options = {}) => call('image', {actor, window, frame, locator, options}),
-    popup: async (locator, checkpointId) => {const opened = await call('popup', {actor, window, frame, locator, checkpointId}); return page(actor, opened.window);},
-    frame: name => page(actor, window, name),
-  });
+  ${PLAYWRIGHT_GUEST}
+  const page = (actor, window = 'main', eventObservation) => {
+    const auxiliary = (method, input = {}) => call(method, {actor, window, ...input, checkpointId:actionScope?.checkpointId});
+    return playwrightPage(Object.freeze({
+      inspect: () => auxiliary('inspect'),
+      viewport: () => auxiliary('viewport'),
+      clipboard: Object.freeze({writeText: value => auxiliary('clipboardWrite',{value}), readText: () => auxiliary('clipboardRead')}),
+      storage: Object.freeze({fill: bytes => auxiliary('storageFill',{bytes})}),
+      render: (sourceId, options = {}) => auxiliary('render',{sourceId,options}),
+    }), actor, window, eventObservation);
+  };
   globalThis.browser = Object.freeze({ actor: async name => {await call('actor', {actor:name}); return page(name);} });
-  globalThis.check = Object.freeze({ expect: (clauseId, observationIds, predicate) => call('expect', {clauseId, observationIds, predicate}), precondition: (checkpointId, observationIds, predicate) => call('precondition', {checkpointId, observationIds, predicate}) });
+  globalThis.check = Object.freeze({ action: checkpointAction, expect: (clauseId, observationIds, predicate) => call('expect', {clauseId, observationIds, predicate}), precondition: (checkpointId, observationIds, predicate) => call('precondition', {checkpointId, observationIds, predicate}) });
 })();`;
 
-export interface WebLocator { role?: string; name?: string; label?: string; text?: string; testId?: string; within?: WebLocator }
-export type WebFile = { name: string; mimeType?: string; text?: string; base64?: string; fixture?: WebFileFixture };
 export interface WebExpectation {
   clauseId: string;
   checkpointId: string;
@@ -206,6 +172,7 @@ export class WebProgramRuntime {
   private readonly rendered = new Map<string, RenderResult>();
   private readonly inputCleanup = new Set<() => Promise<void>>();
   private readonly pending = new Set<Promise<unknown>>();
+  private readonly playwright: PlaywrightInterface;
   private active = true;
   constructor(
     private readonly browser: Browser,
@@ -214,13 +181,24 @@ export class WebProgramRuntime {
     private readonly expectations: readonly WebExpectation[] = [],
     private readonly timeoutMs = 5_000,
     private readonly checkpoints: readonly WebCheckpoint[] = [],
-  ) {}
+  ) {
+    this.playwright = new PlaywrightInterface({
+      emit: event => this.emit(event),
+      observe: (payload, inputs) => this.observation(payload, inputs),
+      safeUrl: path => this.safeUrl(path),
+      inputCleanup: dispose => this.inputCleanup.add(dispose),
+      image: (locator, owner, options, steps, signal) => this.image(locator, owner.actor, owner.window, options, steps, signal),
+      openPage: (owner, page) => { const id = randomUUID(); this.actors.get(owner.actor)!.windows.set(id, page); return id; },
+      readDownload: (download, owner, encoding, inputs) => this.readDownload(download, owner.actor, owner.window, encoding, inputs),
+    }, timeoutMs);
+  }
 
   async run(source: string, options: SandboxOptions): Promise<unknown> {
     return executeSandboxProgram(source, (method, input) => this.invoke(method, input, options.signal), options);
   }
   async close(): Promise<void> {
     this.active = false;
+    this.playwright.close();
     const contexts = await Promise.allSettled([...this.actors.values()].map(actor => actor.context.close()));
     await Promise.allSettled([...this.pending]);
     const cleanup = await Promise.allSettled([...this.inputCleanup].map(async dispose => { await dispose(); this.inputCleanup.delete(dispose); }));
@@ -297,57 +275,20 @@ export class WebProgramRuntime {
     const page = actor.windows.get(windowName);
     if (!page) throw new Error("Unknown or expired window");
     this.safeUrl(page.url());
-    let target: Page | Frame = page;
-    if (input.frame !== undefined) {
-      const frames = page.frames().filter((frame) => frame !== page.mainFrame() && frame.name() === input.frame);
-      if (frames.length !== 1) throw new Error(`Frame must identify exactly one named frame (${String(input.frame)}; available ${page.frames().map((frame) => frame.name()).join(",")})`);
-      target = frames[0]!;
-      this.safeUrl(target.url());
-    }
+    if (method === "playwright") return this.playwright.invoke({ page, actor: actorName, window: windowName }, input, signal);
     if (method === "inspect") return this.observation({ actor: actorName, window: windowName, value: {
-      url: target.url(), text: (await target.locator("body").innerText()).slice(0, 32_000), accessibility: (await target.locator("body").ariaSnapshot()).slice(0, 32_000),
+      url: page.url(), text: (await page.locator("body").innerText()).slice(0, 32_000), accessibility: (await page.locator("body").ariaSnapshot()).slice(0, 32_000),
     } });
-    if (method === "url") return this.observation({ actor: actorName, window: windowName, frame: input.frame, kind: "url", value: target.url() });
-    if (method === "render" || method === "image") {
-      const options = renderOptions(input.options ?? {});
-      let bytes: Buffer;
-      const inputs: string[] = [];
-      if (method === "render") {
-        const sourceId = string(input.sourceId, "sourceId");
-        const source = this.binaries.get(sourceId);
-        if (!source || source.actor !== actorName || source.window !== windowName) throw new Error("Render requires a binary download observation from this actor and window");
-        bytes = source.bytes; inputs.push(sourceId);
-      } else {
-        const locator = this.locate(target, input.locator, false);
-        if (await locator.count() !== 1) throw new Error("Image locator must identify exactly one element");
-        const box = await locator.boundingBox();
-        if (!box || box.width > 4096 || box.height > 4096) throw new Error("Image observation requires a visible element of at most 4096 pixels per side");
-        bytes = await locator.screenshot({ timeout: this.timeoutMs });
-      }
-      const key = createHash("sha256").update(bytes).update(JSON.stringify(options)).digest("hex");
-      let result = this.rendered.get(key);
-      if (!result) {
-        result = await renderBinary(bytes, options, signal);
-        if (this.rendered.size >= 16) this.rendered.delete(this.rendered.keys().next().value!);
-        this.rendered.set(key, result);
-      }
-      return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "rendered-content", value: result.value }, inputs, [{ bytes: result.png, mediaType: "image/png" }]);
+    if (method === "render") {
+      const sourceId = string(input.sourceId, "sourceId");
+      const source = this.binaries.get(sourceId);
+      if (!source || source.actor !== actorName || source.window !== windowName) throw new Error("Render requires a binary download observation from this actor and window");
+      return this.renderObservation(source.bytes, actorName, windowName, input.options ?? {}, [sourceId], signal);
     }
-    if (method === "viewport" || method === "setViewport") {
-      if (input.frame !== undefined) throw new Error("Viewport belongs to the owning window");
-      if (method === "setViewport") {
-        const size = input.size as { width?: unknown; height?: unknown } | undefined;
-        const width = finiteNumber(size?.width, "width", 3840), height = finiteNumber(size?.height, "height", 2160);
-        if (!Number.isInteger(width) || !Number.isInteger(height) || width < 240 || height < 240) throw new Error("Viewport dimensions must be integers of at least 240 pixels");
-        await page.setViewportSize({ width, height });
-        await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, width, height } });
-      }
-      return this.observation({ actor: actorName, window: windowName, kind: "viewport", value: await page.evaluate(() => ({
-        width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
-      })) });
-    }
+    if (method === "viewport") return this.observation({ actor: actorName, window: windowName, kind: "viewport", value: await page.evaluate(() => ({
+      width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
+    })) });
     if (method === "storageFill") {
-      if (input.frame !== undefined) throw new Error("Storage fixture belongs to the owning window");
       const bytes = finiteNumber(input.bytes, "bytes", 16 * 1024 * 1024);
       if (!Number.isInteger(bytes) || bytes < 2) throw new Error("Storage fixture bytes must be an integer between 2 and 16 MiB");
       const result = await page.evaluate(({ bytes, prefix }) => {
@@ -367,158 +308,59 @@ export class WebProgramRuntime {
       await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, bytes } });
       return this.observation({ actor: actorName, window: windowName, kind: "storage-fixture", value: result });
     }
-    let uploadedFiles: ReturnType<typeof filePayload> | undefined;
-    if (method === "clipboardWrite" || method === "clipboardRead") {
-      if (input.frame !== undefined) throw new Error("Clipboard belongs to the owning window, not a frame");
-      if (method === "clipboardWrite") await page.evaluate(async (value) => navigator.clipboard.writeText(value as string), string(input.value, "value"));
-      else return this.observation({ actor: actorName, window: windowName, kind: "clipboard", value: await page.evaluate(() => navigator.clipboard.readText()) });
-    } else if (method === "scroll") {
-      if (input.frame !== undefined) throw new Error("Scroll the owning window, not a frame");
-      const deltaX = finiteNumber(input.deltaX, "deltaX", 1_000_000);
-      const deltaY = finiteNumber(input.deltaY, "deltaY", 1_000_000);
-      if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires a nonzero delta");
-      await page.mouse.wheel(deltaX, deltaY);
-    } else if (method === "dragTo") {
-      const from = this.locate(target, input.from, true);
-      const to = this.locate(target, input.to, true);
-      if (await from.count() !== 1 || await to.count() !== 1) throw new Error("Drag locators must identify exactly one element");
-      await from.dragTo(to, { timeout: this.timeoutMs });
-    } else if (method === "count") {
-      const locator = this.locate(target, input.locator, false);
-      return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "count", value: await locator.count() });
-    } else if (method === "waitFor") {
-      const locator = this.locate(target, input.locator, false);
-      const state = input.state === undefined ? "visible" : string(input.state, "state");
-      if (!["attached", "detached", "visible", "hidden"].includes(state)) throw new Error("Unsupported wait state");
-      const count = await locator.count();
-      if (count > 1 || (count === 0 && state !== "detached" && state !== "hidden")) throw new Error("Wait locator must identify exactly one element");
-      const timeoutMs = Math.min(this.timeoutMs, Math.max(1, input.timeoutMs === undefined ? this.timeoutMs : finiteNumber(input.timeoutMs, "timeoutMs", this.timeoutMs)));
-      await locator.waitFor({ state: state as "attached" | "detached" | "visible" | "hidden", timeout: timeoutMs });
-    } else if (method === "attribute" || method === "style" || method === "read" || method === "click" || method === "fill" ||
-      method === "press" || method === "check" || method === "setChecked" || method === "select" || method === "hover" ||
-      method === "doubleClick" || method === "rightClick" || method === "upload" || method === "focus" || method === "blur" ||
-      method === "download" || method === "popup" || method === "dropFiles" || method === "uploadDirectory" || method === "pasteImage") {
-      const locator = this.locate(target, input.locator, !["read", "attribute", "style"].includes(method));
-      if (await locator.count() !== 1) throw new Error("Locator must identify exactly one element");
-      if (method === "attribute") {
-        const name = string(input.name, "name");
-        return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "attribute", name, value: await locator.getAttribute(name) });
-      }
-      if (method === "style") {
-        const name = string(input.name, "name");
-        return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind: "style", name, value: await locator.evaluate((element, property) => getComputedStyle(element).getPropertyValue(property as string), name) });
-      }
-      if (method === "read") {
-        const kind = input.kind === undefined ? "text" : string(input.kind, "kind");
-        let value: unknown;
-        if (kind === "text") value = (await locator.innerText()).slice(0, 64_000);
-        else if (kind === "value") value = await locator.inputValue();
-        else if (kind === "checked") value = await locator.isChecked();
-        else if (kind === "visible") value = await locator.isVisible();
-        else if (kind === "enabled") value = await locator.isEnabled();
-        else throw new Error("Unsupported observation kind");
-        return this.observation({ actor: actorName, window: windowName, frame: input.frame, locator: input.locator, kind, value });
-      }
-      if (method === "click") await locator.click();
-      else if (method === "fill") await locator.fill(string(input.value, "value"));
-      else if (method === "press") await locator.press(string(input.value, "value"));
-      else if (method === "check") await locator.check();
-      else if (method === "setChecked") await locator.setChecked(boolean(input.checked, "checked"));
-      else if (method === "select") {
-        const value = input.value;
-        if (!(typeof value === "string" || Array.isArray(value) || (value && typeof value === "object"))) throw new Error("Select value must be a string, array or option object");
-        await locator.selectOption(value as string | string[] | { value?: string; label?: string; index?: number } | Array<{ value?: string; label?: string; index?: number }>);
-      } else if (method === "hover") await locator.hover();
-      else if (method === "doubleClick") await locator.dblclick();
-      else if (method === "rightClick") await locator.click({ button: "right" });
-      else if (method === "upload") { uploadedFiles = filePayload(input.files); await locator.setInputFiles(uploadedFiles); }
-      else if (method === "dropFiles") { uploadedFiles = filePayload(input.files); await dropFiles(page, locator, uploadedFiles); }
-      else if (method === "uploadDirectory") {
-        const { dispose, ...directory } = await uploadDirectory(locator, input.directory);
-        this.inputCleanup.add(dispose);
-        return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [],
-          payload: { method, actor: actorName, window: windowName, frame: input.frame, locator: input.locator, directory } }) };
-      }
-      else if (method === "pasteImage") {
-        uploadedFiles = filePayload(input.file);
-        if (uploadedFiles.length !== 1) throw new Error("Paste requires one image");
-        await pasteImage(page, locator, uploadedFiles[0]!);
-      }
-      else if (method === "focus") await locator.focus();
-      else if (method === "blur") await locator.blur();
-      else if (method === "popup") {
-        const [opened] = await Promise.all([page.waitForEvent("popup", { timeout: this.timeoutMs }), locator.click()]);
-        await opened.waitForLoadState("domcontentloaded", { timeout: this.timeoutMs });
-        this.safeUrl(opened.url());
-        const window = randomUUID();
-        actor.windows.set(window, opened);
-        await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, locator: input.locator, openedWindow: window } });
-        return { window };
-      } else if (method === "download") {
-        const encoding = input.encoding === undefined ? "text" : string(input.encoding, "encoding");
-        if (encoding !== "text" && encoding !== "base64") throw new Error("Download encoding must be text or base64");
-        const [download] = await Promise.all([page.waitForEvent("download", { timeout: this.timeoutMs }), locator.click()]);
-        if (encoding === "text" && !DOWNLOAD_TEXT_EXTENSIONS.test(download.suggestedFilename())) { await download.delete(); throw new Error("Download format is not an authorized UTF-8 business file"); }
-        const downloadUrl = new URL(download.url());
-        if (!(downloadUrl.protocol === "blob:" && downloadUrl.origin === new URL(this.baseUrl).origin)) this.safeUrl(download.url());
-        const stream = await download.createReadStream();
-        const chunks: Buffer[] = [];
-        let size = 0;
-        for await (const chunk of stream) {
-          const bytes = Buffer.from(chunk);
-          size += bytes.length;
-          if (size > MAX_FILE_BYTES) { stream.destroy(); await download.delete(); throw new Error("Download exceeds read limit"); }
-          chunks.push(bytes);
-        }
-        const bytes = Buffer.concat(chunks);
-        const value = encoding === "text" ? new TextDecoder("utf-8", { fatal: true }).decode(bytes) : bytes.toString("base64");
-        await download.delete();
-        await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, locator: input.locator, encoding, filename: download.suggestedFilename(), bytes: size } });
-        const content = await this.observation({ actor: actorName, kind: "download", filename: download.suggestedFilename(), encoding, value });
-        if (encoding === "base64") {
-          if ([...this.binaries.values()].reduce((total, source) => total + source.bytes.length, bytes.length) > 16 * 1024 * 1024) throw new Error("Binary downloads exceed the 16 MiB case limit");
-          this.binaries.set(content.id, { bytes, actor: actorName, window: windowName });
-        }
-        const filename = await this.observation({ actor: actorName, kind: "download-filename", value: download.suggestedFilename() });
-        return { ...content, filename };
-      }
-    } else if (method === "goto") {
-      if (input.frame !== undefined) throw new Error("Navigate frames through application controls");
-      await page.goto(this.safeUrl(string(input.path, "path")), { waitUntil: "domcontentloaded", timeout: this.timeoutMs });
-    } else if (method === "reload") {
-      if (input.frame !== undefined) throw new Error("Reload the owning window");
-      await page.reload({ waitUntil: "domcontentloaded", timeout: this.timeoutMs });
-    } else if (method === "dialog") {
-      if (input.checkpointId !== undefined) throw new Error("Arming a dialog handler is not an executed requirement action");
-      page.once("dialog", (dialog) => { void (input.accept === false ? dialog.dismiss() : dialog.accept(typeof input.promptText === "string" ? input.promptText : undefined)).catch(() => {}); });
-    } else {
-      throw new Error(`Unknown browser method: ${method}`);
+    if (method === "clipboardRead") return this.observation({ actor: actorName, window: windowName, kind: "clipboard", value: await page.evaluate(() => navigator.clipboard.readText()) });
+    if (method === "clipboardWrite") {
+      await page.evaluate(async value => navigator.clipboard.writeText(value), string(input.value, "value"));
+      return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: { method, actor: actorName, window: windowName, value: input.value } }) };
     }
-    this.safeUrl(page.url());
-    return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [], payload: {
-      method, actor: actorName, window: windowName, frame: input.frame, locator: input.locator,
-      ...(uploadedFiles ? { files: fileMetadata(uploadedFiles) } : { value: input.value }),
-    } }) };
+    throw new Error(`Unknown browser method: ${method}`);
+  }
+  private async image(locator: Locator, actor: string, window: string, options: unknown, steps: unknown, signal: AbortSignal): Promise<unknown> {
+    const box = await locator.boundingBox({ timeout: this.timeoutMs });
+    if (!box || box.width > 4096 || box.height > 4096) throw new Error("Image observation requires a visible element of at most 4096 pixels per side");
+    return this.renderObservation(await locator.screenshot({ timeout: this.timeoutMs }), actor, window, options, [], signal, steps);
+  }
+  private async renderObservation(bytes: Buffer, actor: string, window: string, rawOptions: unknown, inputs: string[], signal: AbortSignal, locator?: unknown): Promise<unknown> {
+    const options = renderOptions(rawOptions);
+    const key = createHash("sha256").update(bytes).update(JSON.stringify(options)).digest("hex");
+    let result = this.rendered.get(key);
+    if (!result) {
+      result = await renderBinary(bytes, options, signal);
+      if (this.rendered.size >= 16) this.rendered.delete(this.rendered.keys().next().value!);
+      this.rendered.set(key, result);
+    }
+    return this.observation({ actor, window, kind: "rendered-content", ...(locator ? { locator } : {}), value: result.value }, inputs, [{ bytes: result.png, mediaType: "image/png" }]);
+  }
+  private async readDownload(download: Download, actorName: string, windowName: string, rawEncoding: unknown, inputs: string[]): Promise<unknown> {
+    const encoding = rawEncoding === undefined ? "text" : string(rawEncoding, "encoding");
+    if (encoding !== "text" && encoding !== "base64") throw new Error("Download encoding must be text or base64");
+    if (encoding === "text" && !DOWNLOAD_TEXT_EXTENSIONS.test(download.suggestedFilename())) { await download.delete(); throw new Error("Download format is not an authorized UTF-8 business file"); }
+    const downloadUrl = new URL(download.url());
+    if (!(downloadUrl.protocol === "blob:" && downloadUrl.origin === new URL(this.baseUrl).origin)) this.safeUrl(download.url());
+    const stream = await download.createReadStream();
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of stream) {
+      const bytes = Buffer.from(chunk);
+      size += bytes.length;
+      if (size > MAX_FILE_BYTES) { stream.destroy(); await download.delete(); throw new Error("Download exceeds read limit"); }
+      chunks.push(bytes);
+    }
+    const bytes = Buffer.concat(chunks);
+    const value = encoding === "text" ? new TextDecoder("utf-8", { fatal: true }).decode(bytes) : bytes.toString("base64");
+    await download.delete();
+    const content = await this.observation({ actor: actorName, window: windowName, kind: "download", filename: download.suggestedFilename(), encoding, value }, inputs);
+    if (encoding === "base64") {
+      if ([...this.binaries.values()].reduce((total, source) => total + source.bytes.length, bytes.length) > 16 * 1024 * 1024) throw new Error("Binary downloads exceed the 16 MiB case limit");
+      this.binaries.set(content.id, { bytes, actor: actorName, window: windowName });
+    }
+    const filename = await this.observation({ actor: actorName, window: windowName, kind: "download-filename", value: download.suggestedFilename() });
+    return { ...content, filename };
   }
   private safeUrl(path: string): string {
     const url = new URL(path, this.baseUrl);
     if (url.origin !== new URL(this.baseUrl).origin || !/^https?:$/.test(url.protocol) || /\.(?:js|mjs|cjs|map|ts|tsx)(?:$|[?#])/i.test(decodeURIComponent(url.pathname)) || /(?:^|\/)(?:\.(?:git|env)|__debug|@fs|@vite)(?:\/|$)/.test(decodeURIComponent(url.pathname))) throw new Error("Navigation is outside the authorized application surface");
     return url.href;
-  }
-  private locate(target: Page | Frame | Locator, raw: unknown, interaction: boolean): Locator {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Locator must be an object");
-    const locator = raw as WebLocator;
-    const strategies = [locator.role, locator.label, locator.text, locator.testId].filter((value) => value !== undefined);
-    if (strategies.length !== 1) throw new Error("Choose exactly one role, label, text or testId locator");
-    const strategy = locator.role !== undefined ? "role" : locator.label !== undefined ? "label" : locator.text !== undefined ? "text" : "testId";
-    const allowed = strategy === "role" ? ["role", "name", "within"] : [strategy, "within"];
-    for (const key of Object.keys(locator)) if (!allowed.includes(key)) throw new Error(`Locator field is not allowed for ${strategy}: ${key}`);
-    if (locator.within) target = this.locate(target, locator.within, false);
-    if (interaction && !locator.role && !locator.label) throw new Error("Interactions require role or label semantics");
-    if (locator.role) return target.getByRole(locator.role as Parameters<Page["getByRole"]>[0], { ...(locator.name === undefined ? {} : { name: locator.name, exact: true }) });
-    if (locator.label) return target.getByLabel(locator.label, { exact: true });
-    if (locator.text) return target.getByText(locator.text, { exact: true });
-    return target.getByTestId(locator.testId!);
   }
   private async assert(input: Record<string, unknown>, signal: AbortSignal, precondition = false): Promise<unknown> {
     const clauseId = string(precondition ? input.checkpointId : input.clauseId, precondition ? "checkpointId" : "clauseId");
@@ -556,11 +398,6 @@ export class WebProgramRuntime {
 
 function string(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 64_000) throw new Error(`${field} must be a nonempty bounded string`);
-  return value;
-}
-
-function boolean(value: unknown, field: string): boolean {
-  if (typeof value !== "boolean") throw new Error(`${field} must be boolean`);
   return value;
 }
 

@@ -43,14 +43,15 @@ export interface PipelineOptions {
   stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
   /** Evolution only: true includes inherited atomics in audits and delivery coverage. Default false. */
   auditInheritedRequirements?: boolean;
-  /** Runnable requirement implementations recovered from an owned checkpoint; all are re-audited. */
+  /** Runnable implementations recovered from an owned checkpoint; replay follows Checker settings. */
   resumedRequirementIds?: string[];
   requirementDigests?: Record<string, string>;
 }
 
 export interface RunSummary {
   checker?: { mode: "active"; producedHead?: import("./checker/checkpoints.js").ProducedSnapshot;
-    verifiedSnapshotId?: string; outcomes?: import("./checker/port.js").CheckOutcome[] };
+    semanticReview?: boolean; replay?: boolean;
+    verifiedSnapshotId?: string; outcomes?: Array<import("./checker/port.js").CheckOutcome & { snapshotId?: string }> };
   status: "delivered" | "partial" | "failed";
   verifiedRequirementIds: string[];
   blockedRequirementIds: string[];

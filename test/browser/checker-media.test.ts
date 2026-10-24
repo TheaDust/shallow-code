@@ -45,9 +45,9 @@ test("Checker pastes real clipboard images, drops file contents and uploads a ne
     ]);
     try {
       await runtime.run(`const p=await browser.actor('alice');
-        await p.pasteImage({label:'Editor'},{name:'input.png',fixture:{kind:'png',bytes:128}},'paste');
-        await p.dropFiles({role:'button',name:'Drop files'},[{name:'note.md',mimeType:'text/markdown',text:'# Actual dropped text'}],'drop');
-        await p.uploadDirectory({label:'Directory'},{name:'notes',files:[{path:'root.md',text:'root content'},{path:'nested/child.md',text:'child content'}]},'directory');
+        await check.action('paste',()=>p.getByLabel('Editor',{exact:true}).pasteImage({name:'input.png',fixture:{kind:'png',bytes:128}}));
+        await check.action('drop',()=>p.getByRole('button',{name:'Drop files',exact:true}).dropFiles([{name:'note.md',mimeType:'text/markdown',text:'# Actual dropped text'}]));
+        await check.action('directory',()=>p.getByLabel('Directory',{exact:true}).uploadDirectory({name:'notes',files:[{path:'root.md',text:'root content'},{path:'nested/child.md',text:'child content'}]}));
       `, { signal: new AbortController().signal, timeoutMs: 20_000 });
       const page = browser.contexts()[0]!.pages()[0]!;
       await expect(page.getByRole("status", { name: "Paste result" })).toContainText('"width":1');
@@ -60,7 +60,7 @@ test("Checker pastes real clipboard images, drops file contents and uploads a ne
       assert.deepEqual(directory.sort((a,b) => a.path.localeCompare(b.path)), [{ path: "notes/nested/child.md", text: "child content" }, { path: "notes/root.md", text: "root content" }]);
       assert.deepEqual(events.filter(event => event.kind === "action").map(event => event.checkpointId), ["paste", "drop", "directory"]);
       assert(JSON.stringify(events).length < 10_000, "input contents are not repeated in action receipts");
-      for (const path of ["../private", "/absolute", "C:/private", "a/../../private", "a\\private"]) await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.uploadDirectory({label:'Directory'},{name:'notes',files:[{path:${JSON.stringify(path)},text:'denied'}]});`, { signal: new AbortController().signal, timeoutMs: 5000 }), /relative paths/);
+      for (const path of ["../private", "/absolute", "C:/private", "a/../../private", "a\\private"]) await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.getByLabel('Directory',{exact:true}).uploadDirectory({name:'notes',files:[{path:${JSON.stringify(path)},text:'denied'}]});`, { signal: new AbortController().signal, timeoutMs: 5000 }), /relative paths/);
     } finally { await runtime.close(); await browser.close(); }
   });
 });
@@ -75,7 +75,7 @@ for (const mutant of [false, true]) test(`Checker reads rendered PDF and image c
     try {
       const result = await runtime.run(`const p=await browser.actor('alice');const downloaded=[];
         for(const [clause,name] of [['pdf','PDF export'],['image','Image export']]){
-          const file=await p.download({role:'link',name},undefined,'base64'); downloaded.push(file.id);
+          const filePending=p.waitForEvent('download');await p.getByRole('link',{name:name,exact:true}).click();const file=await (await filePending).read('base64'); downloaded.push(file.id);
           const rendered=await p.render(file.id,{ocr:'eng'});
           if(rendered.value.ocr.confidence<70)throw new Error('OCR confidence is insufficient to determine the result');
           await check.expect(clause,[rendered.id],'(values,expected)=>values[0].ocr.text.includes(expected)');
@@ -89,7 +89,7 @@ for (const mutant of [false, true]) test(`Checker reads rendered PDF and image c
       await assert.rejects(runtime.run(`const p=await browser.actor('alice');await p.render('forged',{ocr:'eng'});`, { signal: new AbortController().signal, timeoutMs: 5000 }), /binary download observation/);
       await assert.rejects(runtime.run(`const p=await browser.actor('bob');await p.render(${JSON.stringify(result[0])});`, { signal: new AbortController().signal, timeoutMs: 5000 }), /binary download observation/);
       if (!mutant) {
-        const preview = await runtime.run(`const p=await browser.actor('alice');return (await p.image({label:'Rendered preview'},{ocr:'eng'})).value;`, { signal: new AbortController().signal, timeoutMs: 30_000 }) as { ocr: { text: string } };
+        const preview = await runtime.run(`const p=await browser.actor('alice');return (await p.getByLabel('Rendered preview',{exact:true}).image({ocr:'eng'})).value;`, { signal: new AbortController().signal, timeoutMs: 30_000 }) as { ocr: { text: string } };
         assert.match(preview.ocr.text, /VISIBLE CANVAS/);
       }
     } finally { await runtime.close(); await browser.close(); }

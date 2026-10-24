@@ -21,13 +21,13 @@
 ### 验收与修复
 
 - 还原完整 GIVEN / WHEN / THEN。全部 THEN、结果段 AND / BUT 及其显式复合子句都须映射实际结果断言；需求 ID 覆盖不能代替场景覆盖。
-- Checker 是唯一验收入口，任务绑定快照、执行声明和初态。Web 使用独立进程中的 QuickJS 与受控浏览器能力，保持原文依据、完整身份、严格唯一定位和 role / label 交互语义。
+- Checker 是唯一验收入口，任务绑定快照、执行声明和初态。Web 使用独立进程中的 QuickJS 与受控浏览器能力，使用接近原生的 Playwright 定位器与事件对象，保持原文依据、完整身份、严格唯一定位及需求明确规定的 role / label 语义。隔离、权限与证据集中在 Web 执行器；读取返回宿主观察，动作通过 check.action 绑定 checkpoint。
 - Checker 内核消费领域无关的任务、引用和收据；应用合同与候选位于 `application/`；Web 的命令、HTTP 就绪、端口和 Builder 能力由 `adapters/web/` 解释，Web 验收能力由 `checker/adapters/web/` 解释。新能力同步声明、schema、执行绑定与提示词。
-- 每个功能组完成后封存独立副本，后台结果只归属原任务、快照和 epoch。模块收口重放最新版本后发布；`producedHead` 与可运行 `acceptedSha` 分开持久化。回滚以集中修复开始时的完整模块为基线，恢复被忽略的输入数据，并保留后续功能组源码。
+- 每个功能组完成后封存独立副本，后台结果只归属原任务、快照和 epoch。语义复核与历史程序重放分别由 `SHALLOW_CHECKER_SEMANTIC_REVIEW`、`SHALLOW_CHECKER_REPLAY` 控制，缺省关闭；关闭重放时汇总功能组原快照的执行证据，开启时在模块与最终版本重放。`producedHead` 与可运行 `acceptedSha` 分开持久化。回滚以集中修复开始时的完整模块为基线，恢复被忽略的输入数据，并保留后续功能组源码。
 - 准备前缀须建立并断言初始状态。修改种子或持久化行为时检查空数据与继承数据；同名对象依据归属、父对象与名称区分。
-- `acceptedSha` 是可运行检查点，`verified` 是当前候选的独立行为证据。Checker 的探索、复核和执行等故障记 `inconclusive` 并保留可运行实现。
-- 保持候选副本、case 数据隔离和源码/构建一致性检查。修复接受前复验既有通过路径；未接受改动恢复检查点，并保留失败尝试历史。
-- 最终验收只检测当前验收范围；交付修复改变代码后重新验收。Evolution / Stage 的外部前序依赖只作上下文，跳过沿用项单列，不计作通过。
+- `acceptedSha` 是可运行检查点，`verified` 来自报告所标注检查快照的行为证据；跨快照汇总不授予最终版本的全量重验标记。关闭语义复核仍须校验合同与执行证据，复核批准缓存仅由真实复核写入。Checker 的探索、复核和执行等故障记 `inconclusive` 并保留可运行实现。
+- 保持候选副本、case 数据隔离和源码/构建一致性检查。修复接受前验收修复范围；开启历史重放时同时复验既有通过路径。未接受改动恢复检查点，并保留失败尝试历史。
+- 最终结果只覆盖当前验收范围；交付修复后检查运行合同，行为重验遵循历史重放开关。Evolution / Stage 的外部前序依赖只作上下文，跳过沿用项单列，不计作通过。
 
 ### 项目配置、提示词与观测
 
@@ -37,6 +37,7 @@
 - `run-record.ts` 保存输入摘要与基线。resume 核对输入和合同，恢复接受检查点并重新验收；apply 核对补丁和受影响文件的完整输入内容后写回，保留用户 index。交付配置须与本轮运行合同一致，需求与参考文件使用私有快照。
 - 行为文案放在 `prompts/`。Markdown 资产使用 UTF-8 和 LF，模板 `{{占位符}}` 全部填充。Builder 通用技能位于 `prompts/skills/<name>/SKILL.md`，Web 技能位于 `prompts/adapters/web/skills/<name>/SKILL.md`，用 name/description 描述适用条件，正文按需读取；Pi 只显式加载通用目录及选定适配器的技能目录，技能文件仅允许 read 访问。
 - 合同修改核对 Builder、Checker 探索与复核、功能分组及适用的共享执行调用方的适用资产和动态装配，而非只改一份 Markdown。
+- 通用 Builder 与 Checker 提示词只保留领域无关流程。Web 专用语法、定位、浏览器事件与证据解释放在 `prompts/adapters/web/` 或 `prompts/checker/web/`，经运行适配器初始化指令或 Checker 声明的 prompts 装配。动作能力按通用浏览器机制与证据需求定义，对象与路径由当前需求及实际观察确定，业务预期以需求原文为准。
 - 新增或调整运行事件同步 `types.ts`、`human-log.ts` 与对应测试；主线观测经 `RunStateStore.record` 发射，诊断使用统一脱敏。
 
 ## 源码索引
@@ -50,7 +51,7 @@
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
 | 应用适配、配置、运行与 Builder 能力 | `src/application/port.ts`、`registry.ts`、`candidate-runtime.ts`；`src/adapters/web/`；注册装配 `src/adapters/index.ts`、`src/adapters/checker.ts` |
 | Checker 调度、产物、证据与恢复 | `src/checker-pipeline.ts`、`src/snapshot-store.ts`、`src/checker/port.ts`、`queue.ts`、`checkpoints.ts`、`artifacts.ts`、`agent.ts`、`evidence.ts`（后六项在 `src/checker/`） |
-| Checker 模型、源码索引、Web 能力与程序 | `src/checker/model.ts`、`src/checker/source-index.ts`、`src/checker/adapters/web/`、`prompts/checker/` |
+| Checker 模型、源码索引、Web 能力与程序 | `src/checker/model.ts`、`src/checker/source-index.ts`、`src/checker/adapters/web/`（权限与原生调用见 `playwright-interface.ts`）、`prompts/checker/` |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
 | 模型用量与单价 | `src/model-usage.ts`、`src/builder/pi-execution-stats.ts`、`src/planner-json-client.ts` |
 | 继承数据 | `src/inherited-data.ts` |

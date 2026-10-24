@@ -50,15 +50,24 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
             scenarioId: scenario.id, clauseId: `${requirementId}:${scenario.id}:result`, status: await status?.(job) ?? "pass", evidence: [ready] }));
         })) };
     } } };
-  f.options.checker = { mode: "active", concurrency: 2 };
+  f.options.checker = { mode: "active", concurrency: 2, semanticReview: true, replay: true };
   f.deps.checker = runtime;
   f.deps.grouper = { async group(catalog) { return { groups: catalog.requirements.map(item => ({ requirementIds: [item.id], purpose: "Separate groups" })) }; } };
   return runtime;
 }
 
 test("Checker configuration declares migration mode and bounded concurrency", () => {
-  assert.deepEqual(parseCheckerConfig({}), { mode: "active", concurrency: 2 });
-  assert.deepEqual(parseCheckerConfig({ SHALLOW_CHECKER_MODE: "active", SHALLOW_CHECKER_CONCURRENCY: "1" }), { mode: "active", concurrency: 1 });
+  assert.deepEqual(parseCheckerConfig({}), { mode: "active", concurrency: 2, semanticReview: false, replay: false });
+  assert.deepEqual(parseCheckerConfig({ SHALLOW_CHECKER_MODE: "active", SHALLOW_CHECKER_CONCURRENCY: "1" }), { mode: "active", concurrency: 1, semanticReview: false, replay: false });
+  for (const enabled of ["1", "true", "YES", " on "]) {
+    assert.equal(parseCheckerConfig({ SHALLOW_CHECKER_SEMANTIC_REVIEW: enabled }).semanticReview, true);
+    assert.equal(parseCheckerConfig({ SHALLOW_CHECKER_REPLAY: enabled }).replay, true);
+  }
+  for (const disabled of ["", "0", "false", "NO", " off "]) {
+    assert.equal(parseCheckerConfig({ SHALLOW_CHECKER_SEMANTIC_REVIEW: disabled }).semanticReview, false);
+    assert.equal(parseCheckerConfig({ SHALLOW_CHECKER_REPLAY: disabled }).replay, false);
+  }
+  for (const key of ["SHALLOW_CHECKER_SEMANTIC_REVIEW", "SHALLOW_CHECKER_REPLAY"]) assert.throws(() => parseCheckerConfig({ [key]: "maybe" }), /must be/);
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: "agent" }));
   for (const mode of ["legacy", "observe"]) assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_MODE: mode }), /only supports active/);
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_CONCURRENCY: "3" }));
@@ -220,6 +229,92 @@ test("Current changed requirements are audited while inherited Evolution context
     assert.deepEqual(context.requirements[0]!.dependencyIds, ["A"]);
     assert(context.prerequisites.some(item => item.id === "A"), "group discovery retains the original inherited prerequisite context");
     assert(!jobs.some(job => job.mode !== "prepare" && job.requirementIds.includes("A")));
+  });
+});
+
+test("default switches aggregate group snapshots without historical replay, including resume", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); }, async job => {
+      const snapshot = await runtime.snapshots.open(job.snapshot);
+      const changed = await readFile(join(snapshot.sourceDirectory, "later-change.txt")).then(() => true, () => false);
+      return job.requirementIds.includes("A") && changed ? "fail" : "pass";
+    });
+    f.options.checker = parseCheckerConfig({});
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      if (request.mode === "implement" && request.packet.requirementIds.includes("C")) await writeFile(join(f.options.outputDir, "later-change.txt"), "changed");
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    assert.equal(jobs.filter(job => job.mode === "discover").length, 3);
+    assert(jobs.every(job => job.mode === "discover" || job.mode === "prepare"));
+    assert(jobs.every(job => job.programs.length === 0));
+    assert.equal(f.builder.requests.some(request => request.mode === "repair"), false);
+    assert.equal(result.checker?.replay, false);
+    assert.equal(result.checker?.semanticReview, false);
+    assert.equal(result.checker?.verifiedSnapshotId, undefined);
+    const first = jobs.find(job => job.mode === "discover" && job.requirementIds.includes("A"))!;
+    assert(result.checker?.outcomes?.filter(item => item.requirementId === "A").every(item => item.snapshotId === first.snapshot.id));
+    await writeRunReport(dirname(f.options.ledgerFile), result);
+    const report = await readFile(join(dirname(f.options.ledgerFile), "checker-report.md"), "utf8");
+    assert.match(report, /独立语义复核：关闭；历史程序重放：关闭/);
+    assert.match(report, new RegExp(`检查快照：${first.snapshot.id}`));
+    const events = await f.events();
+    const final = events.find(item => item.type === "module_check_finished" && item.detail?.moduleId === "<final>")!;
+    assert.match(new HumanRunFormatter().format(JSON.stringify(final))!, /最终功能组结果汇总/);
+    const previousJobs = jobs.length;
+    const resumed = await f.run();
+    assert.equal(resumed.status, "delivered");
+    assert(jobs.slice(previousJobs).every(job => job.mode === "prepare"));
+    assert.deepEqual(resumed.checker?.outcomes, result.checker?.outcomes);
+  });
+});
+
+test("replay off checks repairs with fresh discovery scoped to the repaired requirements", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); }, async job => {
+      const snapshot = await runtime.snapshots.open(job.snapshot);
+      const fixed = await readFile(join(snapshot.sourceDirectory, "fixed.txt")).then(() => true, () => false);
+      return job.requirementIds.includes("A") && !fixed ? "fail" : "pass";
+    });
+    f.options.checker = parseCheckerConfig({ SHALLOW_CHECKER_SEMANTIC_REVIEW: "1" });
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      if (request.mode === "repair") await writeFile(join(f.options.outputDir, "fixed.txt"), "fixed");
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    assert.equal(result.checker?.semanticReview, true);
+    assert.equal(result.checker?.replay, false);
+    assert.deepEqual(jobs.filter(job => job.mode === "discover").map(job => job.requirementIds), [["A"], ["B"], ["A"], ["C"]]);
+    assert(jobs.every(job => job.mode !== "replay" && job.programs.length === 0));
+  });
+});
+
+test("replay off excludes rejected repair reports when aggregating the restored lineage", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    await attach(f, async job => { jobs.push(job); }, async job => job.requirementIds.includes("A") ? "fail" : "pass");
+    f.options.checker = parseCheckerConfig({});
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      if (request.mode === "repair") await writeFile(join(f.options.outputDir, "rejected.txt"), "rejected");
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, "partial");
+    assert.deepEqual(result.failedRequirementIds, ["A"]);
+    await assert.rejects(readFile(join(f.options.outputDir, "rejected.txt")));
+    const original = jobs.find(job => job.mode === "discover" && job.requirementIds.includes("A"))!;
+    assert(result.checker?.outcomes?.filter(item => item.requirementId === "A").every(item => item.snapshotId === original.snapshot.id));
+    assert.equal(jobs.filter(job => job.mode === "replay").length, 0);
   });
 });
 

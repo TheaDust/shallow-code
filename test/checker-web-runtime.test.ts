@@ -13,7 +13,7 @@ test("QuickJS supports ordinary functions, loops and asynchronous JSON host call
     function double(n) { return n * 2; }
     const page = await browser.actor('alice');
     const values = [];
-    for (let i = 0; i < 3; i++) { const observation = await page.read({role:'status'}, 'text'); values.push(double(Number(observation.value))); }
+    for (let i = 0; i < 3; i++) { const observation = await page.getByRole('status').innerText(); values.push(double(Number(observation.value))); }
     return values;
   `, async (method, input) => { calls.push({ method, input }); return method === "actor" ? {} : { id: "receipt", value: "4" }; }, { signal, timeoutMs: 1_000 });
   assert.deepEqual(result, [8, 8, 8]);

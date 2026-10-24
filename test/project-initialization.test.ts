@@ -3,6 +3,9 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { applications } from "../src/adapters/index.js";
+import { ApplicationRegistry } from "../src/application/registry.js";
+import type { RuntimeAdapter } from "../src/application/port.js";
+import { parseProjectSpec, resolveApplicationContract } from "../src/project-spec.js";
 import type { CodingAgentPort, CodingAgentRequest, CodingAgentResult } from "../src/builder/execution-port.js";
 import { initializeProject, readProjectIntent, selectInitializationPath } from "../src/project-initialization.js";
 import { loadPendingInitialization, savePendingInitialization } from "../src/run-record.js";
@@ -57,8 +60,38 @@ test("explicit stack initializes without copying the default scaffold and retrie
     assert.equal(seen.length, 2);
     assert.match(seen[1].taskPrompt, /上一次控制器验证失败/);
     assert.equal(seen[0].applicationContract, undefined);
+    assert.match(seen[0].systemPrompt, /Web 工程.*PORT/);
     assert.equal(result.contract.startCommand.executable, "python");
     await assert.rejects(readFile(join(outputDir, "frontend", "package.json")));
+  });
+});
+
+test("initialization uses the selected adapter's instructions without imposing Web runtime rules", async () => {
+  await withTempDir("shallow-init-adapter-", async root => {
+    const outputDir = join(root, "app"); await mkdir(outputDir);
+    const spec = parseProjectSpec({ adapter: "fixture", start: { executable: "fixture-host" } });
+    await writeFile(join(outputDir, "shallowcode.config.json"), JSON.stringify(spec));
+    const adapter: RuntimeAdapter = {
+      id: "fixture", initializationInstructions: "FIXTURE_INITIALIZATION: use the declared input stream.",
+      parseSpec: parseProjectSpec, defaultSpec: () => spec,
+      configure: async value => resolveApplicationContract(value),
+      lifecycle: { async start() { throw new Error("Not used"); } },
+      async installScaffold() { throw new Error("Not used"); },
+      builderCapabilities: () => ({ tools: [], skillDirectories: [], async close() {} }),
+      async verifyDelivery() { throw new Error("Not used"); },
+    };
+    let calls = 0;
+    const result = await initializeProject({ outputDir, privateDir: join(root, "private"),
+      requirementsContext: "Process an input stream", intent: null, env: {}, startedAtMs: Date.now(), budgetMs: 0,
+      applications: new ApplicationRegistry([adapter]), verify: async () => {},
+      createBuilder: () => ({ async run(request) {
+        calls++;
+        assert.match(request.systemPrompt, /FIXTURE_INITIALIZATION/);
+        assert.doesNotMatch(request.systemPrompt, /Web|PORT|浏览器|健康检查/);
+        return { outcome: "completed", sessionId: "fixture", summary: "ready" };
+      }, async close() {} }),
+    });
+    assert.equal(result.contract.adapterId, "fixture"); assert.equal(calls, 1);
   });
 });
 

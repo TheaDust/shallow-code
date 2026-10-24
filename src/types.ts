@@ -150,6 +150,7 @@ interface RunEventDetails {
   check_cancelled: CheckEventDetail;
   module_check_started: { moduleId: string; moduleEpoch: number; snapshotId: string; requirementIds: string[] };
   module_check_finished: { moduleId: string; moduleEpoch: number; snapshotId: string;
+    replay?: boolean;
     requirementResults: Record<string, RequirementStatus>; published: boolean;
     /** Scenario results for the module scope that was just checked. */
     scenarioResults?: RunScenarioResult[];

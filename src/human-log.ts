@@ -77,6 +77,7 @@ function describe(event: RunEvent): string | null {
     case "module_check_started":
       return `开始模块集中检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "module_check_finished":
+      if (detail?.replay === false) return `${detail?.moduleId === "<final>" ? "最终功能组结果汇总" : "模块功能组结果汇总"}；交付版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
       return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
     case "checker_usage": {
       const tokens = tokenUsageParts(detail);

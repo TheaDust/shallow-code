@@ -131,7 +131,9 @@ export async function main(
   const mergedEnv = await mergeGatewayEnv(env, envFile);
   const requestedChecker = parseCheckerConfig(mergedEnv);
   if (prior?.checker && ((mergedEnv.SHALLOW_CHECKER_MODE && requestedChecker.mode !== prior.checker.mode) ||
-    (mergedEnv.SHALLOW_CHECKER_CONCURRENCY && requestedChecker.concurrency !== prior.checker.concurrency))) {
+    (mergedEnv.SHALLOW_CHECKER_CONCURRENCY && requestedChecker.concurrency !== prior.checker.concurrency) ||
+    (mergedEnv.SHALLOW_CHECKER_SEMANTIC_REVIEW && requestedChecker.semanticReview !== prior.checker.semanticReview) ||
+    (mergedEnv.SHALLOW_CHECKER_REPLAY && requestedChecker.replay !== prior.checker.replay))) {
     throw new Error("Resume Checker settings changed; start a new run for the updated settings");
   }
   const checker = prior?.checker ?? requestedChecker;
@@ -495,7 +497,8 @@ async function executeProduction(
         ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item),
         onProgress: item => recordUsageProgress(item) });
       const sourceIndex = new CheckerSourceIndex(snapshots, checkerSourceExclusions(pipelineOptions.applicationContract));
-      checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model, sourceIndex }),
+      checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model, sourceIndex,
+        semanticReview: pipelineOptions.checker.semanticReview === true }),
         binding: execution.adapter.binding, initialState: execution.initialState, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },
         setUsageProgressRecorder: recorder => { recordUsageProgress = recorder; },

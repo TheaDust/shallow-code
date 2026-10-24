@@ -81,6 +81,8 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     };
   } };
   const model: CheckerModel = { async run(request) {
+    assert.doesNotMatch(request.systemPrompt, /Playwright|JavaScript|DOM|ARIA|PDF|PNG|OCR|browser|viewport|page\.|role\/label/,
+      "an adapter without Web prompt fragments receives only generic Checker instructions");
     roles.push(request.role);
     for (const tool of request.tools) toolSchemas.push({ role: request.role, name: tool.name, parameters: tool.parameters });
     if (request.role === "semantic_review") reviewPrompts.push(request.prompt);
@@ -131,9 +133,43 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     return { totalTokens: 100 };
   } };
   return { directory, store, job, adapter, model, roles, reviewPrompts, explorationPrompts, toolSchemas, get environments() { return environments; }, get closed() { return closed; }, get replays() { return replays; },
-    checker: createCheckerAgent({ artifacts: store, adapter, model, sourceIndex }), sourceIndex,
+    checker: createCheckerAgent({ semanticReview: true, artifacts: store, adapter, model, sourceIndex }), sourceIndex,
     cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
+
+test("semantic review defaults off, leaves no approval cache and remains independently switchable", async () => {
+  const f = await fixture({ rejectReview: true });
+  try {
+    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: f.model });
+    const report = await checker.check(f.job, new AbortController().signal);
+    assert.deepEqual(f.roles, ["exploration"]);
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "pass"]);
+    assert.equal(f.replays, 1, "check_program execution supplies evidence without another execution");
+    assert.deepEqual((await f.store.getJson<CheckerManifest>(report.manifest)).reviews, []);
+    assert.deepEqual(await readdir(join(f.directory, "reviews")).catch(() => []), []);
+    const replay = { ...f.job, jobId: "replay-without-review", mode: "replay" as const, programs: report.programs };
+    const repeated = await checker.check(replay, new AbortController().signal);
+    assert.deepEqual(repeated.outcomes.map(item => item.status), ["pass", "pass"]);
+    assert.deepEqual(f.roles, ["exploration"], "replay independently works with semantic review off");
+    const reviewed = await f.checker.check({ ...replay, jobId: "review-enabled" }, new AbortController().signal);
+    assert(reviewed.outcomes.every(item => item.status === "inconclusive"), "an unreviewed run never grants cached approval");
+    assert.deepEqual(f.roles, ["exploration"]);
+    await f.checker.check({ ...f.job, jobId: "discover-with-review", programs: report.programs }, new AbortController().signal);
+    assert(f.roles.includes("semantic_review"), "enabling review still invokes the independent reviewer");
+  } finally { await f.cleanup(); }
+});
+
+test("semantic review off retains evidence validation and independent business failure confirmation", async () => {
+  const f = await fixture({ failures: [0, 1] });
+  try {
+    const report = await createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: f.model })
+      .check(f.job, new AbortController().signal);
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "fail"]);
+    assert.equal(f.replays, 2);
+    assert.deepEqual(f.roles, ["exploration"]);
+    assert.match(report.outcomes[1]!.reason!, /independent fresh environment/);
+  } finally { await f.cleanup(); }
+});
 
 test("source lookups aid discovery without reaching semantic review, behavior evidence or replay", async () => {
   const f = await fixture({ sourceTools: true, failures: [0, 1] });
@@ -177,7 +213,7 @@ test("source index open failures preserve page discovery, review and independent
   try {
     f.sourceIndex!.open = async () => { throw new Error("Source snapshot cannot be indexed"); };
     config.sourceTools = false; // The fake model now expects only execution and submission tools.
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, sourceIndex: f.sourceIndex,
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, sourceIndex: f.sourceIndex,
       model: { async run(request) {
         if (request.role === "exploration") {
           assert.deepEqual(JSON.parse(request.prompt).sourceIndex, { available: false });
@@ -256,7 +292,7 @@ test("Checker assembles final-program self-check guidance with its exploration s
   const f = await fixture();
   let explored = false;
   try {
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "exploration") {
         explored = true;
         assert.match(request.systemPrompt, /优先源码定位/);
@@ -298,7 +334,7 @@ test("Checker corrects a nested finish call and permits a corrected independent 
       }
       return f.model.run(request);
     } };
-    const report = await createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
+    const report = await createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
     assert(report.outcomes.every(outcome => outcome.status === "pass"));
     const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
     assert.equal(manifest.reviews.length, 1);
@@ -432,7 +468,7 @@ test("controlled preparation failure preserves actual readiness diagnostics for 
     const ready = await f.store.getJson<EvidenceReceipt>(actual.readinessEvidence[0]!);
     await actual.close();
     const failed = await f.store.putReceipt(f.job, { ...ready, id: "failed-readiness", readiness: { result: "failed" } });
-    const checker = createCheckerAgent({ artifacts: f.store, model: f.model, adapter: { binding: f.job.binding, async prepare() {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, model: f.model, adapter: { binding: f.job.binding, async prepare() {
       const error = new Error("Application startup failed") as Error & { readinessEvidence: ContentRef[] };
       error.readinessEvidence = [failed]; throw error;
     } } });
@@ -507,7 +543,7 @@ test("rejected programs survive restart as feedback and cannot be replayed or re
   const f = await fixture({ rejectReview: true });
   try {
     const first = await f.checker.check(f.job, new AbortController().signal);
-    const checker = createCheckerAgent({ artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model: f.model });
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model: f.model });
     const progress: CheckerProgress[] = [];
     const second = await checker.check({ ...f.job, jobId: "job-retry", mode: "discover", programs: first.programs }, new AbortController().signal,
       async detail => { progress.push(detail); });
@@ -597,7 +633,7 @@ test("an unsubmitted batch is not cached and explicit discovery retries without 
       descriptor: await f.store.putTypedJson({ ...descriptor, clauses: [{ clauseId: clause.id, checkpointId: clause.checkpointId }] }, original.descriptor.schema),
     })));
     let reviews = 0;
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "semantic_review" && reviews++ === 0) return { totalTokens: 100 };
       return f.model.run(request);
     } } });
@@ -628,7 +664,7 @@ test("one local correction repairs only rejected coverage and retains approved s
         clauses: [{ clauseId: clause.id, checkpointId: clause.checkpointId }] }, original.descriptor.schema),
     })));
     const requests: CheckerModelRequest[] = [];
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       requests.push(request);
       const payload = JSON.parse(request.prompt);
       if (request.role === "semantic_review") {
@@ -668,7 +704,7 @@ test("fresh rejection gets at most one local correction and remains inconclusive
   const f = await fixture(config);
   let attempts = 0;
   try {
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "exploration") config.source = `// attempt ${++attempts}`;
       return f.model.run(request);
     } } });
@@ -697,11 +733,11 @@ test("model-defined unverifiable gaps need no limitation list and expire with ch
     return { totalTokens: 100 };
   } };
   try {
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model });
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model });
     const first = await checker.check(f.job, new AbortController().signal);
     assert(first.outcomes.every(outcome => outcome.status === "inconclusive" && /Unable to verify:.*cross-window animation/.test(outcome.reason!)));
     const progress: CheckerProgress[] = [];
-    const restarted = createCheckerAgent({ artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model });
+    const restarted = createCheckerAgent({ semanticReview: true, artifacts: new ArtifactStore(f.directory, f.store.runId), adapter: f.adapter, model });
     const second = await restarted.check({ ...f.job, jobId: "gap-replay" }, new AbortController().signal,
       async event => { progress.push(event); });
     assert.equal(explorations, 1);
@@ -730,7 +766,7 @@ test("unverifiable-gap reuse preserves a verifiable sibling and expires when ada
       tools: request.tools.map(tool => tool.name === "finish" ? { ...tool, execute: args => finish.execute({ ...(args as object), unsupported: [gap] }) } : tool) });
   } };
   try {
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model });
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model });
     const first = await checker.check(f.job, new AbortController().signal);
     assert.deepEqual(first.outcomes.map(outcome => outcome.status), ["inconclusive", "pass"]);
     const second = await checker.check({ ...f.job, jobId: "gap-with-sibling", programs: first.programs }, new AbortController().signal);
@@ -741,7 +777,7 @@ test("unverifiable-gap reuse preserves a verifiable sibling and expires when ada
     const declaration = await f.store.getJson<AdapterDeclaration>(oldBinding.declaration);
     const binding = { ...await f.store.putJson({ ...oldBinding, declaration: await f.store.putJson({ ...declaration, version: "2" }) }), executor: f.job.binding.executor };
     let prepares = 0;
-    const changed = createCheckerAgent({ artifacts: f.store, model, adapter: { binding, async prepare() {
+    const changed = createCheckerAgent({ semanticReview: true, artifacts: f.store, model, adapter: { binding, async prepare() {
       prepares++; throw new Error("Fresh exploration with changed adapter");
     } } });
     const report = await changed.check({ ...f.job, jobId: "changed-capabilities", binding }, new AbortController().signal);
@@ -765,7 +801,7 @@ test("unverifiable gaps retry only when explicitly marked as a transient problem
     return f.model.run(request);
   } };
   try {
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model });
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model });
     assert((await checker.check(f.job, new AbortController().signal)).outcomes.every(outcome => outcome.status === "inconclusive"));
     const second = await checker.check({ ...f.job, jobId: "retry-transient-gap" }, new AbortController().signal);
     assert.equal(explorations, 2);
@@ -789,7 +825,7 @@ test("replay never starts a model for missing, unapproved, incompatible or rejec
     const descriptor = await f.store.readTypedJson<Record<string, unknown>>(original.descriptor);
     const pending = { ...original, descriptor: await f.store.putTypedJson({ ...descriptor, source: await f.store.putBytes("// unreviewed") }, original.descriptor.schema) };
     let modelCalls = 0;
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run() { modelCalls++; assert.fail("pure replay called the model"); } } });
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run() { modelCalls++; assert.fail("pure replay called the model"); } } });
     for (const programs of [[], [pending]]) {
       const report = await checker.check({ ...f.job, jobId: `missing-${programs.length}`, mode: "replay", programs }, new AbortController().signal);
       assert(report.outcomes.every(item => item.status === "inconclusive"));
@@ -819,7 +855,7 @@ test("group reviews validate each whole-program decision before accepting the ba
   const f = await fixture();
   try {
     const job = await groupJob(f);
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "semantic_review") {
         const entries = JSON.parse(request.prompt).programs as Array<{ programId: string; contract: AcceptanceContract }>;
         assert.equal(entries.length, 2);
@@ -866,7 +902,7 @@ test("a later review batch failure retains earlier approved programs and leaves 
   try {
     const job = await groupJob(f, 5);
     let reviews = 0;
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "semantic_review" && ++reviews === 2) throw new Error("Review connection failed");
       return f.model.run(request);
     } } });
@@ -885,7 +921,7 @@ test("one group exploration produces independent scenario programs and scoped re
   const f = await fixture();
   try {
     const job = await groupJob(f);
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "exploration") {
         const sources = (JSON.parse(request.prompt) as { sourceClauses: SourceClause[] }).sourceClauses;
         const mixed = { checkpoints: sources.map((source, i) => ({ id: `mixed-${i}`, kind: "assertion", requirementId: source.requirementId,
@@ -932,7 +968,7 @@ test("a failed scenario closes its environment and leaves sibling programs verif
   try {
     const job = await groupJob(f);
     const original = await f.checker.check(job, new AbortController().signal);
-    const checker = createCheckerAgent({ artifacts: f.store, model: f.model, adapter: { binding: f.adapter.binding, async prepare(job, signal) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, model: f.model, adapter: { binding: f.adapter.binding, async prepare(job, signal) {
       assert.equal(f.closed, f.environments, "a previous scenario must release its environment before the next starts");
       const session = await f.adapter.prepare(job, signal);
       return { ...session, async replay(program, signal) {
@@ -956,7 +992,7 @@ test("discovery exhaustion preserves verified siblings and saved candidates for 
     const job = await groupJob(f);
     const original = await f.checker.check(job, new AbortController().signal);
     config.source = "// saved before discovery exhaustion";
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       return f.model.run({ ...request, tools: request.tools.map(tool => request.role === "exploration" && tool.name === "finish" ? { ...tool, async execute() {
         request.signal.throwIfAborted();
         await new Promise<never>((_resolve, reject) => request.signal.addEventListener("abort", () => reject(request.signal.reason), { once: true }));
@@ -983,7 +1019,7 @@ test("cleanup failure rejects the job instead of publishing acceptance", async (
       const session = await f.adapter.prepare(job, signal);
       return { ...session, async close() { await session.close(); throw new Error("browser process still alive"); } };
     } };
-    await assert.rejects(createCheckerAgent({ artifacts: f.store, adapter, model: f.model }).check({ ...f.job, mode: "prepare" }, new AbortController().signal), CheckerCleanupError);
+    await assert.rejects(createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter, model: f.model }).check({ ...f.job, mode: "prepare" }, new AbortController().signal), CheckerCleanupError);
   } finally { await f.cleanup(); }
 });
 
@@ -991,7 +1027,7 @@ test("Checker cancellation awaits cleanup and returns unconfirmed results", asyn
   const f = await fixture();
   try {
     const controller = new AbortController();
-    const checker = createCheckerAgent({ artifacts: f.store, adapter: f.adapter, model: { async run(request: CheckerModelRequest) {
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request: CheckerModelRequest) {
       controller.abort(new Error("Cancelled test job")); request.signal.throwIfAborted(); return { totalTokens: 0 };
     } } });
     const report = await checker.check(f.job, controller.signal);

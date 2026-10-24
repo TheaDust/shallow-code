@@ -104,6 +104,8 @@ export async function loadRunRecord(runDirectory: string): Promise<RunRecord> {
   if (record.version !== 3 || !isAbsolute(record.outputDir) || !isAbsolute(record.requirementsDir) ||
     !record.inputBaseline || !/^[0-9a-f]{40,64}$/i.test(record.inputBaseline)) throw new Error("Run format is unsupported; start a new Checker run");
   if (!record.checker || !record.checkerRunId || record.checker.mode !== "active") throw new Error("Checker run is missing its execution settings");
+  // Runs created before the switches always used both stages.
+  record.checker = { semanticReview: true, replay: true, ...record.checker };
   record.projectSpec = parseProjectSpec(record.projectSpec, "run.json.projectSpec");
   const root = await runGit(record.outputDir, ["rev-parse", "--show-toplevel"], false);
   if (await realpath(root.stdout.trim()) !== await realpath(record.outputDir)) throw new Error("Recorded workspace is not a repository root");
@@ -148,6 +150,10 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary, 
   const rows = Object.entries(groups).flatMap(([status, ids]) => (ids ?? []).map(id => `| ${id.replaceAll("|", "\\|")} | ${status} |`));
   await writeFile(join(runDirectory, "report.md"), [
     `运行结果：${summary.status}`, ``, `可运行检查点：${summary.acceptedSha}`, ``,
+    ...(summary.checker?.semanticReview !== undefined ? [
+      `Checker 设置：独立语义复核${summary.checker.semanticReview ? "开启" : "关闭"}；历史程序重放${summary.checker.replay ? "开启" : "关闭"}。`, "",
+      ...(summary.checker.replay === false ? ["验收结果按各功能组原检查快照汇总，逐项快照见 Checker 验收证据。", ""] : []),
+    ] : []),
     ...(summary.delivery ? [`交付检查：${summary.delivery.stage} — ${summary.delivery.message}`, ``] : []),
     "| 需求 | 当前状态 |", "| --- | --- |", ...rows, "",
     ...((summary.scenarioResults?.length ?? 0) > 0 ? [
@@ -167,12 +173,16 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary, 
 
 async function writeCheckerExplanation(runDirectory: string, summary: RunSummary): Promise<void> {
   const store = new ArtifactStore(join(runDirectory, "checker"), "report-reader");
-  const lines = ["# Checker 验收证据", "", `当前检查版本：${summary.checker!.verifiedSnapshotId ?? "尚未确认"}`, "",
+  const checkedVersion = summary.checker!.verifiedSnapshotId
+    ?? (summary.checker!.replay === false ? "按功能组原检查快照汇总" : "尚未确认");
+  const lines = ["# Checker 验收证据", "", `当前检查版本：${checkedVersion}`, "",
+    ...(summary.checker!.semanticReview !== undefined ? [`独立语义复核：${summary.checker!.semanticReview ? "开启" : "关闭"}；历史程序重放：${summary.checker!.replay ? "开启" : "关闭"}`, ""] : []),
     "每项结果记录需求依据、执行观察与断言；链接指向本次运行保存的原始证据。", ""];
   const quote = (value: unknown): string => String(value).replace(/[\r\n]+/g, " ").replaceAll("|", "\\|");
   for (const outcome of summary.checker!.outcomes!) {
     lines.push(`## ${quote(outcome.requirementId)} / ${quote(outcome.scenarioId)} / ${quote(outcome.clauseId)}`, "",
       `结论：${outcome.status}${outcome.reason ? `；${quote(outcome.reason)}` : ""}`, "");
+    if (outcome.snapshotId) lines.push(`检查快照：${quote(outcome.snapshotId)}`, "");
     const seen = new Set<string>();
     for (const ref of outcome.evidence) {
       if (seen.has(ref.digest)) continue;

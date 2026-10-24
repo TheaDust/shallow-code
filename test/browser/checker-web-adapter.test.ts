@@ -33,7 +33,9 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
       launchBrowser: async () => { launches++; return chromium.launch({ headless: true }); } });
     const declarationPrompts = await Promise.all(declaration.prompts.map(ref => artifacts.getBytes(ref).then(bytes => bytes.toString("utf8"))));
     assert.match(declarationPrompts[0]!, /^你在隔离解释器中执行普通 JavaScript 异步函数体/);
-    assert.match(declarationPrompts[1]!, /^Web public entry: \/$/);
+    assert.match(declarationPrompts[1]!, /^Authorized Playwright interface/);
+    assert.match(declarationPrompts[1]!, /"filechooser"/);
+    assert.match(declarationPrompts[2]!, /^Web public entry: \/$/);
     assert.deepEqual(declaration.initialStates, [initialState]);
     assert.deepEqual(await artifacts.readTypedJson(initialState), { baseline: baseline.ref });
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
@@ -42,7 +44,7 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     const contract = await artifacts.putJson({ clauses: [{ id: "r:result", requirementId: "r", scenarioId: "s", checkpointId: "result", expected: { operator: "equal", value: "changed" } }], checkpoints: [
       { id: "initial", kind: "precondition", expected: { operator: "equal", value: "original" } }, { id: "change", kind: "action" }, { id: "result", kind: "assertion" },
     ] });
-    const programSource = `const p=await browser.actor('alice');const before=await p.read({role:'status'});await check.precondition('initial',[before.id]);await p.click({role:'button',name:'Change'},'change');const after=await p.read({role:'status'});await check.expect('r:result',[after.id]);`;
+    const programSource = `const p=await browser.actor('alice');const before=await p.getByRole('status').innerText();await check.precondition('initial',[before.id]);await check.action('change',()=>p.getByRole('button',{name:'Change',exact:true}).click());const after=await p.getByRole('status').innerText();await check.expect('r:result',[after.id]);`;
     const descriptor = await artifacts.putTypedJson({ source: await artifacts.putBytes(programSource), initialState, clauses: [{ clauseId: "r:result", checkpointId: "result" }] }, declaration.programFormat.schema);
     const program: ProgramRef = { descriptor, format: WEB_PROGRAM_FORMAT, contract, binding: adapter.binding };
     // Builder changes after sealing do not affect execution or its input baseline.
@@ -100,7 +102,7 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     const mediaJob = { ...job, jobId: "media" };
     const media = await adapter.prepare(mediaJob, new AbortController().signal);
     try {
-      const result = await media.invoke("run", { source: `const p=await browser.actor('alice');const file=await p.download({role:'link',name:'Download image'},undefined,'base64');return await p.render(file.id,{samples:[{x:0,y:0}]});` }, new AbortController().signal);
+      const result = await media.invoke("run", { source: `const p=await browser.actor('alice');const filePending=p.waitForEvent('download');await p.getByRole('link',{name:'Download image',exact:true}).click();const file=await (await filePending).read('base64');return await p.render(file.id,{samples:[{x:0,y:0}]});` }, new AbortController().signal);
       const receipts = await Promise.all(result.receipts.map(ref => artifacts.getJson<EvidenceReceipt>(ref)));
       for (const receipt of receipts) await artifacts.validateReceipt(mediaJob, receipt);
       const rendered = receipts.find(receipt => receipt.kind === "observation" && receipt.attachments.length)!;
@@ -121,7 +123,7 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     try {
       const initial = await freshSession.invoke("inspect", { actor: "alice" }, new AbortController().signal);
       assert.match(JSON.stringify(await artifacts.readTypedJson(initial.output)), /empty/);
-      await freshSession.invoke("run", { source: "const p=await browser.actor('alice');await p.click({role:'button',name:'Change'});" }, new AbortController().signal);
+      await freshSession.invoke("run", { source: "const p=await browser.actor('alice');await p.getByRole('button',{name:'Change',exact:true}).click();" }, new AbortController().signal);
       const changed = await freshSession.invoke("inspect", { actor: "alice" }, new AbortController().signal);
       assert.match(JSON.stringify(await artifacts.readTypedJson(changed.output)), /changed/);
       await freshSession.invoke("reset_case", {}, new AbortController().signal);

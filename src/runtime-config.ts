@@ -12,6 +12,8 @@ export interface GatewayConfig {
 export interface CheckerConfig {
   mode: "active";
   concurrency: number;
+  semanticReview?: boolean;
+  replay?: boolean;
 }
 
 export function parseCheckerConfig(env: Record<string, string | undefined>): CheckerConfig {
@@ -23,7 +25,13 @@ export function parseCheckerConfig(env: Record<string, string | undefined>): Che
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 2) {
     throw new Error("SHALLOW_CHECKER_CONCURRENCY must be 1 or 2");
   }
-  return { mode, concurrency };
+  const flag = (name: string): boolean => {
+    const raw = env[name]?.trim();
+    if (!raw || /^(0|false|no|off)$/i.test(raw)) return false;
+    if (/^(1|true|yes|on)$/i.test(raw)) return true;
+    throw new Error(`${name} must be 1/true/yes/on or 0/false/no/off`);
+  };
+  return { mode, concurrency, semanticReview: flag("SHALLOW_CHECKER_SEMANTIC_REVIEW"), replay: flag("SHALLOW_CHECKER_REPLAY") };
 }
 
 export const MIN_BUILDER_CONTEXT_WINDOW = 131_072;

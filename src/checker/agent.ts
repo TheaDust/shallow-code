@@ -96,8 +96,10 @@ function reviewReceipt(receipt: EvidenceReceipt, payload: unknown): Record<strin
 }
 
 /** Exploration, semantic review and replay share one immutable task, with separate model sessions. */
-export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter: ExecutionAdapter; model: CheckerModel; sourceIndex?: CheckerSourceIndex }): CheckerPort {
+export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter: ExecutionAdapter; model: CheckerModel; sourceIndex?: CheckerSourceIndex;
+  semanticReview?: boolean }): CheckerPort {
   const { artifacts: store, adapter, model } = options;
+  const semanticReview = options.semanticReview === true;
   const invocationInput = async (capabilityId: string, schema: ContentRef, input: unknown): Promise<unknown> => {
     try { await store.validateSchema(schema, input); return input; }
     catch (error) {
@@ -119,8 +121,9 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     const programs = new Map<string, ProgramRef>();
     const input = await store.getJson<CheckerRequirements>(job.requirements);
     const sources = checkerSourceClauses(input, job.requirementIds);
+    const missingProgramReason = semanticReview ? "No reviewed program covered this source result" : "No executed program covered this source result";
     const outcomeMap = new Map<string, CheckOutcome>(sources.map(source => [source.id, { requirementId: source.requirementId,
-      scenarioId: source.scenarioId, clauseId: source.id, status: "inconclusive", evidence: [], reason: "No reviewed program covered this source result" }]));
+      scenarioId: source.scenarioId, clauseId: source.id, status: "inconclusive", evidence: [], reason: missingProgramReason }]));
     for (const id of job.requirementIds) if (!sources.some(source => source.requirementId === id)) outcomeMap.set(`${id}:missing-source`, {
       requirementId: id, scenarioId: "unknown", clauseId: `${id}:missing-source`, status: "inconclusive", evidence: [], reason: "Requirement has no source result clause" });
     let cleanupFailure: CheckerCleanupError | undefined;
@@ -179,6 +182,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
         const key = store.reviewKey({ requirements: job.requirements, contract: program.contract, program: program.descriptor,
           binding: reviewBindingDigest, promptDigest: reviewPromptDigest });
         const path = join(store.directory, "reviews", key + ".json");
+        if (!semanticReview) return { key, path, ref: undefined, review: undefined };
         try {
           const ref = JSON.parse(await readFile(path, "utf8")) as ContentRef;
           const review = await store.getJson<SemanticReview>(ref);
@@ -305,7 +309,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 }
                 return { output, receipts: result.receipts, ...(checks.length ? { checks } : {}) };
               } },
-            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Inspect returned checks and diagnostics; revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to independent semantic review and failure confirmation.",
+            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Inspect returned checks and diagnostics; revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled.",
               parameters: Type.Object({ contract: toolObjectSchema, source: Type.String({ minLength: 1 }) }),
               prepareArguments: prepareCheckArguments,
               async execute(raw) {
@@ -347,7 +351,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
                 }
                 return { program, checks, diagnostics };
               } },
-            { name: "finish", description: "Submit exact program references returned by check_program after inspecting its checks and diagnostics, or explain unverifiable clauses. Independent review uses those executions without another replay; faithful business failures are independently confirmed.",
+            { name: "finish", description: "Submit exact program references returned by check_program after inspecting its checks and diagnostics, or explain unverifiable clauses. When enabled, independent review uses those executions without another replay; faithful business failures are independently confirmed.",
               parameters: Type.Object({ programs: Type.Array(programSchema), unsupported: Type.Optional(Type.Array(Type.Object({
                 clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
                 attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
@@ -435,6 +439,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               capabilities: orderedCapabilities,
               programFormat: declaration.programFormat,
               initialState: await store.readTypedJson(job.initialState),
+              semanticReview,
               requirements: context,
               sourceClauses: discoverySources,
               ...(sourceIndexInfo ? { sourceIndex: sourceIndexInfo } : {}),
@@ -448,7 +453,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
             manifest.diagnostics.push(reason);
             for (const source of discoverySources) {
               const outcome = outcomeMap.get(source.id)!;
-              if (outcome.status === "inconclusive" && !unsupported.has(source.id)) outcome.reason = outcome.reason === "No reviewed program covered this source result"
+              if (outcome.status === "inconclusive" && !unsupported.has(source.id)) outcome.reason = outcome.reason === missingProgramReason
                 ? reason : `${outcome.reason}; Program correction failed: ${reason}`;
             }
             await progress({ stage: "diagnostic", reason });
@@ -478,7 +483,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               if (!source.trim()) throw new Error("Cannot replay an empty program");
               programs.set(canonicalJson(program), program); manifest.contracts.push(program.contract);
               const cached = await cachedReview(program);
-              if (job.mode !== "discover" && !cached.review?.approved) {
+              if (semanticReview && job.mode !== "discover" && !cached.review?.approved) {
                 for (const clause of contract.clauses) outcomeMap.get(clause.id)!.reason = "Replay requires an approved program; no model sessions are started";
                 continue;
               }
@@ -509,10 +514,10 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
           const applyReview = async (item: Executed): Promise<void> => {
             try {
               const { program, contract, source, outcomes, review, reviewRef } = item;
-              if (!review || !reviewRef) return;
-              manifest.reviews.push(reviewRef);
-              if (item.cached.review) await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
-              if (!review.approved) {
+              if (semanticReview && (!review || !reviewRef)) return;
+              if (reviewRef) manifest.reviews.push(reviewRef);
+              if (review && item.cached.review) await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
+              if (review && !review.approved) {
                 rejectedPrograms.push({ program, contract, source, clauseIds: review.clauseIds, reasons: review.reasons,
                   observations: item.projected?.filter(value => value.receipt.kind === "observation").map(value => reviewReceipt(value.receipt, value.payload)) });
                 review.clauseIds.forEach(id => rejectedClauses.add(id));
@@ -551,7 +556,8 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
               await progress({ stage: "diagnostic", programId: item.program.descriptor.id, clauseIds: item.contract.clauses.map(clause => clause.id), reason });
             }
           };
-          for (const item of executed.filter(value => value.review)) await applyReview(item);
+          for (const item of executed.filter(value => !semanticReview || value.review)) await applyReview(item);
+          if (!semanticReview) return rejectedClauses;
           const pending = executed.filter(item => !item.review);
           for (const item of pending) {
             const evidence = await Promise.all(item.refs.map(async ref => {
@@ -649,7 +655,7 @@ export function createCheckerAgent(options: { artifacts: ArtifactStore; adapter:
     }
     if (cleanupFailure) throw cleanupFailure;
     if (manifest.diagnostics.length) for (const outcome of outcomeMap.values()) {
-      if (outcome.status === "inconclusive" && outcome.reason === "No reviewed program covered this source result") outcome.reason = manifest.diagnostics.join("; ");
+      if (outcome.status === "inconclusive" && outcome.reason === missingProgramReason) outcome.reason = manifest.diagnostics.join("; ");
     }
     for (const ref of deduplicate(manifest.receipts)) await store.validateReceipt(job, await store.getJson<EvidenceReceipt>(ref));
     const report: CheckReport = { job: await store.putJson(job), snapshot: job.snapshot, binding: job.binding,

@@ -1,4 +1,5 @@
 import type { RuntimeAdapter } from "../../application/port.js";
+import { loadPrompt } from "../../prompt-assets.js";
 import { parseEvaluationPort, parseProbePortOverride, pickFreePort } from "./ports.js";
 import { installStarterScaffold } from "./scaffold.js";
 import { webBuilderCapabilities } from "./builder-capabilities.js";
@@ -7,6 +8,7 @@ import { minimalWebProjectSpec, npmExecutable, parseProjectSpec, resolveRuntimeC
 
 export const webApplicationAdapter: RuntimeAdapter = {
   id: "web", parseSpec: parseProjectSpec,
+  initializationInstructions: loadPrompt("adapters/web", "initialization"),
   defaultSpec: () => minimalWebProjectSpec(npmExecutable()),
   async configure(spec, env) {
     const evaluationPort = parseEvaluationPort(env);

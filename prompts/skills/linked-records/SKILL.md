@@ -1,6 +1,6 @@
 ---
 name: linked-records
-description: Implement related Web records with parent scopes, shared lists and details, hierarchical content, scoped identifiers or versioned relationships whose updates must remain consistent.
+description: Implement related records with parent scopes, shared lists and details, hierarchical content, scoped identifiers or versioned relationships whose updates must remain consistent.
 ---
 
 # 关联对象与一致性

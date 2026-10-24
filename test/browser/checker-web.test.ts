@@ -46,17 +46,17 @@ for (const mutant of [false, true]) test(`Checker executes two actors, linked re
     try {
       await runtime.run(`
         const alice = await browser.actor('alice'); const bob = await browser.actor('bob');
-        const initial = await alice.read({role:'status',name:'Order O-17'});
-        const seatsBefore = await alice.read({role:'status',name:'Train T-6 seats'});
+        const initial = await alice.getByRole('status',{name:'Order O-17',exact:true}).innerText();
+        const seatsBefore = await alice.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();
         await check.precondition('initial',[initial.id]);
-        await alice.click({role:'button',name:'Cancel O-17'},'cancel');
-        await bob.reload('refresh');
-        for (const [clause, locator] of [['status',{role:'status',name:'Order O-17'}], ['seats',{role:'status',name:'Train T-6 seats'}]]) {
-          const observed = await bob.read(locator); await check.expect(clause,[observed.id]);
+        await check.action('cancel',()=>alice.getByRole('button',{name:'Cancel O-17',exact:true}).click());
+        await check.action('refresh',()=>bob.reload());
+        for (const [clause, locator] of [['status',bob.getByRole('status',{name:'Order O-17',exact:true})], ['seats',bob.getByRole('status',{name:'Train T-6 seats',exact:true})]]) {
+          const observed = await locator.innerText(); await check.expect(clause,[observed.id]);
         }
-        await alice.reload('refresh'); const persisted = await alice.read({role:'status',name:'Order O-17'});
+        await check.action('refresh',()=>alice.reload()); const persisted = await alice.getByRole('status',{name:'Order O-17',exact:true}).innerText();
         await check.expect('persist',[persisted.id]);
-        const seatsAfter = await alice.read({role:'status',name:'Train T-6 seats'});
+        const seatsAfter = await alice.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();
         await check.expect('relation',[seatsBefore.id,seatsAfter.id],'(observations,expected)=>Number(observations[1])===Number(observations[0])+expected.delta');
       `, { signal: new AbortController().signal, timeoutMs: 15_000 });
       assert.deepEqual(events.filter((event) => event.kind === "assertion").map((event) => event.assertion), [
@@ -65,15 +65,13 @@ for (const mutant of [false, true]) test(`Checker executes two actors, linked re
       ]);
       assert.equal(events.find((event) => event.kind === "precondition")?.payload.result, "satisfied");
       assert.equal(browser.contexts().length, 2);
-      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.click({role:'status'});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /exactly one/);
-      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.read({role:'status',name:'Order O-17',exact:true});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /Locator field is not allowed/);
-      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.read({label:'Order O-17',name:'ignored'});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /Locator field is not allowed/);
+      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.getByRole('status').click();`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /strict mode violation/);
       await assert.rejects(runtime.run(`await check.expect('status',['forged-id']);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /unknown observations/);
       await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.goto('file:///C:/private');`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /authorized/);
       await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.goto('/source.js');`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /authorized/);
-      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.download({role:'link',name:'Download source'});`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /authorized UTF-8 business file/);
+      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); const pending=p.waitForEvent('download');await p.getByRole('link',{name:'Download source',exact:true}).click();await (await pending).read();`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /authorized UTF-8 business file/);
       const assertionsBefore = events.filter((event) => event.kind === "assertion").length;
-      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); const o=await p.read({role:'status',name:'Train T-6 seats'}); await check.expect('relation',[o.id],'()=>{while(true){}}');`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /interrupt|timed out/);
+      await assert.rejects(runtime.run(`const p=await browser.actor('alice'); const o=await p.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText(); await check.expect('relation',[o.id],'()=>{while(true){}}');`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /interrupt|timed out/);
       assert.equal(events.filter((event) => event.kind === "assertion").length, assertionsBefore);
     } finally { await runtime.close(); assert.equal(browser.contexts().length, 0); await browser.close(); }
   });
@@ -87,10 +85,10 @@ test("Checker proxy reads named frames, new windows and actual download content"
     try {
       const result = await runtime.run(`
         const page = await browser.actor('alice');
-        const framed = await page.frame('details').read({role:'status'});
-        const opened = await page.popup({role:'link',name:'Open order'});
-        const order = await opened.read({role:'status',name:'Order O-17'});
-        const download = await page.download({role:'link',name:'Export order'});
+        const framed = await page.frameLocator('iframe[name=details]').getByRole('status').innerText();
+        const openedPending=page.waitForEvent('popup');await page.getByRole('link',{name:'Open order',exact:true}).click();const opened=await openedPending;
+        const order = await opened.getByRole('status',{name:'Order O-17',exact:true}).innerText();
+        const downloadPending=page.waitForEvent('download');await page.getByRole('link',{name:'Export order',exact:true}).click();const download=await (await downloadPending).read();
         return [framed.value,order.value,download.value];
       `, { signal: new AbortController().signal, timeoutMs: 15_000 });
       assert.deepEqual(result, ["frame-ready", "unpaid", "Order O-17: unpaid"]);
@@ -111,15 +109,15 @@ test("Checker supports relational GIVEN checks and role counts that exclude reta
     try {
       const result = await runtime.run(`
         const p=await browser.actor('alice');
-        const order=await p.read({role:'status',name:'Order O-17'});
-        const seats=await p.read({role:'status',name:'Train T-6 seats'});
+        const order=await p.getByRole('status',{name:'Order O-17',exact:true}).innerText();
+        const seats=await p.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();
         const given=await check.precondition('given',[order.id,seats.id],
           '(values,expected)=>values[0]===expected.order && Number(values[1])===expected.seats');
-        const hiddenRoles=await p.count({role:'textbox',name:'Hidden editor'});
-        const retainedDom=await p.count({testId:'hidden-editor'});
-        const visible=await p.read({testId:'hidden-editor'},'visible');
-        const ariaHiddenRoles=await p.count({role:'textbox',name:'Aria hidden editor'});
-        const ariaHiddenVisible=await p.read({testId:'aria-hidden-editor'},'visible');
+        const hiddenRoles=await p.getByRole('textbox',{name:'Hidden editor',exact:true}).count();
+        const retainedDom=await p.getByTestId('hidden-editor').count();
+        const visible=await p.getByTestId('hidden-editor').isVisible();
+        const ariaHiddenRoles=await p.getByRole('textbox',{name:'Aria hidden editor',exact:true}).count();
+        const ariaHiddenVisible=await p.getByTestId('aria-hidden-editor').isVisible();
         return {passed:given.passed,roleCount:hiddenRoles.value,domCount:retainedDom.value,visible:visible.value,
           ariaHiddenRoleCount:ariaHiddenRoles.value,ariaHiddenVisible:ariaHiddenVisible.value};
       `, { signal: new AbortController().signal, timeoutMs: 5_000 });
@@ -129,8 +127,8 @@ test("Checker supports relational GIVEN checks and role counts that exclude reta
       assert.equal(given.payload.result, "satisfied");
       for (const checkpoint of ["scalar", "pattern"]) await assert.rejects(runtime.run(`
         const p=await browser.actor('alice');
-        const order=await p.read({role:'status',name:'Order O-17'});
-        const seats=await p.read({role:'status',name:'Train T-6 seats'});
+        const order=await p.getByRole('status',{name:'Order O-17',exact:true}).innerText();
+        const seats=await p.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();
         await check.precondition('${checkpoint}',[order.id,seats.id]);
       `, { signal: new AbortController().signal, timeoutMs: 5_000 }), /requires one observation/);
       assert.equal(events.filter(event => event.kind === "precondition").length, 1, "invalid test wiring does not emit a business violation");
@@ -176,28 +174,28 @@ test("Checker Web runtime covers common input, pointer and observation operation
       const page = await browser.actor('alice');
       await page.goto('/workspace?run=1');
       const url = await page.url();
-      const count = await page.count({role:'listitem'});
-      const state = await page.attribute({role:'status',name:'status'}, 'data-state');
-      const color = await page.style({role:'status',name:'status'}, 'color');
+      const count = await page.getByRole('listitem').count();
+      const state = await page.getByRole('status',{name:'status',exact:true}).getAttribute('data-state');
+      const color = await page.getByRole('status',{name:'status',exact:true}).computedStyle('color');
       await page.clipboard.writeText('North\\t800');
       const clipboard = await page.clipboard.readText();
-      await page.focus({label:'Name'}); await page.fill({label:'Name'}, 'Ada'); await page.blur({label:'Name'});
-      await page.setChecked({label:'Enabled'}, false); await page.setChecked({label:'Enabled'}, true);
-      await page.select({label:'Tags'}, ['a','b']);
-      await page.upload({label:'Import file'}, [{name:'notes.txt',mimeType:'text/plain',text:'uploaded'}]);
-      await page.hover({role:'button',name:'Hover target'});
-      await page.doubleClick({role:'button',name:'Double target'});
-      await page.rightClick({role:'button',name:'Context target'});
-      await page.dragTo({role:'listitem',name:'A'}, {role:'listitem',name:'B'});
-      await page.scroll(0, 200);
-      await page.waitFor({role:'status',name:'status'}, 'visible');
-      const binary = await page.download({role:'link',name:'Binary'}, undefined, 'base64');
+      await page.getByLabel('Name',{exact:true}).focus(); await page.getByLabel('Name',{exact:true}).fill('Ada'); await page.getByLabel('Name',{exact:true}).blur();
+      await page.getByLabel('Enabled',{exact:true}).setChecked(false); await page.getByLabel('Enabled',{exact:true}).setChecked(true);
+      await page.getByLabel('Tags',{exact:true}).selectOption(['a','b']);
+      await page.getByLabel('Import file',{exact:true}).setInputFiles([{name:'notes.txt',mimeType:'text/plain',text:'uploaded'}]);
+      await page.getByRole('button',{name:'Hover target',exact:true}).hover();
+      await page.getByRole('button',{name:'Double target',exact:true}).dblclick();
+      await page.getByRole('button',{name:'Context target',exact:true}).click({button:"right"});
+      await page.getByRole('listitem',{name:'A',exact:true}).dragTo(page.getByRole('listitem',{name:'B',exact:true}));
+      await page.mouse.wheel(0, 200);
+      await page.getByRole('status',{name:'status',exact:true}).waitFor({state:'visible'});
+      const binaryPending=page.waitForEvent('download');await page.getByRole('link',{name:'Binary',exact:true}).click();const binary=await (await binaryPending).read('base64');
       return {url:url.value, count:count.value, state:state.value, color:color.value, clipboard:clipboard.value, binary:binary.value};
     `, { signal: new AbortController().signal, timeoutMs: 15_000 });
     assert.deepEqual(result, { url: `http://127.0.0.1:${address.port}/workspace?run=1`, count: 2, state: "ready", color: "rgb(1, 2, 3)", clipboard: "North\t800", binary: "AAEC/w==" });
     const methods = events.filter((event) => event.kind === "action").map((event) => event.payload.method);
-    for (const method of ["goto", "clipboardWrite", "focus", "fill", "blur", "setChecked", "select", "upload", "hover", "doubleClick", "rightClick", "dragTo", "scroll", "waitFor", "download"]) assert.ok(methods.includes(method), method);
-    const upload = events.find((event) => event.kind === "action" && event.payload.method === "upload");
+    for (const method of ["playwright.page.goto", "clipboardWrite", "playwright.locator.focus", "playwright.locator.fill", "playwright.locator.blur", "playwright.locator.setChecked", "playwright.locator.selectOption", "playwright.locator.setInputFiles", "playwright.locator.hover", "playwright.locator.dblclick", "playwright.locator.click", "playwright.locator.dragTo", "playwright.mouse.wheel"]) assert.ok(methods.includes(method), method);
+    const upload = events.find((event) => event.kind === "action" && event.payload.method === "playwright.locator.setInputFiles");
     assert.deepEqual(upload?.payload.files, [{ name: "notes.txt", bytes: 8, mimeType: "text/plain" }]);
     assert.equal(JSON.stringify(upload?.payload).includes("uploaded"), false);
   } finally {
@@ -218,7 +216,7 @@ test("download filenames are independent observations and reject a wrong expecte
     try {
       const result = await runtime.run(`
         const page = await browser.actor('alice');
-        const download = await page.download({role:'link',name:'Export order'});
+        const downloadPending=page.waitForEvent('download');await page.getByRole('link',{name:'Export order',exact:true}).click();const download=await (await downloadPending).read();
         await check.expect('filename',[download.filename.id]);
         await check.expect('wrong-name',[download.filename.id]);
         return {name:download.filename.value,content:download.value};
@@ -245,10 +243,10 @@ test("host fixtures supply real oversized files, narrow viewports and isolated s
   try {
     const result = await runtime.run(`
       const page = await browser.actor('alice');
-      await page.setViewport({width:375,height:700});
+      await page.setViewportSize({width:375,height:700});
       const viewport = await page.viewport();
-      await page.upload({label:'Import'},[{name:'oversized.png',fixture:{kind:'png',bytes:6*1024*1024}}]);
-      const file = await page.read({role:'status'});
+      await page.getByLabel('Import',{exact:true}).setInputFiles([{name:'oversized.png',fixture:{kind:'png',bytes:6*1024*1024}}]);
+      const file = await page.getByRole('status').innerText();
       return {viewport:viewport.value,file:JSON.parse(file.value)};
     `, { signal: new AbortController().signal, timeoutMs: 10_000 });
     assert.deepEqual(result, { viewport: { width: 375, height: 700, scrollWidth: 375, scrollHeight: 700 }, file: { name: "oversized.png", size: 6 * 1024 * 1024, type: "image/png" } });
@@ -258,7 +256,7 @@ test("host fixtures supply real oversized files, narrow viewports and isolated s
       const bitmap = await createImageBitmap(file);
       return { width: bitmap.width, height: bitmap.height };
     }), { width: 1, height: 1 }, "generated >5 MB input must decode as an actual image");
-    await runtime.run(String.raw`const page=await browser.actor('alice'); await page.upload({label:'Import'},[{name:'large.md',mimeType:'text/markdown',fixture:{kind:'text',bytes:6*1024*1024,text:'# Test\n'}}]);`, { signal: new AbortController().signal, timeoutMs: 10_000 });
+    await runtime.run(String.raw`const page=await browser.actor('alice'); await page.getByLabel('Import',{exact:true}).setInputFiles([{name:'large.md',mimeType:'text/markdown',fixture:{kind:'text',bytes:6*1024*1024,text:'# Test\n'}}]);`, { signal: new AbortController().signal, timeoutMs: 10_000 });
     assert.equal(await page.evaluate(async () => (await document.querySelector('input')!.files![0]!.text()).length), 6 * 1024 * 1024);
     const quota = await runtime.run(`const page=await browser.actor('alice'); return (await page.storage.fill(16*1024*1024)).value;`, { signal: new AbortController().signal, timeoutMs: 10_000 }) as { quotaExceeded: boolean; writtenBytes: number };
     assert.equal(quota.quotaExceeded, true); assert(quota.writtenBytes > 0);
@@ -266,8 +264,8 @@ test("host fixtures supply real oversized files, narrow viewports and isolated s
     await runtime.run(`await browser.actor('bob');`, { signal: new AbortController().signal, timeoutMs: 10_000 });
     assert.equal(await browser.contexts()[1]!.pages()[0]!.evaluate(() => Object.keys(localStorage).some(key => key.startsWith('checker-fixture:'))), false);
     assert(JSON.stringify(events).length < 10_000, "large fixture contents never enter receipts or QuickJS output");
-    await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.upload({label:'Import'},[{name:'bad.png',text:'fake',fixture:{kind:'png',bytes:128}}]);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /exactly one/);
-    await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.upload({label:'Import'},[{name:'bad.png',fixture:{kind:'png',bytes:9*1024*1024}}]);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /8 MiB/);
+    await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.getByLabel('Import',{exact:true}).setInputFiles([{name:'bad.png',text:'fake',fixture:{kind:'png',bytes:128}}]);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /exactly one/);
+    await assert.rejects(runtime.run(`const p=await browser.actor('alice'); await p.getByLabel('Import',{exact:true}).setInputFiles([{name:'bad.png',fixture:{kind:'png',bytes:9*1024*1024}}]);`, { signal: new AbortController().signal, timeoutMs: 5_000 }), /8 MiB/);
   } finally {
     await runtime.close(); await browser.close(); server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));

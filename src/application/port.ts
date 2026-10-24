@@ -66,6 +66,7 @@ export interface ScaffoldResult {
 /** Trusted, bundled implementation selected by a project declaration. */
 export interface RuntimeAdapter {
   id: string;
+  initializationInstructions?: string;
   parseSpec(raw: unknown, origin?: string): ProjectSpec;
   defaultSpec(): ProjectSpec;
   configure(spec: ProjectSpec, env: Record<string, string | undefined>): Promise<ApplicationContract>;
