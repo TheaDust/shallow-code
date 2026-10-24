@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { ModelRuntime, SessionManager, SettingsManager, DefaultResourceLoader, createAgentSession,
+import { ModelRuntime, SessionManager, DefaultResourceLoader, createAgentSession,
   createReadToolDefinition, createEditToolDefinition, createWriteToolDefinition, createBashToolDefinition,
   VERSION, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { GatewayConfig } from "../runtime-config.js";
@@ -14,7 +14,8 @@ import { BUILDER_SKILLS_DIR } from "./skills.js";
 import { PiExecutionCollector, type ExecutionSummary } from "./pi-execution-stats.js";
 import { piProviderModel } from "./pi-model-config.js";
 import { opencodeSessionHeaders } from "../gateway-headers.js";
-import { providerErrorMessage } from "../gateway-failure.js";
+import { GatewayRequestError, providerErrorMessage, type GatewayFailure } from "../gateway-failure.js";
+import { createPiGateway, piGatewaySettings } from "../pi-gateway.js";
 import type { BuilderCapabilityPack } from "../application/port.js";
 import type { ModelRates } from "../model-usage.js";
 
@@ -40,6 +41,7 @@ export interface PiPromptResult {
   summary: string;
   /** Provider/SDK errors only; assistant text must not classify gateway failures. */
   providerError?: string;
+  gatewayFailure?: GatewayFailure;
   terminationReason?: BuilderResult["terminationReason"];
 }
 
@@ -77,7 +79,7 @@ function createTools(input: PiSessionOptions, skillFiles: readonly string[], cap
   return tools;
 }
 
-/** The only module that imports Pi SDK types, tools and session lifecycle. */
+/** Builder-specific SDK tools, session persistence and execution statistics. */
 export async function createPiSession(input: PiSessionOptions,
   onProgress: (snapshot: PiSessionSnapshot) => void, capabilities?: BuilderCapabilityPack): Promise<PiSession> {
   const agentDir = join(input.sessionDir, "config");
@@ -90,8 +92,7 @@ export async function createPiSession(input: PiSessionOptions,
       opencodeSessionHeaders(input.gateway.baseUrl, randomUUID()), input.modelCost)],
   });
   await modelRuntime.setRuntimeApiKey("shallow-gateway", input.gateway.apiKey);
-  const settingsManager = SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
-    provider: { maxRetries: 0, timeoutMs: input.timeoutMs } }, compaction: { enabled: true }, enableInstallTelemetry: false });
+  const settingsManager = piGatewaySettings(input.timeoutMs);
   const resourceLoader = new DefaultResourceLoader({ cwd: input.outputDir, agentDir, settingsManager,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     additionalSkillPaths: [BUILDER_SKILLS_DIR, ...(capabilities?.skillDirectories ?? [])],
@@ -164,19 +165,21 @@ export async function createPiSession(input: PiSessionOptions,
     snapshot,
     async prompt(promptText, images = []) {
       let promptError: unknown;
-      try {
-        await session.prompt(promptText, { images, expandPromptTemplates: false });
-        // Session-level idle includes automatic compaction, retry and continuation.
-        await session.waitForIdle();
-      } catch (error) { promptError = error; }
+      const gateway = createPiGateway(input.gateway.baseUrl,
+        raw => process.stderr.write(`[ShallowCode] 检测到损坏的网关 SSE 事件：${raw}\n`));
+      try { await gateway.prompt(session, promptText, { images }); }
+      catch (error) { promptError = error; }
+      finally { gateway.dispose(); }
+      const errorText = promptError ? String(promptError instanceof GatewayRequestError ? promptError.cause : promptError) : undefined;
       const last = lastAssistantResponse ?? session.messages.at(-1);
       const text = last?.role === "assistant" ? last.content.filter(part => part.type === "text").map(part => part.text).join("\n").trim() : "";
       const success = !promptError && last?.role === "assistant" && last.stopReason === "stop" && Boolean(text)
         && !last.content.some(part => part.type === "toolCall");
       return {
         outcome: success ? "completed" : "failed",
-        summary: promptError ? String(promptError) : last?.role === "assistant" ? last.errorMessage || text || "Pi returned an empty terminal response" : "Pi did not reach a terminal assistant response",
-        providerError: providerErrorMessage(promptError ? String(promptError) : last?.role === "assistant" ? last.errorMessage : undefined),
+        summary: errorText ?? (last?.role === "assistant" ? last.errorMessage || text || "Pi returned an empty terminal response" : "Pi did not reach a terminal assistant response"),
+        providerError: providerErrorMessage(errorText ?? (last?.role === "assistant" ? last.errorMessage : undefined)),
+        ...(promptError instanceof GatewayRequestError ? { gatewayFailure: promptError.gatewayFailure } : {}),
         ...(!promptError && last?.role !== "assistant" ? { terminationReason: "missing_terminal_response" as const } :
           !promptError && last?.role === "assistant" && last.stopReason === "length" ? { terminationReason: "model_length_limit" as const } :
           !promptError && last?.role === "assistant" && last.stopReason === "stop" && !text ? { terminationReason: "empty_terminal_response" as const } : {}),

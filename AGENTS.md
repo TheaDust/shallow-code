@@ -46,14 +46,15 @@
 | --- | --- |
 | 生产装配、CLI、项目运行配置 | `index.ts`、`bin/shallow.mjs`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
 | 需求解析、原文阶段分析、依赖、增量范围 | `src/catalog.ts`、`src/requirement-text.ts`、`src/requirement-analysis.ts`、`src/evolution.ts`、`src/scheduler.ts` |
-| 功能分组 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`prompts/planning/feature-grouping.md` |
+| 功能分组、Pi Planner 与网关恢复 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`src/feature-grouping-tools.ts`、`prompts/planning/feature-grouping.md` |
 | 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/controller-metadata.ts`、`src/run-record.ts`、`src/application/candidate-runtime.ts`、`src/git-ops.ts` |
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/skills/` |
 | 应用适配、配置、运行与 Builder 能力 | `src/application/port.ts`、`registry.ts`、`candidate-runtime.ts`；`src/adapters/web/`；注册装配 `src/adapters/index.ts`、`src/adapters/checker.ts` |
 | Checker 调度、产物、证据与恢复 | `src/checker-pipeline.ts`、`src/snapshot-store.ts`、`src/checker/port.ts`、`queue.ts`、`checkpoints.ts`、`artifacts.ts`、`agent.ts`、`evidence.ts`（后六项在 `src/checker/`） |
 | Checker 模型、源码索引、Web 能力与程序 | `src/checker/model.ts`、`src/checker/source-index.ts`、`src/checker/adapters/web/`（权限与原生调用见 `playwright-interface.ts`）、`prompts/checker/` |
 | 事件、日志、进度记录 | `src/types.ts`、`src/run-state.ts`、`src/human-log.ts`、`src/progress-journal.ts`、`src/diagnostics.ts` |
-| 模型用量与单价 | `src/model-usage.ts`、`src/builder/pi-execution-stats.ts`、`src/planner-json-client.ts` |
+| 三类 Pi agent 的网关重试、SSE、取消与故障分类 | `src/pi-gateway.ts`、`src/gateway-failure.ts`、`src/gateway-recovery.ts`、`src/builder/sse-resilience.ts` |
+| 模型用量与单价 | `src/model-usage.ts`、`src/builder/pi-execution-stats.ts` |
 | 继承数据 | `src/inherited-data.ts` |
 
 目标应用的 `ARCHITECTURE.md` 交接合同位于 `prompts/system/architecture-notes.md`；修改跨会话交接时读取该资产。
@@ -69,7 +70,7 @@ npm run test:all
 
 按改动选择回归入口：
 
-- 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/evolution.test.ts`。
+- 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/pi-feature-grouper.test.ts`、`test/evolution.test.ts`。
 - 应用适配与运行：`test/application.test.ts`、`test/application-boundaries.test.ts`、`test/web-runtime.test.ts`、`test/project-spec.test.ts`、`test/candidate-runtime.test.ts`。
 - Checker：`test/checker-core.test.ts`、`test/checker-agent.test.ts`、`test/checker-pipeline.test.ts`、`test/checker-entry.test.ts`、`test/checker-web-runtime.test.ts`、`test/snapshot-store.test.ts` 及 `test/browser/checker-*.test.ts`。
 - 管线、工作区与交付：`test/project-workspace.test.ts`、`test/run-record.test.ts`、`test/entry.test.ts`、`test/candidate-runtime.test.ts`、`test/inherited-data.test.ts`。

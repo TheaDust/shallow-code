@@ -141,7 +141,7 @@ const PRELUDE = String.raw`
       render: (sourceId, options = {}) => auxiliary('render',{sourceId,options}),
     }), actor, window, eventObservation);
   };
-  globalThis.browser = Object.freeze({ actor: async name => {await call('actor', {actor:name}); return page(name);} });
+  globalThis.browser = Object.freeze({ actor: async (name, options) => {await call('actor', {actor:name, options}); return page(name);} });
   globalThis.check = Object.freeze({ action: checkpointAction, expect: (clauseId, observationIds, predicate) => call('expect', {clauseId, observationIds, predicate}), precondition: (checkpointId, observationIds, predicate) => call('precondition', {checkpointId, observationIds, predicate}) });
 })();`;
 
@@ -159,7 +159,7 @@ export interface WebRuntimeEvent {
   payload: Record<string, unknown>;
   attachments?: Array<{ bytes: Buffer; mediaType: string }>;
 }
-interface Actor { context: BrowserContext; windows: Map<string, Page> }
+interface Actor { context: BrowserContext; windows: Map<string, Page>; hasTouch: boolean }
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const DOWNLOAD_TEXT_EXTENSIONS = /\.(?:txt|csv|tsv|json|xml|html|md)$/i;
 
@@ -239,14 +239,19 @@ export class WebProgramRuntime {
     if (!this.active) throw new Error("Web case is closed; handles have expired");
     if (method === "actor") {
       const name = string(input.actor, "actor");
+      const options = input.options as { hasTouch?: boolean } | undefined;
+      if (options !== undefined && (!options || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some(key => key !== "hasTouch") || options.hasTouch !== undefined && typeof options.hasTouch !== "boolean")) throw new Error("Actor options only accept a boolean hasTouch");
+      const existing = this.actors.get(name);
+      if (existing && options?.hasTouch !== undefined && options.hasTouch !== existing.hasTouch) throw new Error("Actor hasTouch is fixed at creation");
       if (!this.actors.has(name)) {
         if (this.actors.size + this.openingActors.size >= 8) throw new Error("Web case actor limit exceeded");
         if (this.openingActors.has(name)) throw new Error("Actor creation is already pending");
         this.openingActors.add(name);
-        const context = await this.browser.newContext({ acceptDownloads: true, serviceWorkers: "block" });
+        const hasTouch = options?.hasTouch ?? false;
+        const context = await this.browser.newContext({ acceptDownloads: true, serviceWorkers: "block", hasTouch });
         if (!this.active) { await context.close(); throw new Error("Web case closed during actor creation"); }
         await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(this.baseUrl).origin });
-        this.actors.set(name, { context, windows: new Map() });
+        this.actors.set(name, { context, windows: new Map(), hasTouch });
         this.openingActors.delete(name);
         await context.tracing.start({ screenshots: true, snapshots: true, sources: false });
         context.setDefaultTimeout(this.timeoutMs);
@@ -262,7 +267,7 @@ export class WebProgramRuntime {
         if (!this.active) { await context.close(); throw new Error("Web case closed during actor creation"); }
         this.actors.get(name)!.windows.set("main", page);
         await page.goto(this.baseUrl, { waitUntil: "load", timeout: this.timeoutMs });
-        await this.emit({ kind: "observation", inputs: [], payload: { method, actor: name, value: "actor-created" } });
+        await this.emit({ kind: "observation", inputs: [], payload: { method, actor: name, value: "actor-created", options: { hasTouch } } });
       }
       return { actor: name };
     }

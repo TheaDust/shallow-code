@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GatewayRequestError, classifyGatewayFailure, httpGatewayFailure, observeGatewayFailures,
-  providerErrorMessage, providerGatewayFailure, type GatewayFailure } from "../src/gateway-failure.js";
+  INCOMPLETE_GATEWAY_STREAM, providerErrorMessage, providerGatewayFailure, type GatewayFailure } from "../src/gateway-failure.js";
 import { GatewayRecovery, GatewayUnavailableError } from "../src/gateway-recovery.js";
 
 function fixture() {
@@ -300,4 +300,12 @@ test("Gateway observation preserves response bodies and clears errors after a su
     await fetch("https://gateway.invalid/v1/chat/completions");
     assert.equal(observer.failure(), undefined);
   } finally { observer.uninstall(); globalThis.fetch = original; }
+});
+
+test("Repeated stream truncation remains retryable after Pi SDK retries are exhausted", () => {
+  assert.deepEqual(providerGatewayFailure(INCOMPLETE_GATEWAY_STREAM), { kind: "unavailable", retryable: true });
+  assert.deepEqual(providerGatewayFailure(`Error: ${INCOMPLETE_GATEWAY_STREAM}`), { kind: "unavailable", retryable: true });
+  assert.equal(providerGatewayFailure("unexpected tool failure"), undefined);
+  assert.equal(providerGatewayFailure(`The model says ${INCOMPLETE_GATEWAY_STREAM}`), undefined);
+  assert.deepEqual(providerGatewayFailure(`401: ${JSON.stringify({ message: INCOMPLETE_GATEWAY_STREAM })}`), httpGatewayFailure(401));
 });

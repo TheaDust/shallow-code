@@ -14,11 +14,14 @@ await check.expect("input-result", [actual.id]);
 ```
 
 - 定位器同步构造，支持 getByRole/getByLabel/getByText/getByTestId/getByPlaceholder/getByAltText/getByTitle、locator(selector)、frameLocator(selector)，以及链式 filter({hasText,has,hasNotText,hasNot,visible})、and、or。文本参数可用 RegExp。filter 的 has/hasNot 接受同一 actor/window 的定位器，并遵循 Playwright 的同 frame 约束。按实际 DOM、可访问性或截图观察选择稳定且唯一的定位方式；原文明确要求 role/label 时保留该语义与完整身份。单目标动作与读取使用 Playwright 严格定位及自动等待；first/last/nth 不开放。
-- 控件动作直接使用 locator.click/fill/press/check/setChecked/selectOption/hover/dblclick/dragTo/setInputFiles 等。鼠标与键盘使用 page.mouse、page.keyboard，支持 Canvas 的坐标交互；坐标应来自实际 boundingBox 或截图。force/trial 不开放。超时受 case 与宿主上限限制，timeout:0 不会关闭宿主超时。
+- 控件动作直接使用 locator.click/fill/press/check/setChecked/selectOption/selectText/hover/dblclick/dragTo/setInputFiles 等。selectText 全选输入框或元素的文字，可接键盘输入验证替换。鼠标与键盘使用 page.mouse、page.keyboard，支持 Canvas 的坐标交互；坐标应来自实际 boundingBox 或截图。触屏身份支持 locator.tap 与 page.touchscreen.tap(x,y)，后者使用页面 CSS 坐标。force/trial 不开放。超时受 case 与宿主上限限制，timeout:0 不会关闭宿主超时。
 - **读取返回宿主观察 `{id,value}`**，这是与原生 Playwright 的主要差异：innerText/inputValue/getAttribute/isVisible/count/boundingBox/ariaSnapshot、page.url/title/viewportSize 和事件对象的读取均如此。定位器与事件对象本身不构成结果断言；使用观察 id 连接 check.precondition / check.expect。单次普通读取最多 64 KB，超限时缩小定位范围。count、allTextContents、allInnerTexts 可读取集合，单元素读取须唯一。isVisible/isHidden 可观察对象不存在。
 - **动作 checkpoint 使用 `check.action(checkpointId, async () => {...})`** 包裹原文规定的动作。回调内 await 每一步，宿主为已完成的动作记录 checkpoint；先监听事件，再执行对应动作。check.action 不支持嵌套或并发。waitFor/waitForURL/waitForLoadState 建立 condition，使用原生选项，不产生 action 收据。导航 goto/reload/goBack/goForward 与 setViewportSize 均使用原生参数。
+- 触屏身份在首次创建时使用 `browser.actor("phone", {hasTouch:true})`；hasTouch 缺省 false，同一身份创建后固定，后续省略选项会复用该身份。触屏能力与窗口尺寸分别设置。
+- `page.emulateMedia({media,colorScheme,reducedMotion,forcedColors,contrast})` 设置当前页面的媒体类型和系统偏好，使用原生取值；对应字段传 null 恢复默认模拟设置。根据需求准备 screen/print、浅色/深色、减少动画、强制色彩与对比度环境，通过实际样式、布局或截图检查应用响应；设置成功只证明环境设置动作完成。
+- `page.close({runBeforeUnload?,reason?})` 关闭当前页面；`page.isClosed()` 返回关闭状态的宿主观察。runBeforeUnload 为 true 时会触发卸载处理，原生调用完成时页面可能仍打开；需要时监听 dialog 并处理，再观察 close 事件和实际关闭状态。关闭 popup 后可以继续操作原页面。
 
-事件是一等对象，支持 filechooser、download、popup、dialog；waitForEvent 的选项仅支持 timeout。返回对象的 `eventObservation` 是宿主签发的 `{id,value:{event,detail}}`，可用来断言事件确实发生；事件监听不证明业务动作已完成。返回对象只属于当前 case、actor 与页面。例如原生文件选择：
+filechooser、download、popup、dialog 事件返回可操作的对象句柄；waitForEvent 的选项仅支持 timeout。返回对象的 `eventObservation` 是宿主签发的 `{id,value:{event,detail}}`，可用来断言事件确实发生；事件监听不证明业务动作已完成。返回对象只属于当前 case、actor 与页面。例如原生文件选择：
 
 ```javascript
 const pending = page.waitForEvent("filechooser");
@@ -33,6 +36,9 @@ await check.action("import-when", async () => {
 - FileChooser.setFiles 与 Locator.setInputFiles 接受 `{name,mimeType?,text?}`、`{name,mimeType?,base64?}` 或数组，`[]` 清空文件选择，文件名为普通名称。内联文件每个最多 4 MiB。大文件使用 `{name,mimeType?,fixture:{kind:'text'|'png',bytes,text?}}`，宿主生成，每个最多 8 MiB，单次合计 16 MiB。text 模式为有界 ASCII；png 为有效 1×1 图片，以合法文本块达到指定字节数（至少 128 bytes）。text/base64/fixture 三选一；文件路径不开放。
 - 下载使用 `const pending=page.waitForEvent('download'); await link.click(); const download=await pending;`。`download.suggestedFilename()` 返回文件名观察，`download.read('text'|'base64')` 返回 `{id,value,filename:{id,value}}`，默认 text。内容用 id 断言，文件名用 filename.id 或 suggestedFilename 的观察 id 独立断言。每个文件最多 4 MiB，case 内二进制合计 16 MiB。read 为证据读取扩展，文件系统方法不开放。
 - popup 事件返回新 page，继续使用相同接口。dialog 事件返回对话框对象，提供 message/type/defaultValue 观察及 accept/dismiss；可能阻塞点击时，先保存 click 的 Promise，处理对话框后再 await 点击完成。
+- `waitForEvent('close'|'domcontentloaded'|'load')` 返回 `{id,value:{event,detail}}` 生命周期观察；应在关闭或导航动作前监听。load/domcontentloaded 证明浏览器生命周期事件，应用异步业务完成仍需观察对应状态。
+- `waitForEvent('console')` 返回控制台消息对象，其 type/text/location 方法返回宿主观察；`waitForEvent('pageerror')` 返回异常观察 `{id,value:{event,detail:{name,message,truncated}}}`。事件摘要中的控制台正文和异常消息最多保留 4096 字符，并标记 truncated。observeEvents 同样支持 console/pageerror，可观察某段动作内及随后窗口的数量；日志和错误按需求解释，业务结果通过对应 UI 或内容证据确认。
+- `download.cancel()` 取消该下载，`download.failure()` 返回宿主观察，完成成功为 null，成功取消为字符串 canceled；取消已完成的下载可能没有效果，应检查真实结果。failure 会等待下载结束，受当前 case 的总时限约束。
 - “没有下载”等负向事件用 `page.observeEvents(event,{durationMs},actionCallback)`，返回 `{id,value:{count,events,truncated,startedAt,actionCompletedAt,endedAt,durationMs}}`。监听在回调前建立，覆盖回调及其完成后的完整 durationMs 窗口，收据关联窗口内实际完成的动作；空回调不会生成证据。count 为实际总数，events 最多保留前 100 项，超出时 truncated 为 true。只证明该动作和窗口内的事件数量，持续时间来自需求或合理的异步等待条件；超时异常不能替代零事件观察。
 
 ```javascript

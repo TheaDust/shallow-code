@@ -1310,3 +1310,70 @@ test("production Pi Checker requires a successful finish and bounds same-session
     }
   });
 });
+
+for (const failure of ["reset", "rate_limit", "truncated"] as const) {
+  test(`Pi Checker preserves tool results through exhausted SDK retries: ${failure}`, { timeout: 20_000 }, async () => {
+    const f = await fixture();
+    let requests = 0, inspections = 0, submissions = 0;
+    const errors: unknown[] = [], waits: number[] = [];
+    const server = createServer(async (req, res) => {
+      try {
+        const parts: Buffer[] = []; for await (const part of req) parts.push(Buffer.from(part));
+        const body = JSON.parse(Buffer.concat(parts).toString());
+        requests++;
+        const failures = failure === "reset" ? 6 : 3;
+        if (requests > 1 && requests <= failures + 1) {
+          if (failure === "truncated") {
+            res.writeHead(200, { "content-type": "text/event-stream" });
+            res.end('data: {"choices":[{"delta":{"tool_calls":');
+          } else {
+            res.writeHead(failure === "reset" ? 400 : 429,
+              { "content-type": "application/json", ...(failure === "rate_limit" ? { "retry-after": "40" } : {}) });
+            res.end(JSON.stringify({ message: failure === "reset"
+              ? '400 Post "https://api.example/v1/chat/completions": read tcp 127.0.0.1:60000->127.0.0.1:443: read: connection reset by peer (request id: same-session)'
+              : "rate limit" }));
+          }
+          return;
+        }
+        const tool = requests === 1 ? "inspect" : "finish";
+        if (tool === "finish") {
+          assert.match(JSON.stringify(body.messages), /OBSERVED_STATE_SENTINEL/);
+          assert.match(JSON.stringify(body.messages), /ORIGINAL_REQUIREMENT_SENTINEL/);
+        }
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", tool_calls: [{ index: 0,
+          id: `call-${requests}`, type: "function", function: { name: tool, arguments: "{}" } }] }, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 10, completion_tokens: 3 } })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      } catch (error) { errors.push(error); res.writeHead(500); res.end(); }
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address(); assert(address && typeof address !== "string");
+      let now = 0;
+      const recovery = new GatewayRecovery({ now: () => now, sleep: async ms => { waits.push(ms); now += ms; } });
+      const usage: CheckerModelUsage[] = [];
+      const directory = join(f.directory, "sessions");
+      const model = createPiCheckerModel({ gateway: { baseUrl: `http://127.0.0.1:${address.port}/v1`, apiKey: "fixture", model: "fixture" },
+        sessionDir: directory, recovery, onUsage: item => usage.push(item) });
+      await model.run({ role: "exploration", job: f.job, signal: new AbortController().signal,
+        systemPrompt: "Inspect, then finish.", prompt: "ORIGINAL_REQUIREMENT_SENTINEL", tools: [
+          { name: "inspect", description: "Inspect once", parameters: Type.Object({}),
+            async execute() { inspections++; return { state: "OBSERVED_STATE_SENTINEL" }; } },
+          { name: "finish", description: "Submit", parameters: Type.Object({}),
+            async execute() { submissions++; return { accepted: true }; } },
+        ] });
+      assert.deepEqual(errors, []);
+      assert.equal(inspections, 1); assert.equal(submissions, 1);
+      assert.equal(requests, failure === "reset" ? 8 : 5);
+      assert.equal((await readdir(directory)).length, 1, "recovery must retain the same private session");
+      assert.equal(usage.length, 1, "the session is settled once across recovery");
+      assert.equal(waits.reduce((sum, ms) => sum + ms, 0), failure === "rate_limit" ? 40_000 : failure === "reset" ? 195_000 : 5_000);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await f.cleanup();
+    }
+  });
+}

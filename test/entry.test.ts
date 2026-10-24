@@ -152,6 +152,7 @@ test("Agent entry validates paths and passes bounded production context", async 
     assert.equal(exitCode, 0);
     assert.equal(received?.builderGateway.model, "provider/model");
     assert.equal(received?.checkerGateway.model, "provider/model");
+    assert.equal(received?.plannerGateway.model, "provider/model");
     assert.equal(received?.pipelineOptions.requirementsFile, join(dirname(received!.pipelineOptions.ledgerFile), "requirements", "requirements.yaml"));
     assert.equal(await readFile(received!.pipelineOptions.requirementsFile, "utf8"), await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
     assert.equal(received?.pipelineOptions.outputDir, outputDir);
@@ -350,6 +351,13 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
         "OPENAI_BASE_URL=https://file.example/v1",
         'MODEL="file/model"',
         "SHALLOW_CHECKER_MODEL=file/judge",
+        "SHALLOW_PLANNER_MODEL=file/planner",
+        "SHALLOW_PLANNER_API_KEY=planner-file-key",
+        "SHALLOW_PLANNER_BASE_URL=https://planner.example/v1",
+        "SHALLOW_PLANNER_COST_INPUT=1",
+        "SHALLOW_PLANNER_COST_OUTPUT=2",
+        "SHALLOW_PLANNER_COST_CACHE_READ=0.5",
+        "SHALLOW_PLANNER_COST_CACHE_WRITE=0",
         "SHALLOW_CHECKER_SEMANTIC_REVIEW=1",
         "SHALLOW_CHECKER_REPLAY=1",
         'SHALLOW_PROBE_PORT=3210',
@@ -380,16 +388,21 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
     assert.equal(received?.builderGateway.model, "file/model");
     assert.equal(received?.checkerGateway.model, "file/judge");
     assert.equal(received?.checkerGateway.apiKey, "file-key");
+    assert.deepEqual(received?.plannerGateway, { apiKey: "planner-file-key", baseUrl: "https://planner.example/v1", model: "file/planner" });
+    assert.deepEqual(received?.plannerModelCost, { input: 1, output: 2, cacheRead: 0.5, cacheWrite: 0 });
     assert.equal(received?.pipelineOptions.checker.semanticReview, true);
     assert.equal(received?.pipelineOptions.checker.replay, true);
     assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3210);
 
-    await main(argv, { MODEL: "env/model", SHALLOW_CHECKER_MODEL: "env/judge", SHALLOW_CHECKER_SEMANTIC_REVIEW: "0", SHALLOW_CHECKER_REPLAY: "0" }, execute, join(directory, "gateway.env"));
+    await main(argv, { MODEL: "env/model", SHALLOW_CHECKER_MODEL: "env/judge", SHALLOW_PLANNER_MODEL: "env/planner", SHALLOW_CHECKER_SEMANTIC_REVIEW: "0", SHALLOW_CHECKER_REPLAY: "0" }, execute, join(directory, "gateway.env"));
     assert.equal(received?.builderGateway.model, "env/model");
     assert.equal(received?.builderGateway.apiKey, "file-key");
     assert.equal(received?.checkerGateway.model, "env/judge");
+    assert.equal(received?.plannerGateway.model, "env/planner");
     assert.equal(received?.pipelineOptions.checker.semanticReview, false);
     assert.equal(received?.pipelineOptions.checker.replay, false);
+    await assert.rejects(main(argv, {}, async () => { throw new Error("planner failed with planner-file-key"); }, join(directory, "gateway.env")),
+      error => error instanceof Error && error.message.includes("planner failed") && !error.message.includes("planner-file-key"));
   });
 });
 

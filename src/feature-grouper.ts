@@ -1,7 +1,9 @@
 import type { RequirementCatalog } from "./types.js";
 import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupingFromIds,
   type FeatureGrouping, type FeatureGroupThresholds } from "./scheduler.js";
-import type { PlannerUsageListener } from "./planner-json-client.js";
+import type { UsageSummary } from "./model-usage.js";
+
+export type PlannerUsageListener = (usage: UsageSummary) => void | Promise<void>;
 
 export interface FeatureGroupingOptions {
   timeoutMs: number;

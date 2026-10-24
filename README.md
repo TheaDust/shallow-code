@@ -48,7 +48,7 @@ sequenceDiagram
 ```
 
 1. **解析需求**：读取需求树、场景、依赖、种子和实现指引，建立可执行的需求目录。
-2. **功能分组**：按依赖和功能边界把需求拆成小批次，交给 Builder。
+2. **功能分组**：轻量 Pi Planner 在最多 6 轮规划回复内，通过 `validate_grouping` 校验并修订分组，再用 `finish` 提交。工具检查覆盖、依赖、模块和容量，并提供跨组依赖、相邻组合并可行性和模块往返事实；Planner 结合需求原文，把紧密耦合的状态变化尽量放在同组实现与检查。网关错误分类、SSE 容错与共享恢复沿用 Builder/Checker 的机制，恢复时保留当前会话和工具结果；网络重试不占规划轮数，全部工作受同一总超时约束。会话保存在私有运行目录的 `planner-sessions/`。
 3. **实现与封存**：Builder 在独立 Worker 中实现、自测和修复；每完成一个功能组，控制器封存源码与数据快照并将组级检查入队，Builder 不等待检查结果，继续实现当前模块的下一组。
 4. **模块验收**：切换模块前，等待后台检查完成，在当前快照上执行就绪检查。默认汇总对应功能组原快照的结果；开启历史程序重放时，在当前模块快照执行兼容程序。完成有界修复后进入下一模块。
 5. **有界修复**：运行就绪失败或可复现的业务失败进入模块修复；修复后验收修复范围，开启历史重放时同时回归既有通过路径，未改善则恢复修复开始时的完整模块快照。
@@ -70,7 +70,7 @@ sequenceDiagram
 | **Web 适配器** | 解释项目运行合同、脚手架、Builder 工具、QuickJS 程序执行和 Playwright 浏览器能力。 |
 | **运行状态** | 快照、收据、检查报告、Git 检查点和可写回的项目副本。 |
 
-控制器只消费 `ApplicationContract`；`src/adapters/index.ts` 与 `src/adapters/checker.ts` 在生产装配处注册 `web` 实现。新增应用类型时，核心流程不需要知道端口、HTTP 就绪或浏览器细节。Builder 与 Checker 各自通过模型网关调用模型，可用 `SHALLOW_BUILDER_*` / `SHALLOW_CHECKER_*` 分开配置。
+控制器只消费 `ApplicationContract`；`src/adapters/index.ts` 与 `src/adapters/checker.ts` 在生产装配处注册 `web` 实现。新增应用类型时，核心流程不需要知道端口、HTTP 就绪或浏览器细节。Builder、Checker 与 Planner 共用 `src/pi-gateway.ts` 的 Pi 重试策略、SSE 修复、取消和会话完成等待、网关错误转译；管线共用 `GatewayRecovery` 调度退避与 `Retry-After`。Checker 与 Planner 在网关恢复时保留当前会话和工具结果，Builder 保持独立 Worker 的进程隔离。模型可用 `SHALLOW_BUILDER_*` / `SHALLOW_CHECKER_*` / `SHALLOW_PLANNER_*` 分开配置。
 
 ## Checker 如何独立验收
 
@@ -85,7 +85,7 @@ Checker 是唯一验收引擎。它不消费 Builder 的结论，只消费自己
 - **独立语义复核（可选）**：`SHALLOW_CHECKER_SEMANTIC_REVIEW=1` 开启同组新程序的批量复核，缺省 `0`。复核模型读取需求原文、合同、检查程序和执行证据，不接触 Builder 会话或目标源码。关闭时仍校验合同和证据链、独立复现业务失败；复核批准缓存只由实际复核写入。
 - **历史程序重放（可选）**：`SHALLOW_CHECKER_REPLAY=1` 开启模块、修复与最终阶段的历史程序重放，缺省 `0`；该路径只执行兼容程序，不调用探索或复核模型。开启语义复核时要求程序已批准；关闭时按执行证据判定。两个开关均随运行记录保存，`resume` 沿用原设置。
 - **功能组结果汇总**：默认汇总当前候选祖先快照中各功能组的执行结果，每项结论归属报告标注的原检查快照。准备/交付运行合同检查当前版本；功能修复对修复范围重新探索和执行，回滚时保留对应祖先分支的结果。开启重放时按兼容的执行绑定、初态和需求上下文复用历史程序。
-- **浏览器执行**：程序在独立操作系统进程的 QuickJS 中使用受控的近原生 Playwright 定位器、链式过滤、鼠标/键盘及文件选择、下载、新窗口、对话框句柄。定位须严格唯一，并保留需求明确指定的 role/label 语义。宿主统一控制来源、文件、句柄与超时；读取返回 `{id,value}`，`check.action` 关联动作 checkpoint，断言只引用真实观察。负向事件记录动作及明确时间窗口内的实际数量。接口与示例见 [Checker 浏览器合同](prompts/checker/web/browser.md)。
+- **浏览器执行**：程序在独立操作系统进程的 QuickJS 中使用受控的近原生 Playwright 定位器、链式过滤、鼠标/键盘/触屏及文件选择、下载、新窗口、对话框句柄，支持媒体偏好模拟、页面生命周期、下载取消、控制台与异常观察。定位须严格唯一，并保留需求明确指定的 role/label 语义。宿主统一控制来源、文件、句柄与超时；读取返回 `{id,value}`，`check.action` 关联动作 checkpoint，断言只引用真实观察。负向事件记录动作及明确时间窗口内的实际数量。接口与示例见 [Checker 浏览器合同](prompts/checker/web/browser.md)。
 - **场景隔离**：每个场景独立准备、执行和记录结果；按开关决定历史程序复用与独立复核。程序故障保留其他场景结论，预算耗尽时提交部分报告。
 - **环境与回归**：程序使用独立准备的环境，探索或执行过的环境须重置。修复后验收修复范围，开启历史重放时同时回归既有通过路径；交付检查在一次环境准备中记录就绪证据并完成交付验证。
 - **文件与视觉内容**：Web 支持 PNG 图片粘贴、携带文件的投放事件和隔离目录上传；下载的 PDF、PNG、JPEG、WebP 可按页或区域渲染，读取文字位置与像素，并按需进行离线中英文 OCR。实际预览保存在证据附件中，内容断言仍须对应原文结果。
@@ -94,7 +94,7 @@ Checker 是唯一验收引擎。它不消费 Builder 的结论，只消费自己
 - **失败必须复现**：业务失败会在另一个全新的应用、数据和浏览器环境中再跑一次；不能复现就降级为 `inconclusive`。
 - **四种结论**：`pass`、`fail`、`blocked`（依赖未满足）、`inconclusive`（执行或解释不足）。全部结果子句为 `pass` 才会把需求标记为 `verified`。
 
-终端同步显示 Checker 实际执行的环境准备、探索、重放、语义复核与失败复现阶段。验收时，Checker 的进度和排队数量显示在状态行；拒绝后的程序修正会单独说明。按 `d` 查看详细日志中的拒绝原因和诊断，按 `t` 打开按子树状态着色的需求树，按 `c` 展开或收起 Builder / Checker / Planner 的花费明细（默认只显示总计）。进度条按 Builder 已实现的需求计数；已实现与是否验证无关，验收结果在需求树上单独标注。程序复核通过只表示测试程序合格，需求验证状态由所标注检查快照的实际验收结果更新。
+终端同步显示 Checker 实际执行的环境准备、探索、重放、语义复核与失败复现阶段。验收时，Checker 的进度和排队数量显示在状态行；拒绝后的程序修正会单独说明。按 `d` 查看详细日志中的拒绝原因和诊断，按 `t` 打开需求书：默认按子树状态着色，按 `v` 切换完整 `requirements.yaml`；按 `c` 展开或收起 Builder / Checker / Planner 的花费明细（默认只显示总计）。进度条按 Builder 已实现的需求计数；已实现与是否验证无关，验收结果在需求树上单独标注。程序复核通过只表示测试程序合格，需求验证状态由所标注检查快照的实际验收结果更新。运行结束后 TUI 保持打开，可继续查看花费、需求书与日志，按 `Ctrl+C` 退出；报告、补丁与恢复命令追加在详细日志末尾。
 
 ## 快速开始
 
@@ -118,9 +118,10 @@ MODEL=...
 
 | 变量 | 用途 |
 | --- | --- |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL` | Builder 与 Checker 共用的默认网关。 |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `MODEL` | Builder、Checker 与 Planner 共用的默认网关。 |
 | `SHALLOW_BUILDER_*` | 单独覆盖 Builder 的 API key、地址和模型。 |
-| `SHALLOW_CHECKER_*` | 单独覆盖 Checker 与功能分组的 API key、地址和模型。 |
+| `SHALLOW_CHECKER_*` | 单独覆盖 Checker 的 API key、地址和模型。 |
+| `SHALLOW_PLANNER_*` | 单独覆盖功能分组 Planner 的 API key、地址和模型；未设置的字段回退公共配置。单价可用 `SHALLOW_PLANNER_COST_*` 覆盖。 |
 | `REQUIREMENTS_AGENT_*` | 单独覆盖 `shallow req` 使用的网关。 |
 
 模型单价默认按网关地址和模型 id 匹配内置目录；也可以用 `MODEL_COST_*` 或 `<组件>_COST_*` 覆盖。
@@ -144,7 +145,7 @@ shallow build apply  --run-dir E:\runs\<运行目录>
 | `resume` | 从最近的可运行检查点继续，保留失败尝试历史，沿用原运行的复核与重放设置。 |
 | `apply` | 把 `changes.patch` 写回原项目；默认只接受 `delivered`。 |
 
-`npm.cmd start -- <参数>` 与 `shallow build` 等价，参数原样透传。交互终端中 `build` / `resume` 启动后先停留在 TUI 概览，按 Enter 才开始运行；启动前也可以先按 `t` 查看需求树、按 `d` 查看日志。
+`npm.cmd start -- <参数>` 与 `shallow build` 等价，参数原样透传。交互终端中 `build` / `resume` 启动后先停留在 TUI 概览，按 Enter 才开始运行；启动前也可以先按 `t` 查看需求书、按 `d` 查看日志。运行结束后页面不会自动关闭，可继续查看花费、需求书与日志，按 `Ctrl+C` 退出。
 
 ## 输入与配置
 
@@ -190,7 +191,7 @@ Windows 上把 `npm` 换成 `npm.cmd`。`start` 必填；`install`、`build`、`
 
 ## 运行结果与恢复
 
-默认运行目录在 `%TMP%/shallowcode-runs/<run-id>`，可用 `SHALLOW_RUN_DIR` 覆盖。结束时会打印运行目录、补丁位置，以及总计、Builder、Checker 三组模型用量。功能分组归入 Planner，只计入总计，不单独占用终端行；完整明细见 `report.md`。
+默认运行目录在 `%TMP%/shallowcode-runs/<run-id>`，可用 `SHALLOW_RUN_DIR` 覆盖。非交互运行结束时会打印运行目录、补丁位置，以及总计、Builder、Checker 三组模型用量；交互 TUI 在结束后保持打开，可在详细日志末尾查看同样的路径与恢复命令。功能分组归入 Planner，只计入总计，不单独占用终端行；完整明细见 `report.md`。
 
 | 产物 | 内容 |
 | --- | --- |

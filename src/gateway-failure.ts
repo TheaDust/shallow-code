@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
+/** Emitted only by the transport rewriter, never inferred from assistant text. */
+export const INCOMPLETE_GATEWAY_STREAM = "provider returned error: gateway truncated a content-bearing SSE event";
+
 /** Transport metadata only. Model text and tool failures are not gateway errors. */
 export interface GatewayFailure {
   kind: "rate_limit" | "unavailable" | "authentication" | "request";
@@ -59,7 +62,10 @@ export function providerGatewayFailure(providerError: string | undefined, observ
   const failure = status === undefined
     ? observed
     : { ...httpGatewayFailure(Number(status)), ...(observed?.status === Number(status) ? retryAfter : {}) };
-  if (!failure) return undefined;
+  if (!failure) {
+    return providerError?.replace(/^Error: /, "") === INCOMPLETE_GATEWAY_STREAM
+      ? { kind: "unavailable", retryable: true } : undefined;
+  }
   return classifyGatewayFailure(failure, providerErrorMessage(providerError));
 }
 

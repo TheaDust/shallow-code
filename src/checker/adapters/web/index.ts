@@ -68,7 +68,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   // Keep the static browser guidance ahead of the project-specific entry line so
   // equivalent Checker prompts share the long prefix across browser paths.
   const promptFragments = [await store.putBytes(await readFile(new URL("../../../../prompts/checker/web/browser.md", import.meta.url))),
-    await store.putBytes(`Authorized Playwright interface (actions map values are the options argument position, -1 means none; reads return host observations):\n${JSON.stringify(PLAYWRIGHT_INTERFACE)}`),
+    await store.putBytes(`Authorized Playwright interface (actions map values are the timeout-options argument position, -1 means no timeout option; reads return host observations):\n${JSON.stringify(PLAYWRIGHT_INTERFACE)}`),
     await store.putBytes(`Web public entry: ${webSettings(spec).browserPath}`), ...(options.promptFragments ?? [])];
   const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission"].map((name) => readFile(new URL(`../../../../prompts/checker/${name}.md`, import.meta.url), "utf8")));
   const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-case", dataDirectory: "allocated-per-case" }, objectSchema);
@@ -77,7 +77,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
     resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
-      { id: "run", version: "4", description: "Run isolated JavaScript with controlled native Playwright locators, keyboard/mouse, filechooser/download/popup/dialog event handles, bounded event observations and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
+      { id: "run", version: "5", description: "Run isolated JavaScript with controlled native Playwright locators, keyboard/mouse/touchscreen, media preferences, page lifecycle and download controls, browser event observations and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
       { id: "reset_case", version: "1", description: "Rebuild an independent case from declared initial state; expire all browser handles.", inputSchema: resetSchema, outputSchema: objectSchema },
     ],
     programFormat: { id: "shallow.web.javascript", version: "1", mediaType: "text/javascript", schema: programSchema },

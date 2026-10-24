@@ -187,6 +187,7 @@ interface RunEventDetails {
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
 
   pipeline_started: { requirements?: number; totalBudgetMs?: number; adapterId?: string; model?: string;
+    checkerModel?: string; plannerModel?: string;
     auditInheritedRequirements?: boolean;
     builderTimeoutMs?: number; builderContextWindow?: number;
     promptSha256?: string;

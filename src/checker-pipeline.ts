@@ -438,9 +438,9 @@ export async function runCheckerPipeline(options: PipelineOptions, deps: Pipelin
         limits: { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20_000 } } });
       const at = Date.now(); let reason: string | undefined; let source: "llm" | "deterministic" = "deterministic";
       try {
-        const proposal = await gateway.run("planning", "feature-grouping", () => budget.remaining("implementation"),
-          () => grouper.group(implementationCatalog, { timeoutMs: Math.min(720_000, budget.remaining("implementation")),
-            onUsage: async item => { usage.add("planner", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } }));
+        // The grouper owns its Pi session and retries without discarding tool history.
+        const proposal = await grouper.group(implementationCatalog, { timeoutMs: Math.min(720_000, budget.remaining("implementation")),
+          onUsage: async item => { usage.add("planner", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } });
         grouping = parseFeatureGrouping(proposal, implementationCatalog); source = "llm";
       } catch (error) { reason = message(error); }
       await state.record({ at: now(), type: "feature_grouping_finished", detail: { source, reason, grouping: grouping.stats,

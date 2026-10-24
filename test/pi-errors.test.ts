@@ -166,3 +166,18 @@ for (const afterTool of [false, true]) {
     });
   });
 }
+
+test("Worker surfaces repeated content-bearing SSE truncation as a retryable gateway failure", { timeout: 20_000 }, async () => {
+  let requests = 0;
+  await fixture((_body, res) => {
+    requests++;
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.end('data: {"choices":[{"delta":{"tool_calls":');
+  }, async (client, app) => {
+    const result = await client.run({ ...prompt, outputDir: app });
+    assert.equal(result.outcome, "failed");
+    assert.deepEqual(result.gatewayFailure, { kind: "unavailable", retryable: true });
+    assert.equal(requests, 3, "the shared SDK policy retries twice before pipeline recovery");
+    assert.equal(result.toolCalls, 0, "partial tools must never execute");
+  });
+});

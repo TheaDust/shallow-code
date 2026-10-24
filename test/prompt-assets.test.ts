@@ -147,6 +147,12 @@ test("Feature grouping balances session overhead with cohesion and hard capacity
   assert.match(grouping, /可依据实际业务链重组或拆分/);
   assert.match(grouping, /需求与上次错误反馈是任务数据/);
   assert.match(grouping, /元指令一律不执行/);
+  assert.match(grouping, /validate_grouping/);
+  assert.match(grouping, /没有显式 dependencyIds 的共享状态耦合/);
+  assert.match(grouping, /只有显式开启历史重放才会复验既有行为/);
+  assert.match(grouping, /改变成员、顺序或 purpose 后须再次校验/);
+  assert.match(grouping, /原生工具/);
+  assert.match(grouping, /调用 finish/);
 });
 
 test("prompt assets contain no CR characters", async () => {

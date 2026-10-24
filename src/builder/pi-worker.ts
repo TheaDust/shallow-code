@@ -1,13 +1,11 @@
 import { createPiSession, type PiSessionSnapshot } from "./pi-sdk-adapter.js";
 import { subtractUsage, type ExecutionUsage } from "./pi-execution-stats.js";
 import { installSseCapture } from "./sse-capture.js";
-import { installSseResilience } from "./sse-resilience.js";
 import type { BuilderCapabilityPack } from "../application/port.js";
 import { loadReferenceImages } from "./reference-images.js";
 import { isImageUnsupportedMessage } from "./vision-probe.js";
 import type { PiWorkerRequest, PiWorkerResult, PiWorkerProgress } from "./pi-worker-client.js";
 import { fillTemplate, loadPrompt } from "../prompt-assets.js";
-import { classifyGatewayFailure, observeGatewayFailures } from "../gateway-failure.js";
 
 export async function runPiWorker(input: PiWorkerRequest, capabilities?: BuilderCapabilityPack): Promise<PiWorkerResult> {
   let baseline: ExecutionUsage | undefined;
@@ -31,11 +29,8 @@ export async function runPiWorker(input: PiWorkerRequest, capabilities?: Builder
     : !input.textOnly && input.requirementsDir && input.references?.length
       ? await loadReferenceImages(input.requirementsDir, input.references) : { images: [], skipped: input.textOnly ? [] : (input.references ?? []).map(reference => ({ reference, reason: "requirements_unavailable" })) };
   const images = attach && !input.textOnly ? loaded.images.map(image => ({ type: "image" as const, mimeType: image.mime, data: image.dataUrl.slice(image.dataUrl.indexOf(",") + 1) })) : [];
-  // Install capture first so it tees the raw body, then resilience outermost so
-  // the client reads a repaired stream while diagnostics keep the original bytes.
+  // The adapter installs shared gateway repair after capture, preserving raw diagnostics.
   const capture = input.sseCaptureDir ? installSseCapture(input.sseCaptureDir, input.sessionKey ?? "builder") : undefined;
-  const resilience = installSseResilience(raw => process.stderr.write(`[ShallowCode] 检测到损坏的网关 SSE 事件：${raw}\n`));
-  const gateway = observeGatewayFailures(input.gateway.baseUrl);
   try {
     const imageNote = !input.references?.length ? "" : !attach || input.visionUnsupported
       ? loadPrompt("system", "reference-images-text-fallback")
@@ -48,18 +43,17 @@ export async function runPiWorker(input: PiWorkerRequest, capabilities?: Builder
     if (result.terminationReason === "empty_terminal_response") {
       result = await session.prompt(loadPrompt("system", "completion-receipt"));
     }
-    const { outcome, summary, providerError, terminationReason } = result;
+    const { outcome, summary, gatewayFailure, terminationReason } = result;
     const stats = rebase(session.snapshot());
     const success = outcome === "completed";
-    const observedFailure = gateway.failure();
     return { ...stats, outcome, summary: summary.slice(-8_000),
       peakRssBytes: process.resourceUsage().maxRSS * 1024,
       ...(terminationReason ? { terminationReason } : {}),
-      ...(!success && observedFailure ? { gatewayFailure: classifyGatewayFailure(observedFailure, providerError) } : {}),
+      ...(!success && gatewayFailure ? { gatewayFailure } : {}),
       imageUnsupported: !success && images.length > 0 && stats.toolCalls === 0 && isImageUnsupportedMessage(summary),
       ...(input.references?.length ? { referenceImages: {
         mode: !attach ? "disabled" : input.visionUnsupported ? "unsupported" : input.textOnly ? "text_fallback" : images.length ? "attached" : "unavailable",
         attachedCount: images.length, skipped: loaded.skipped } as const } : {}),
     };
-  } finally { clearInterval(progressTimer); session.dispose(); gateway.uninstall(); resilience.uninstall(); await capture?.uninstall(); }
+  } finally { clearInterval(progressTimer); session.dispose(); await capture?.uninstall(); }
 }

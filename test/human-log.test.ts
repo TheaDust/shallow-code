@@ -146,19 +146,21 @@ test("HumanRunFormatter records whether the generic starter scaffold was install
   assert.match(line, /通用脚手架 installed/);
 });
 
-test("HumanRunFormatter shows the judge model when it differs from the builder model", () => {
+test("HumanRunFormatter shows Checker and Planner models when they differ from the Builder", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
-    detail: { model: "provider/builder", checkerModel: "provider/judge" },
+    detail: { model: "provider/builder", checkerModel: "provider/judge", plannerModel: "provider/planner" },
   }));
   assert.match(line, /；模型 provider\/builder/);
   assert.match(line, /；Checker 模型 provider\/judge/);
+  assert.match(line, /；Planner 模型 provider\/planner/);
 
   const same = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
-    detail: { model: "provider/model", checkerModel: "provider/model" },
+    detail: { model: "provider/model", checkerModel: "provider/model", plannerModel: "provider/model" },
   }));
   assert.match(same, /；模型 provider\/model/);
   assert.doesNotMatch(same, /Checker 模型/);
+  assert.doesNotMatch(same, /Planner 模型/);
 });
 
 test("HumanRunFormatter identifies progressive stage starting points", () => {

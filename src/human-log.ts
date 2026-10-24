@@ -137,7 +137,9 @@ function describe(event: RunEvent): string | null {
       const model = pickString(detail, "model");
       const checkerModel = pickString(detail, "checkerModel");
       const checkerText = checkerModel && checkerModel !== model ? `；Checker 模型 ${checkerModel}` : "";
-      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${checkerText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
+      const plannerModel = pickString(detail, "plannerModel");
+      const plannerText = plannerModel && plannerModel !== model ? `；Planner 模型 ${plannerModel}` : "";
+      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${checkerText}${plannerText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
     }
     case "packet_selected":
       return `选定需求包 ${packetId}${strings(detail?.names).length ? `：${strings(detail?.names).join("、")}` : ""}`;

@@ -66,9 +66,20 @@ export interface BuildTuiOptions {
   requirementIds: string[];
   /** 原始需求树；交互页面按子树聚合完成状态。 */
   requirementTree?: RequirementNode;
+  /** 本轮输入需求书的完整 YAML；需求页面可切换查看。 */
+  requirementsText?: string;
   /** 本轮实际使用的模型；状态页显式标注来源。 */
   models: { builder: string; checker: string };
   onInterrupt(): void;
+}
+
+/** 运行结束后保留在 TUI 中的结果摘要；只用于展示，不参与验收。 */
+export interface BuildCompletion {
+  status: RunSummary["status"];
+  runDirectory: string;
+  projectDirectory: string;
+  elapsedMs: number;
+  patch?: string;
 }
 
 /** A projection of emitted facts; presentation never grants verification. */
@@ -96,6 +107,9 @@ export class BuildView implements Component {
   private readonly checkerLive = new Map<string, TokenUsage>();
   private usageExpanded = false;
   private awaitingStart = false;
+  private completed = false;
+  private finishedAt?: number;
+  private outcome?: RunSummary["status"];
 
   constructor(
     private readonly options: BuildTuiOptions,
@@ -231,6 +245,18 @@ export class BuildView implements Component {
     this.awaitingStart = value;
     this.activity = value ? "按 Enter 开始运行" : "正在准备需求与执行环境";
     this.lastActivityAt = Date.now();
+  }
+
+  /** 运行结束后冻结计时并保留页面，供查看日志、需求书与花费。 */
+  finish(status: RunSummary["status"]): void {
+    this.completed = true;
+    this.outcome = status;
+    this.finishedAt = Date.now();
+    this.builderRunning = false;
+    this.checkerTasks.clear();
+    this.checkerLive.clear();
+    this.activity = "运行已结束，可查看日志、需求书与花费";
+    this.lastActivityAt = this.finishedAt;
   }
 
   /** 需求树页面：按子树聚合状态，新版本结果会直接反映在颜色与计数上。 */
@@ -458,22 +484,26 @@ export class BuildView implements Component {
     }
     const frame = ACTIVITY_FRAMES[Math.floor(Date.now() / RENDER_INTERVAL_MS) % ACTIVITY_FRAMES.length];
     const activityRole = this.highlightRole(this.activity, t);
+    const completionColour = this.outcome === "delivered" ? t.success : this.outcome === "partial" ? t.warning : t.error;
     const activity = this.awaitingStart
       ? ` ${t.accent("◆")} ${t.strong("按 Enter 开始运行")}`
-      : ` ${activityRole.colour(frame)} ${activityRole.text}`;
+      : this.completed
+        ? ` ${completionColour("◆")} ${t.strong(this.activity)}`
+        : ` ${activityRole.colour(frame)} ${activityRole.text}`;
     const checker = this.builderRunning ? this.checkerActivity() : undefined;
     const checkerLines = checker ? [` ${t.muted("后台")} ${this.highlightRole(checker, t).text}`] : [];
     const models = ` ${t.label("模型")}  ${t.builder("Builder")} ${this.options.models.builder} ${t.faint("·")} ` +
       `${t.checker("Checker")} ${this.options.models.checker}`;
     const keyHint = (key: string, label: string) => `${t.accent(key)} ${t.label(label)}`;
     const footer = this.awaitingStart
-      ? ` ${keyHint("Enter", "开始运行")}   ${keyHint("d", "日志")}   ${keyHint("t", "树")}   ` +
+      ? ` ${keyHint("Enter", "开始运行")}   ${keyHint("d", "日志")}   ${keyHint("t", "需求书")}   ` +
         `${keyHint("c", "花费")}   ${keyHint("?", "帮助")}   ${t.muted("^C 中断")}`
       : width >= 60
-        ? ` ${keyHint("d", "详细日志")}   ${keyHint("t", "需求树")}   ` +
-          `${keyHint("c", this.usageExpanded ? "收起花费" : "花费明细")}   ${keyHint("?", "帮助")}   ${t.muted("Ctrl+C 中断")}`
-        : ` ${keyHint("d", "日志")}  ${keyHint("t", "树")}  ${keyHint("c", this.usageExpanded ? "收起" : "花费")}  ` +
-          `${keyHint("?", "帮助")}  ${t.muted("^C 中断")}`;
+        ? ` ${keyHint("d", "详细日志")}   ${keyHint("t", "需求书")}   ` +
+          `${keyHint("c", this.usageExpanded ? "收起花费" : "花费明细")}   ${keyHint("?", "帮助")}   ` +
+          (this.completed ? keyHint("Ctrl+C", "退出") : t.muted("Ctrl+C 中断"))
+        : ` ${keyHint("d", "日志")}  ${keyHint("t", "需求书")}  ${keyHint("c", this.usageExpanded ? "收起" : "花费")}  ` +
+          `${keyHint("?", "帮助")}  ${this.completed ? keyHint("^C", "退出") : t.muted("^C 中断")}`;
     const usage = this.usageLines();
     const progress = this.progressLines(width, counts, t);
     const compact = () => {
@@ -484,19 +514,25 @@ export class BuildView implements Component {
     };
     if (this.rows() < 18) return compact();
     const usageLines = usage.flatMap(line => new Text(line, 1, 0).render(width));
-    const runState = this.awaitingStart ? t.accent("● 等待开始") : t.success("● 运行中");
+    const runState = this.awaitingStart ? t.accent("● 等待开始")
+      : this.completed ? this.outcome === "delivered" ? t.success("● 交付完成")
+        : this.outcome === "partial" ? t.warning("● 部分完成") : t.error("● 交付失败")
+        : t.success("● 运行中");
+    const elapsed = elapsedTime((this.finishedAt ?? Date.now()) - this.startedAt);
     const runnable = [...this.scope].filter(id => this.runnable.has(id)).length;
     const lines = [
       ...terminalHeader("Build Agent", width, t), "",
-      terminalRow(` ${t.strong(t.accent(this.phase))}`, `${runState} ${t.muted(elapsedTime(Date.now() - this.startedAt) + " ")}`, width),
+      terminalRow(` ${t.strong(t.accent(this.phase))}`, `${runState} ${t.muted(elapsed + " ")}`, width),
       ` ${t.label("模块")}  ${this.module}`,
       models,
       ...usageLines,
       activity,
       ...checkerLines,
       this.awaitingStart
-        ? t.muted(" 尚未开始 · Enter 启动本轮运行，其他按键可先查看日志与需求树")
-        : t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),
+        ? t.muted(" 尚未开始 · Enter 启动本轮运行，其他按键可先查看日志与需求书")
+        : this.completed
+          ? t.muted(" 运行已结束 · 按 d 查看日志、t 查看需求书、c 查看花费；Ctrl+C 退出")
+          : t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),
       "", ...progress,
       ` ${t.label("可运行检查点覆盖")} ${runnable ? t.accent(`${runnable} 条需求`) : t.muted("0 条需求")}` +
         (this.skippedIds.size ? ` ${t.muted(`· 沿用跳过 ${this.skippedIds.size}`)}` : ""),
@@ -584,8 +620,12 @@ export class BuildTui {
   private timer?: ReturnType<typeof setInterval>;
   private started = false;
   private running = false;
+  private completed = false;
+  private requirementsYaml = false;
   private readonly startedRun: Promise<void>;
   private resolveStart!: () => void;
+  private readonly exited: Promise<void>;
+  private resolveExit!: () => void;
 
   constructor(private readonly options: BuildTuiOptions, terminal: Terminal = new ProcessTerminal()) {
     this.tui = new TuiMainScreen(terminal);
@@ -593,9 +633,11 @@ export class BuildTui {
     this.view = new BuildView(options, () => terminal.rows, this.theme);
     this.view.setAwaitingStart(true);
     this.startedRun = new Promise(resolve => { this.resolveStart = resolve; });
+    this.exited = new Promise(resolve => { this.resolveExit = resolve; });
     this.tui.addChild(this.view);
     this.tui.addInputListener(data => {
       if (matchesKey(data, "ctrl+c")) {
+        if (this.completed) { this.resolveExit(); return { consume: true }; }
         this.stop(); this.options.onInterrupt(); return { consume: true };
       }
       if (this.overlay) return undefined;
@@ -619,6 +661,38 @@ export class BuildTui {
   /** 等待用户在 TUI 中确认开始；确认前不启动 Builder 或 Checker。 */
   waitForStart(): Promise<void> { return this.startedRun; }
 
+  /** 运行结束：冻结状态但保持页面，直到用户按 Ctrl+C 退出。 */
+  complete(completion: BuildCompletion): void {
+    if (this.completed) return;
+    this.completed = true;
+    this.view.finish(completion.status);
+    clearInterval(this.timer);
+    this.timer = undefined;
+    const label = completion.status === "delivered" ? "交付完成"
+      : completion.status === "partial" ? "部分完成" : "交付失败";
+    const lines = [
+      "",
+      `本轮结束：${label} · 总耗时 ${elapsedTime(completion.elapsedMs)}`,
+      `报告：${join(completion.runDirectory, "report.md")}`,
+      `日志：${join(completion.runDirectory, "run-log.txt")}`,
+      ...(completion.patch ? [`补丁：${completion.patch}`] : []),
+      `项目：${completion.projectDirectory}`,
+    ];
+    if (completion.patch && completion.status === "delivered") {
+      lines.push(`下一步：shallow build apply --run-dir ${shellArgument(completion.runDirectory)}`);
+    } else if (completion.status !== "delivered") {
+      lines.push(`下一步：shallow build resume --run-dir ${shellArgument(completion.runDirectory)}`);
+    }
+    this.log.push(...lines);
+    if (this.log.length > 500) this.log.splice(0, this.log.length - 500);
+    this.viewer?.setText("详细日志 · 最近 500 条", this.log.join("\n"), false);
+    this.refreshRequirementsViewer();
+    this.tui.requestRender();
+  }
+
+  /** 完成后的 TUI 等待用户主动退出；进程在收到该信号后才结束。 */
+  waitForExit(): Promise<void> { return this.exited; }
+
   private beginRun(): void {
     if (this.running) return;
     this.running = true;
@@ -638,11 +712,12 @@ export class BuildTui {
     this.log.push(line);
     if (this.log.length > 500) this.log.shift();
     this.viewer?.setText("详细日志 · 最近 500 条", this.log.join("\n"), false);
-    this.treeViewer?.setText("需求树 · 完成情况", this.view.requirementTreeText(this.theme), false);
+    this.refreshRequirementsViewer();
     this.tui.requestRender();
   }
 
   stop(): void {
+    this.resolveExit?.();
     if (!this.started) return;
     this.started = false;
     clearInterval(this.timer);
@@ -662,17 +737,31 @@ export class BuildTui {
 
   private showRequirements(): void {
     this.viewer = undefined;
-    this.treeViewer = new TextViewer(this.tui, this.theme, "需求树 · 完成情况",
+    this.requirementsYaml = false;
+    const viewer = new TextViewer(this.tui, this.theme, "需求树 · 完成情况",
       this.view.requirementTreeText(this.theme), () => this.closeViewer());
+    viewer.onToggle = () => {
+      this.requirementsYaml = !this.requirementsYaml;
+      this.refreshRequirementsViewer();
+    };
+    this.treeViewer = viewer;
     setMouseTracking(this.tui.terminal, true);
-    this.overlay = this.tui.showOverlay(this.treeViewer, { width: "100%", anchor: "top-left" });
+    this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
+  }
+
+  /** 需求页面跟随验收状态更新；切换到完整 YAML 后保持原文不动。 */
+  private refreshRequirementsViewer(): void {
+    const viewer = this.treeViewer;
+    if (!viewer) return;
+    viewer.setText(this.requirementsYaml ? "需求书 · requirements.yaml" : "需求树 · 完成情况",
+      this.requirementsYaml ? this.options.requirementsText?.trimEnd() || "需求文件内容不可用。" : this.view.requirementTreeText(this.theme), false);
   }
 
   private showHelp(): void {
     this.treeViewer = undefined;
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
-      "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求树与每个需求的实现/验收状态\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  中断运行\n\n" +
-      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，模块推进时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Checker：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；结束后会显示报告和恢复命令。",
+      "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求书与每个需求的实现/验收状态；按 v 切换完整 requirements.yaml\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  运行中中断，运行结束后退出\n\n" +
+      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，模块推进时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Checker：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告、补丁与恢复命令追加在详细日志末尾，按 Ctrl+C 退出。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });

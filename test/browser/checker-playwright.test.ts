@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { chromium } from "@playwright/test";
 import { WebProgramRuntime, type WebRuntimeEvent } from "../../src/checker/adapters/web/program-runtime.js";
@@ -10,13 +13,30 @@ async function application(mutant: boolean, run: (runtime: WebProgramRuntime, ev
       response.writeHead(200, { "content-type": "text/plain", "content-disposition": 'attachment; filename="export.txt"' });
       response.end("actual exported content"); return;
     }
+    if (request.url === "/slow-export") {
+      response.writeHead(200, { "content-type": "application/octet-stream", "content-disposition": 'attachment; filename="slow.txt"', "content-length": 1024 * 1024 });
+      response.write(Buffer.alloc(64 * 1024, 65)); return;
+    }
     if (request.url === "/frame") { response.setHeader("content-type", "text/html"); response.end('<output role="status">frame ready</output>'); return; }
     response.setHeader("content-type", "text/html");
-    response.end(`<!doctype html><main>
+    response.end(`<!doctype html><style>
+      #preferences { --scheme: light; --motion: normal; --contrast: normal; --forced: none; --medium: screen }
+      @media (prefers-color-scheme: dark) { #preferences { --scheme: dark } }
+      @media (prefers-reduced-motion: reduce) { #preferences { --motion: reduce } }
+      @media (prefers-contrast: more) { #preferences { --contrast: more } }
+      @media (forced-colors: active) { #preferences { --forced: active } }
+      @media print { #preferences { --medium: print } }
+    </style><main>
       <button onclick="document.querySelector('input').click()">Import</button><input type="file" hidden multiple>
       <output role="status" aria-label="Import result">empty</output>
       <button onclick="${mutant ? "setTimeout(()=>document.querySelector('#export').click(),80)" : "void 0"}">Empty export</button>
       <a id="export" href="/export" download>Export</a><a href="/" target="_blank">Open page</a>
+      <a href="/slow-export" download>Slow export</a>
+      <button ontouchstart="document.querySelector('#touch-count').textContent=Number(document.querySelector('#touch-count').textContent)+1">Touch target</button>
+      <output id="touch-count" role="status" aria-label="Touch count">0</output>
+      <output id="preferences" role="status" aria-label="Preferences">preferences</output>
+      <button onclick="console.warn('diagnostic warning');setTimeout(()=>{throw new Error('diagnostic failure')},20)">Diagnostics</button>
+      <button onclick="console.warn('W'.repeat(5000));setTimeout(()=>{throw new Error('E'.repeat(5000))},20)">Long diagnostics</button>
       <button onclick="document.querySelector('#dialog-result').textContent=prompt('Your name','initial')">Prompt</button>
       <output id="dialog-result" aria-label="Dialog result" role="status"></output>
       <section aria-label="First"><button>Duplicate</button></section><section aria-label="Second"><button>Duplicate</button></section>
@@ -111,6 +131,117 @@ test("Native locator composition, pointer, keyboard and event objects use actual
   });
 });
 
+test("Native text selection and media preferences operate on the page and remain isolated by actor", async () => {
+  await application(false, async (runtime, events) => {
+    const result = await runtime.run(`
+      const page=await browser.actor('alice');
+      const field=page.getByPlaceholder('Write here');
+      await field.fill('replace this text');
+      await check.action('draw',async()=>{await field.selectText();await page.keyboard.insertText('replacement')});
+      const text=await field.inputValue();
+      await check.action('draw',()=>page.emulateMedia({media:'print',colorScheme:'dark',reducedMotion:'reduce',contrast:'more',forcedColors:'active'}));
+      const preferences=page.getByRole('status',{name:'Preferences',exact:true});
+      const values=[];
+      for (const property of ['--scheme','--motion','--contrast','--forced','--medium']) values.push((await preferences.computedStyle(property)).value.trim());
+      const other=await browser.actor('bob');
+      const otherMedium=await other.getByRole('status',{name:'Preferences',exact:true}).computedStyle('--medium');
+      await page.emulateMedia({media:null,colorScheme:'light',reducedMotion:'no-preference',contrast:'no-preference',forcedColors:'none'});
+      const restored=[];
+      for (const property of ['--scheme','--motion','--contrast','--forced','--medium']) restored.push((await preferences.computedStyle(property)).value.trim());
+      return {text:text.value,values,otherMedium:otherMedium.value.trim(),restored};
+    `, options());
+    assert.deepEqual(result, { text: "replacement", values: ["dark", "reduce", "more", "active", "print"], otherMedium: "screen", restored: ["light", "normal", "normal", "none", "screen"] });
+    for (const method of ["selectText", "emulateMedia"]) assert(events.some(event => event.checkpointId === "draw" && event.payload.method === `playwright.${method === "selectText" ? "locator" : "page"}.${method}`));
+  });
+});
+
+test("Native lifecycle observations survive page close and evidence capture", async () => {
+  await application(false, async (runtime, events) => {
+    const result = await runtime.run(`
+      const page=await browser.actor('alice');
+      const dom=page.waitForEvent('domcontentloaded');const loaded=page.waitForEvent('load');
+      await page.reload();
+      const domEvent=await dom;const loadEvent=await loaded;
+      const pending=page.waitForEvent('popup');await page.getByRole('link',{name:'Open page'}).click();
+      const popup=await pending;const before=await popup.isClosed();const closed=popup.waitForEvent('close');
+      await check.action('draw',()=>popup.close());
+      const closeEvent=await closed;const after=await popup.isClosed();const main=await page.isClosed();
+      return {dom:domEvent.value.event,load:loadEvent.value.event,close:closeEvent.value.event,before:before.value,after:after.value,main:main.value};
+    `, options());
+    assert.deepEqual(result, { dom: "domcontentloaded", load: "load", close: "close", before: false, after: true, main: false });
+    assert(events.some(event => event.checkpointId === "draw" && event.payload.method === "playwright.page.close"));
+    const directory = await mkdtemp(join(tmpdir(), "checker-closed-page-"));
+    try { assert((await runtime.captureEvidence(directory)).some(attachment => attachment.mediaType === "image/png")); }
+    finally { await rm(directory, { recursive: true, force: true }); }
+    await runtime.run(`const page=await browser.actor('alice');await page.close();return (await page.isClosed()).value`, options()).then(value => assert.equal(value, true));
+  });
+});
+
+test("Native download cancellation and failure observations retain event ownership", async () => {
+  await application(false, async (runtime, events) => {
+    const result = await runtime.run(`
+      const page=await browser.actor('alice');
+      const pending=page.waitForEvent('download');await page.getByRole('link',{name:'Slow export',exact:true}).click();
+      const download=await pending;
+      await check.action('draw',()=>download.cancel());
+      const failure=await download.failure();
+      const completed=page.waitForEvent('download');await page.getByRole('link',{name:'Export',exact:true}).click();
+      const ok=await completed;const success=await ok.failure();
+      return {failure:failure.value,success:success.value,event:download.eventObservation.id};
+    `, options()) as { failure: string; success: null; event: string };
+    assert.equal(result.failure, "canceled"); assert.equal(result.success, null);
+    const canceled = events.find(event => event.payload.method === "playwright.download.cancel")!;
+    assert.equal(canceled.checkpointId, "draw"); assert.deepEqual(canceled.inputs, [result.event]);
+    assert(events.some(event => event.payload.kind === "playwright.download.failure" && event.inputs[0] === result.event && event.payload.value === "canceled"));
+  });
+});
+
+test("Touch actors execute actual native touch inputs with fixed isolated device settings", async () => {
+  await application(false, async (runtime, events) => {
+    const result = await runtime.run(`
+      const page=await browser.actor('touch',{hasTouch:true});
+      await check.action('draw',()=>page.getByRole('button',{name:'Touch target',exact:true}).tap());
+      const target=await page.getByRole('button',{name:'Touch target',exact:true}).boundingBox();
+      await check.action('draw',()=>page.touchscreen.tap(target.value.x+target.value.width/2,target.value.y+target.value.height/2));
+      const again=await browser.actor('touch');const count=await again.getByRole('status',{name:'Touch count',exact:true}).innerText();
+      const desktop=await browser.actor('desktop');const separate=await desktop.getByRole('status',{name:'Touch count',exact:true}).innerText();
+      return {count:count.value,separate:separate.value};
+    `, options());
+    assert.deepEqual(result, { count: "2", separate: "0" });
+    assert(events.some(event => event.checkpointId === "draw" && event.payload.method === "playwright.touchscreen.tap"));
+    const deny = (source: string, pattern: RegExp) => assert.rejects(runtime.run(source, options()), pattern);
+    await deny(`await browser.actor('touch',{hasTouch:false});`, /fixed at creation/);
+    await deny(`await browser.actor('other',{hasTouch:'true'});`, /boolean hasTouch/);
+    await deny(`await browser.actor('other',{permissions:['camera']});`, /boolean hasTouch/);
+    await deny(`const page=await browser.actor('desktop');await page.touchscreen.tap(10,10);`, /hasTouch/);
+  });
+});
+
+test("Native console and page errors provide bounded host observations around actual actions", async () => {
+  await application(false, async (runtime, events) => {
+    const result = await runtime.run(`
+      const page=await browser.actor('alice');
+      const logged=page.waitForEvent('console');const failed=page.waitForEvent('pageerror');
+      const observed=await page.observeEvents('console',{durationMs:100},()=>check.action('draw',()=>page.getByRole('button',{name:'Diagnostics',exact:true}).click()));
+      const message=await logged;const error=await failed;
+      const type=await message.type();const text=await message.text();const location=await message.location();
+      const longLogged=page.waitForEvent('console');const longFailed=page.waitForEvent('pageerror');
+      await page.getByRole('button',{name:'Long diagnostics',exact:true}).click();
+      const longMessage=await longLogged;const longError=await longFailed;const fullText=await longMessage.text();
+      return {type:type.value,text:text.value,url:location.value.url,count:observed.value.count,error:error.value.detail,messageEvent:message.eventObservation.id,
+        long:{consoleLength:longMessage.eventObservation.value.detail.text.length,consoleTruncated:longMessage.eventObservation.value.detail.truncated,
+          errorLength:longError.value.detail.message.length,errorTruncated:longError.value.detail.truncated,fullLength:fullText.value.length}};
+    `, options()) as { type: string; text: string; url: string; count: number; error: unknown; messageEvent: string; long: unknown };
+    assert.equal(result.type, "warning"); assert.equal(result.text, "diagnostic warning");
+    assert.match(result.url, /^http:\/\/127\.0\.0\.1:/); assert.equal(result.count, 1);
+    assert.deepEqual(result.error, { name: "Error", message: "diagnostic failure", truncated: false });
+    assert.deepEqual(result.long, { consoleLength: 4096, consoleTruncated: true, errorLength: 4096, errorTruncated: true, fullLength: 5000 });
+    assert(events.some(event => event.payload.kind === "playwright.console.text" && event.inputs[0] === result.messageEvent));
+    const observation = events.find(event => event.payload.kind === "browser-events" && event.payload.event === "console")!;
+    assert(observation.inputs.some(id => events[Number(id.slice(5)) - 1]!.checkpointId === "draw"));
+  });
+});
+
 test("Native interface keeps strict locators, owned handles, file authority and host-only receipts", async () => {
   await application(false, async (runtime, events) => {
     const deny = async (source: string, pattern: RegExp) => assert.rejects(runtime.run(`const page=await browser.actor('alice');${source}`, options()), pattern);
@@ -118,6 +249,10 @@ test("Native interface keeps strict locators, owned handles, file authority and 
     await deny("await page.getByRole('button',{name:'Duplicate'}).click({strict:false});", /strictness cannot be overridden/);
     await deny("await page.getByRole('button',{name:'Import'}).click({force:true});", /force and trial/);
     await deny("await page.getByRole('button',{name:'Import'}).click({trial:true});", /force and trial/);
+    await deny("await page.getByRole('button',{name:'Duplicate'}).selectText();", /strict mode violation/);
+    await deny("await page.getByPlaceholder('Write here').selectText({force:true});", /force and trial/);
+    await deny("await page.emulateMedia({colorScheme:'dark',script:'ignored'});", /Unsupported.*options/);
+    await deny("await page.close({script:'ignored'});", /Unsupported.*options/);
     await deny("await check.action('unknown',()=>page.getByRole('button',{name:'Import'}).click());", /unknown contract checkpoint/);
     await deny("await page.goto('file:///private');", /authorized/);
     await deny("await page.goto('/source.js');", /authorized/);

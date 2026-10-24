@@ -28,6 +28,8 @@
  * Non-event-stream responses (and consumed bodies) pass through untouched.
  */
 
+import { INCOMPLETE_GATEWAY_STREAM as INCOMPLETE_MESSAGE } from "../gateway-failure.js";
+
 const EVENT_STREAM_CONTENT_TYPE = /^text\/event-stream\b/i;
 const EVENT_SEPARATOR = /\r?\n\r?\n/;
 /** Guard against an endless event that never terminates (mirrors the capture tap). */
@@ -35,8 +37,6 @@ const MAX_BUFFER_CHARS = 1024 * 1024;
 const MAX_REPORTED_CHARS = 400;
 /** A truncated event that carries content or a tool call must not be accepted silently. */
 const CONTENT_BEARING = /"(?:choices|tool_calls)"\s*:/;
-/** Matches the agent's retryable-error patterns so an incomplete stream is retried. */
-const INCOMPLETE_MESSAGE = "provider returned error: gateway truncated a content-bearing SSE event";
 
 const encoder = new TextEncoder();
 

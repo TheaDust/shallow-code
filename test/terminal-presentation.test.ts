@@ -525,6 +525,54 @@ test("Interactive cost key expands grouped spending", (t) => {
   assert.doesNotMatch(frame(), /Builder\s+tokens/);
 });
 
+test("Completed build TUI stays open for cost, requirements and logs until Ctrl+C", async (t) => {
+  const terminal = new MemoryTerminal();
+  terminal.rows = 30;
+  const ui = new BuildTui({ ...options, requirementsText: "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n" }, terminal);
+  t.after(() => ui.stop());
+  ui.start();
+  terminal.input("\r");
+  ui.record(JSON.stringify({ at: "2026-10-13T00:00:00Z", type: "builder_usage",
+    detail: { input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } }), "Builder 用量");
+  ui.complete({ status: "delivered", runDirectory: "E:\\runs\\demo", projectDirectory: "E:\\project",
+    elapsedMs: 65_000, patch: "E:\\runs\\demo\\changes.patch" });
+  ui.tui.renderNow();
+  const frame = () => (ui.tui as TuiMainScreen).captureRenderState().previousLines.join("\n");
+  assert.match(frame(), /交付完成/);
+  assert.match(frame(), /运行已结束/);
+  assert.match(frame(), /Ctrl\+C 退出/);
+  assert.doesNotMatch(frame(), /Result/);
+
+  terminal.input("d");
+  ui.tui.renderNow();
+  const log = terminal.writes.join("");
+  assert.match(log, /详细日志 · 最近 500 条/);
+  assert.match(log, /本轮结束：交付完成 · 总耗时 01:05/);
+  assert.match(log, /报告：E:\\runs\\demo\\report\.md/);
+  assert.match(log, /日志：E:\\runs\\demo\\run-log\.txt/);
+  assert.match(log, /shallow build apply --run-dir 'E:\\runs\\demo'/);
+  terminal.input("\x1b");
+
+  terminal.input("t");
+  ui.tui.renderNow();
+  terminal.input("v");
+  ui.tui.renderNow();
+  assert.match(terminal.writes.join(""), /需求书 · requirements\.yaml/);
+  assert.match(terminal.writes.join(""), /name: Demo/);
+  terminal.input("\x1b");
+
+  terminal.input("c");
+  ui.tui.renderNow();
+  assert.match(frame(), /Builder\s+tokens 1\.0k/);
+
+  let exited = false;
+  const waiting = ui.waitForExit().then(() => { exited = true; });
+  terminal.input("\x03");
+  await waiting;
+  assert.equal(exited, true);
+  assert.equal(terminal.stops, 0, "入口在等待退出后负责恢复终端");
+});
+
 test("Live Checker usage updates the cost panel without flooding the detailed log", (t) => {
   const terminal = new MemoryTerminal();
   const ui = new BuildTui(options, terminal);

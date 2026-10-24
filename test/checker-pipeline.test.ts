@@ -73,21 +73,23 @@ test("Checker configuration declares migration mode and bounded concurrency", ()
   assert.throws(() => parseCheckerConfig({ SHALLOW_CHECKER_CONCURRENCY: "3" }));
 });
 
-test("Gateway transport recovery retries feature grouping before dispatch", async () => {
+test("An exhausted grouper falls back once without restarting its private planning session", async () => {
   await withModulePipeline(async f => {
     await attach(f);
     let calls = 0;
     f.deps.grouper = { async group(catalog) {
-      if (++calls === 1) throw Object.assign(new Error("gateway temporarily unavailable"), {
+      calls++;
+      throw Object.assign(new Error("gateway temporarily unavailable"), {
         gatewayFailure: { kind: "unavailable" as const, retryable: true },
       });
-      return { groups: catalog.requirements.map(item => ({ requirementIds: [item.id], purpose: "Separate groups" })) };
     } };
     const result = await f.run();
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
     const waits = (await f.events()).filter(event => event.type === "gateway_wait");
-    assert.equal(waits.length, 1);
-    assert.equal(waits[0]!.detail?.source, "planning");
+    assert.equal(waits.length, 0);
+    const grouping = (await f.events()).find(event => event.type === "feature_grouping_finished");
+    assert.equal(grouping?.detail?.source, "deterministic");
+    assert.match(String(grouping?.detail?.reason), /gateway temporarily unavailable/);
     assert.notEqual(result.status, "failed");
   });
 });

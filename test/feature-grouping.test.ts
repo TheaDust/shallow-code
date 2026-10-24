@@ -3,35 +3,23 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { FEATURE_GROUPING_SCHEMA, parseFeatureGrouping } from "../src/feature-grouper.js";
-import { LlmFeatureGrouper } from "../src/llm-feature-grouper.js";
+import { validateGrouping } from "../src/feature-grouping-tools.js";
 import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets } from "../src/scheduler.js";
-import { PlannerRequestError, type PlannerUsage } from "../src/planner-json-client.js";
+import type { RequirementCatalog } from "../src/types.js";
 
-const config = { baseUrl: "https://gateway.example/v1", apiKey: "fixture-key", model: "provider/model", timeoutMs: 1000 };
 const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })) });
 const github = () => loadRequirementCatalog("data/official-competition/hackathon--github/requirements.yaml");
 const sheet = () => loadRequirementCatalog("data/official-competition/hackathon--sheet/requirements.yaml");
 
-test("Cutoff grouping keeps usage and expands the retry output allowance with explicit feedback", async () => {
-  const catalog = await sheet();
-  const response = groups(featureGroupPackets(catalog).packets.map(packet => packet.requirementIds));
-  let calls = 0;
-  const usages: PlannerUsage[] = [];
-  const grouper = new LlmFeatureGrouper(config, async (_url, init) => {
-    const body = JSON.parse(String(init?.body));
-    if (++calls === 1) return new Response(`data: ${JSON.stringify({ choices: [{ index: 0,
-      delta: { content: '{"groups":[' }, finish_reason: "length" }], usage: { prompt_tokens: 100, completion_tokens: 16384 } })}\n\ndata: [DONE]\n\n`,
-      { headers: { "content-type": "text/event-stream" } });
-    assert.equal(body.max_tokens, 131072);
-    assert.match(body.messages[1].content, /cut off/);
-    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(response) } }] }));
-  });
-  await assert.rejects(grouper.group(catalog, { timeoutMs: 1000, onUsage: usage => { usages.push(usage); } }),
-    error => error instanceof PlannerRequestError && error.diagnostics.validationError === "Feature grouper stream was cut off by the model");
-  assert.equal(usages[0].total, 16484);
-  assert.deepEqual(await grouper.group(catalog, { timeoutMs: 1000,
-    feedback: { validationError: "cut off", cutOffByModel: true } }), response);
-});
+function smallCatalog(items: Array<{ id: string; module?: string; dependencies?: string[]; text?: string }>): RequirementCatalog {
+  return { requirements: items.map((item, index) => ({
+    id: item.id, name: item.id, text: item.text ?? item.id,
+    folderPath: ["ROOT", item.module ?? "M"], declarationIndex: index,
+    dependencyIds: item.dependencies ?? [], scenarios: [`Scenario ${item.id}`],
+    references: [], exactUiStrings: [], seedDeclarations: [], ancestors: [],
+    product: { kind: "generic_web", rootId: "ROOT", rootName: "Example", description: "Example", seedData: [] },
+  })), statusById: Object.fromEntries(items.map(item => [item.id, "todo"])) };
+}
 
 test("Observed runtime proposals preserve Catalog objects, scenarios and independent atomic coverage", async () => {
   for (const [app, count] of [["github", 17], ["sheet", 12]] as const) {
@@ -94,54 +82,34 @@ test("The proposal schema permits explanatory purposes but cannot amend requirem
   assert.deepEqual(parseFeatureGrouping({ groups: [] }, { requirements: [], statusById: {} }).stats, featureGroupPackets({ requirements: [], statusById: {} }).stats);
 });
 
-test("LLM grouping sends descriptions and original metrics once, with independent JSON usage", async () => {
-  const catalog = await sheet();
-  const response = groups(featureGroupPackets(catalog).packets.map(packet => packet.requirementIds));
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
-  const usages: PlannerUsage[] = [];
-  const grouper = new LlmFeatureGrouper(config, async (url, init) => {
-    calls.push({ url: String(url), init });
-    return new Response(JSON.stringify({ choices: [{ message: { content: `\`\`\`json\n${JSON.stringify(response)}\n\`\`\`` } }],
-      usage: { prompt_tokens: 100, completion_tokens: 20, prompt_cache_hit_tokens: 40 } }), { headers: { "content-type": "application/json" } });
-  });
-  const proposal = await grouper.group(catalog, { timeoutMs: Infinity, onUsage: usage => { usages.push(usage); } });
-  assert.deepEqual(proposal, response);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].url, config.baseUrl + "/chat/completions");
-  assert.equal(new Headers(calls[0].init?.headers).get("authorization"), "Bearer fixture-key");
-  assert.equal(calls[0].init?.signal, undefined);
-  const body = JSON.parse(String(calls[0].init?.body));
-  assert.equal(body.model, config.model);
-  assert.equal(body.max_tokens, 65536);
-  assert.deepEqual(body.response_format, { type: "json_object" });
-  assert.deepEqual(body.stream_options, { include_usage: true });
-  assert.match(body.messages[0].content, /moduleId/);
-  assert.match(body.messages[0].content, /"groups"/);
-  const payload = JSON.parse(body.messages[1].content);
-  assert.deepEqual(payload.limits, DEFAULT_FEATURE_GROUP_THRESHOLDS);
-  assert.deepEqual(payload.referenceGroups, featureGroupPackets(catalog).packets.map(packet => packet.requirementIds));
-  const reference = parseFeatureGrouping(groups(payload.referenceGroups), catalog);
-  assert.equal(reference.stats.requirements, catalog.requirements.length);
-  assert.equal(payload.requirements.length, 24);
-  assert.deepEqual(payload.modules.flatMap((module: { requirementIds: string[] }) => module.requirementIds).sort(),
-    catalog.requirements.map(requirement => requirement.id).sort());
-  assert.equal(new Set(payload.modules.map((module: { moduleId: string }) => module.moduleId)).size, payload.modules.length);
-  for (let i = 0; i < catalog.requirements.length; i++) {
-    const original = catalog.requirements[i], sent = payload.requirements[i];
-    assert.equal(sent.moduleId, original.folderPath[1] ?? original.id);
-    assert.ok(payload.modules.find((module: { moduleId: string; requirementIds: string[] }) =>
-      module.moduleId === sent.moduleId)?.requirementIds.includes(original.id));
-    assert.equal(sent.text, original.text);
-    assert.equal(sent.scenarioCount, original.scenarios.length);
-    assert.equal(sent.textChars, original.text.length + original.scenarios.reduce((sum, scenario) => sum + scenario.length, 0));
-    assert.equal("scenarios" in sent, false);
-    for (const fact of sent.scenarioFacts) for (const source of fact.sources) {
-      assert.equal(original.scenarioContracts!.find(scenario => scenario.id === source.scenarioId)!.steps[source.stepIndex].content, fact.content);
-    }
-    assert.equal(sent.scenarioFacts.flatMap((fact: { sources: unknown[] }) => fact.sources).length,
-      original.scenarioContracts!.reduce((count, scenario) => count + scenario.steps.length, 0));
+test("Grouping tool reports structural boundaries without labeling dependency edges as regression risks", () => {
+  const catalog = smallCatalog([
+    { id: "A" }, { id: "B", dependencies: ["A"] },
+    { id: "C", module: "N", dependencies: ["B"] }, { id: "D", dependencies: ["C"] },
+  ]);
+  catalog.requirements[0].externalDependencyIds = ["PRIOR-STAGE"];
+  const before = structuredClone(catalog);
+  const result = validateGrouping(catalog, groups([["A"], ["B"], ["C"], ["D"]]));
+  assert.equal(result.valid, true);
+  assert.deepEqual(result.crossGroupDependencies, [
+    { dependencyId: "A", requirementId: "B", fromGroup: 1, toGroup: 2 },
+    { dependencyId: "B", requirementId: "C", fromGroup: 2, toGroup: 3 },
+    { dependencyId: "C", requirementId: "D", fromGroup: 3, toGroup: 4 },
+  ]);
+  assert.deepEqual(result.mergeableAdjacentGroups, [{ groups: [1, 2], requirementIds: ["A", "B"] }]);
+  assert.deepEqual(result.moduleRevisits, [{ moduleId: "M", group: 4 }]);
+  assert.equal(result.groups[0].scenarioCount, 1);
+  assert.equal(result.groups[0].textChars, catalog.requirements[0].text.length + catalog.requirements[0].scenarios[0].length);
+  assert.deepEqual(catalog, before);
+});
+
+test("Tool merge facts respect all original capacity limits, including oversized single atomics", () => {
+  for (const limit of ["requirements", "scenarios", "text"]) {
+    const catalog = smallCatalog((limit === "requirements" ? ["A", "B", "C", "D", "E"] : ["A", "B"]).map(id => ({ id })));
+    const ids = limit === "requirements" ? [["A", "B", "C", "D"], ["E"]] : [["A"], ["B"]];
+    if (limit === "scenarios") catalog.requirements[0].scenarios = Array(13).fill("same scenario");
+    if (limit === "text") catalog.requirements[0].text = "x".repeat(20001);
+    assert.deepEqual(validateGrouping(catalog, groups(ids)).mergeableAdjacentGroups, []);
   }
-  assert.equal(new Set(payload.ancestors.map((ancestor: { id: string }) => ancestor.id)).size, payload.ancestors.length);
-  assert.deepEqual(usages, [{ input: 60, output: 20, cacheRead: 40, cacheWrite: 0, total: 120 }]);
-  assert.equal(FEATURE_GROUPING_SCHEMA.properties.groups.items.additionalProperties, false);
+  assert.deepEqual(validateGrouping({ requirements: [], statusById: {} }, groups([])).groups, []);
 });

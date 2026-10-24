@@ -21,7 +21,7 @@ import { HumanRunFormatter } from "./src/human-log.js";
 import { BuildTui, buildResult } from "./src/terminal/build-tui.js";
 import { ProgressJournal, PROGRESS_DIR_NAME } from "./src/progress-journal.js";
 import { GatewayRecovery } from "./src/gateway-recovery.js";
-import { LlmFeatureGrouper } from "./src/llm-feature-grouper.js";
+import { PiFeatureGrouper } from "./src/llm-feature-grouper.js";
 import {
   runPipeline,
   type PipelineOptions,
@@ -63,11 +63,14 @@ export interface AgentExecutionContext {
   sourceProjectDir?: string;
   /** Builder 侧网关（SHALLOW_BUILDER_* 覆盖，缺省公共网关）。 */
   builderGateway: GatewayConfig;
-  /** Checker / 功能分组侧网关（SHALLOW_CHECKER_* 覆盖，缺省公共网关）。 */
+  /** Checker 侧网关（SHALLOW_CHECKER_* 覆盖，缺省公共网关）。 */
   checkerGateway: GatewayConfig;
+  /** Planner 侧网关（SHALLOW_PLANNER_* 覆盖，缺省公共网关）。 */
+  plannerGateway: GatewayConfig;
   /** 解析后的模型单价（USD / 百万 token）；null 表示只统计 token。 */
   builderModelCost: ModelRates | null;
   checkerModelCost: ModelRates | null;
+  plannerModelCost: ModelRates | null;
   pipelineOptions: PipelineOptions;
   modelTimeouts: {
     builderTimeoutMs: number;
@@ -139,12 +142,15 @@ export async function main(
   const checker = prior?.checker ?? requestedChecker;
   const builderGateway = readGatewayConfig(mergedEnv, "SHALLOW_BUILDER");
   const checkerGateway = readGatewayConfig(mergedEnv, "SHALLOW_CHECKER");
+  const plannerGateway = readGatewayConfig(mergedEnv, "SHALLOW_PLANNER");
   // 单价来自内置模型目录，可被 MODEL_COST_* / SHALLOW_BUILDER_COST_* /
-  // SHALLOW_CHECKER_COST_* 按字段覆盖；解析失败时只统计 token。
+  // SHALLOW_CHECKER_COST_* / SHALLOW_PLANNER_COST_* 按字段覆盖；缺失时只统计 token。
   const builderModelCost = resolveModelRates(builderGateway.baseUrl, builderGateway.model,
     { component: "SHALLOW_BUILDER", env: mergedEnv });
   const checkerModelCost = resolveModelRates(checkerGateway.baseUrl, checkerGateway.model,
     { component: "SHALLOW_CHECKER", env: mergedEnv });
+  const plannerModelCost = resolveModelRates(plannerGateway.baseUrl, plannerGateway.model,
+    { component: "SHALLOW_PLANNER", env: mergedEnv });
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
   try {
     await access(requirementsFile);
@@ -196,12 +202,16 @@ export async function main(
     ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), initialSpec?.generatedPaths,
       initialSpec?.dataPaths)
     : cli.outputDir);
+  const requirementsContext = await readFile(join(requirementSnapshot, "requirements.yaml"), "utf8");
   const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
   const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
   const initializationTui = execute === executeProduction && !prior && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb"
     ? new BuildTui({ requirementIds: Object.keys(requirementDigests), requirementTree: inputCatalog.tree,
+      requirementsText: requirementsContext,
       models: { builder: builderGateway.model, checker: checkerGateway.model },
       onInterrupt: () => { process.kill(process.pid, "SIGINT"); } }) : undefined;
+  // executeProduction 在 resume 等路径自行创建 TUI 时，通过上下文交回同一个句柄。
+  let activeTui = initializationTui;
   let initialization: InitializationResult | undefined;
   let initializationBaseline: string | undefined = pending?.inputBaseline;
   if (execute === executeProduction && !prior) {
@@ -226,14 +236,14 @@ export async function main(
         startedAtMs, totalBudgetMs: cli.budgetMs }, join(runDirectory, "run-ledger.jsonl"),
         createRunLogSink(join(runDirectory, "run-log.txt"), undefined, process.stderr,
           initializationTui ? (raw, line) => initializationTui.record(raw, line) : undefined),
-        gatewaySecrets(builderGateway, checkerGateway));
+        gatewaySecrets(builderGateway, checkerGateway, plannerGateway));
       initialization = await initializeProject({ outputDir: workingDirectory, privateDir: runDirectory,
         verify: verifyInitializedWebProject,
-        requirementsContext: await readFile(join(requirementSnapshot, "requirements.yaml"), "utf8"), intent,
+        requirementsContext, intent,
         resumePath: pendingRecord.path, previousUsage: pendingRecord.modelUsage,
         existingConfigContent: pendingRecord.existingConfigContent,
         env: mergedEnv, startedAtMs, budgetMs: cli.budgetMs, applications,
-        diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway),
+        diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway, plannerGateway),
         createBuilder: () => new PiWorkerClient(builderGateway, join(runDirectory, "pi-sessions"), undefined,
           { ...(builderModelCost ? { modelCost: builderModelCost } : {}), applications }),
         onEvent: (type, detail) => initState.record({ at: new Date().toISOString(), type, detail } as import("./src/types.js").RunEvent),
@@ -306,34 +316,47 @@ export async function main(
       await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
         filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
     }
-    // 初始化 TUI 已接管终端时直接写 stderr 会破坏主屏的差量重绘定位。
+    // TUI 已接管终端时直接写 stderr 会破坏主屏的差量重绘定位。
     if (!initializationTui) process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
-    const summary = await execute({
+    const context: AgentExecutionContext = {
       ...(initializationTui ? { tui: initializationTui } : {}),
       runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
       ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
       builderGateway,
       checkerGateway,
+      plannerGateway,
       builderModelCost,
       checkerModelCost,
+      plannerModelCost,
       pipelineOptions,
       modelTimeouts: deriveModelTimeouts(cli.budgetMs),
       builderContextWindow: parseBuilderContextWindow(mergedEnv),
       sseCaptureDir,
       referenceImages,
-    }).catch((error: unknown) => {
-      throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, checkerGateway)));
+    };
+    const summary = await execute(context).catch((error: unknown) => {
+      throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, checkerGateway, plannerGateway)));
     });
+    activeTui = context.tui ?? activeTui;
     const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
     await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
       [...summary.verifiedRequirementIds, ...(summary.skippedRequirementIds ?? [])]);
-    if (patch) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
+    if (patch && !activeTui) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
     await writeRunReport(runDirectory, summary, patch);
-    process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
-      Date.now() - startedAtMs,
-      Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
+    const elapsedMs = Date.now() - startedAtMs;
+    if (activeTui) {
+      // 完成后保留交互页面，用户可继续查看花费、需求书与日志，按 Ctrl+C 主动退出。
+      activeTui.complete({ status: summary.status, runDirectory,
+        projectDirectory: runRecord.sourceProjectDir ?? workingDirectory, elapsedMs,
+        ...(patch ? { patch } : {}) });
+      await activeTui.waitForExit();
+    } else {
+      process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
+        elapsedMs,
+        Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
+    }
     return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
-  } finally { initializationTui?.stop(); }
+  } finally { activeTui?.stop(); }
 }
 
 async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
@@ -383,7 +406,7 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, checkerGateway, builderModelCost, checkerModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, checkerGateway, plannerGateway, builderModelCost, checkerModelCost, plannerModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   // Builder, Planner and Checker share one cooldown so a gateway outage pauses
   // every client instead of letting each one discover it independently.
@@ -393,14 +416,17 @@ async function executeProduction(
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
   let releaseWorkspace: (() => Promise<void>) | undefined;
   let tui: BuildTui | undefined = context.tui;
+  let keepTui = false;
   try {
     if (interactive && !tui) {
       tui = new BuildTui({
         requirementIds: Object.keys(context.runRecord.requirementDigests!),
         requirementTree,
+        requirementsText: await readFile(pipelineOptions.requirementsFile, "utf8").catch(() => undefined),
         models: { builder: builderGateway.model, checker: checkerGateway.model },
         onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
       });
+      context.tui = tui;
       tui.start();
       // 先停留在只读状态；用户按 Enter 后才创建 Builder 并进入流水线。
       await tui.waitForStart();
@@ -511,13 +537,14 @@ async function executeProduction(
     }
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
       checker: checkerRuntime,
-      grouper: new LlmFeatureGrouper({ ...checkerGateway, timeoutMs: Infinity, ...(checkerModelCost ? { cost: checkerModelCost } : {}) }),
+      grouper: new PiFeatureGrouper({ gateway: plannerGateway, sessionDir: join(dirname(runLogFile), "planner-sessions"),
+        recovery: gatewayRecovery, ...(plannerModelCost ? { modelCost: plannerModelCost } : {}) }),
       builder,
       git,
       clock: { nowMs: () => Date.now() },
       logSink,
       gatewayRecovery,
-      diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway),
+      diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway, plannerGateway),
       assertContractUnchanged: async () => {
         const actual = await loadProjectSpec(pipelineOptions.outputDir, undefined, (raw, origin) =>
           applications.get((raw as { adapter?: string })?.adapter ?? "web").parseSpec(raw, origin));
@@ -525,16 +552,18 @@ async function executeProduction(
           throw new Error("Project run configuration changed after initialization; start a new run for the updated contract");
         }
       },
-      runMetadata: { model: builderGateway.model, checkerModel: checkerGateway.model,
+      runMetadata: { model: builderGateway.model, checkerModel: checkerGateway.model, plannerModel: plannerGateway.model,
         builderTimeoutMs: modelTimeouts.builderTimeoutMs,
         builderContextWindow,
         starterScaffold,
         promptSha256: promptHash.digest("hex"),
       },
     });
+    // 成功路径把 TUI 留给入口完成收尾并等待用户主动退出；异常路径仍立即恢复终端。
+    keepTui = true;
     return summary;
   } finally {
-    tui?.stop();
+    if (!keepTui) tui?.stop();
     await releaseWorkspace?.();
   }
 }

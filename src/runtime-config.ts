@@ -55,7 +55,7 @@ export function parseBuilderContextWindow(
 
 /**
  * 读取一份网关配置。公共值来自 OPENAI_API_KEY / OPENAI_BASE_URL / MODEL；
- * 传入 component（如 "SHALLOW_BUILDER"、"SHALLOW_CHECKER"）时，
+ * 传入 component（如 "SHALLOW_BUILDER"、"SHALLOW_CHECKER"、"SHALLOW_PLANNER"）时，
  * `<component>_API_KEY` / `<component>_BASE_URL` / `<component>_MODEL`
  * 可分别覆盖对应字段，未覆盖的字段回退公共值。
  */

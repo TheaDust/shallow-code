@@ -86,6 +86,13 @@ test("Runtime config supports component-scoped gateway overrides", () => {
     () => readGatewayConfig(onlyBuilder, "SHALLOW_CHECKER"),
     /SHALLOW_CHECKER_API_KEY or OPENAI_API_KEY/,
   );
+  assert.deepEqual(readGatewayConfig({ ...scoped, SHALLOW_PLANNER_MODEL: "planner/model" }, "SHALLOW_PLANNER"), {
+    apiKey: "key", baseUrl: "https://gateway.example/v1", model: "planner/model",
+  });
+  assert.deepEqual(readGatewayConfig({ SHALLOW_PLANNER_API_KEY: "planner-key",
+    SHALLOW_PLANNER_BASE_URL: "https://planner.example/v1/", SHALLOW_PLANNER_MODEL: "planner/model" }, "SHALLOW_PLANNER"), {
+    apiKey: "planner-key", baseUrl: "https://planner.example/v1", model: "planner/model",
+  });
 });
 
 test("Runtime config bounds model calls by the total budget", () => {

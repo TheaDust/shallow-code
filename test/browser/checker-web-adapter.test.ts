@@ -35,6 +35,11 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     assert.match(declarationPrompts[0]!, /^你在隔离解释器中执行普通 JavaScript 异步函数体/);
     assert.match(declarationPrompts[1]!, /^Authorized Playwright interface/);
     assert.match(declarationPrompts[1]!, /"filechooser"/);
+    assert.match(declarationPrompts[1]!, /"touchscreen"/);
+    assert.match(declarationPrompts[1]!, /"emulateMedia"/);
+    assert.match(declarationPrompts[1]!, /"selectText"/);
+    assert.match(declarationPrompts[1]!, /"domcontentloaded"/);
+    assert.match(declarationPrompts[1]!, /"hasTouch"/);
     assert.match(declarationPrompts[2]!, /^Web public entry: \/$/);
     assert.deepEqual(declaration.initialStates, [initialState]);
     assert.deepEqual(await artifacts.readTypedJson(initialState), { baseline: baseline.ref });
