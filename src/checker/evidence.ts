@@ -47,6 +47,7 @@ export interface CheckerManifest {
   reviews: ContentRef[];
   receipts: ContentRef[];
   diagnostics: string[];
+  feedback?: ContentRef[];
   unsupported?: UnsupportedClause[];
 }
 export interface UnsupportedClause { clauseId: string; reason: string; attempts: string[]; retryable?: boolean }

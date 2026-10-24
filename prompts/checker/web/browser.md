@@ -64,7 +64,7 @@ Checkpoint 与期望来自验收合同。用 `await check.precondition(checkpoin
 
 使用当前页面观察到的 role、label 与完整对象身份定位。结果断言表达需求的可观察语义：单个已有元素可用 `locator.isVisible()` 检查可见性；要求视觉隐藏时须结合能定位该对象的 label/testId 或容器可见性观察，不能只看 role 的 count=0。需求允许隐藏时，不能额外强制原文未要求的 DOM 移除或 ARIA 属性值。测试样例与 UI 探针可以用于建立关系证据，例如在隔离 case 中追加一个字符以检查光标位置，但须保留操作前后的真实观察，并保持原文规定动作与结果的含义。
 
-`run` 能力接受 `{source}` 或 `{program}`。探索页面使用 source；试运行已保存程序优先仅传完整 ProgramRef，由宿主读取已保存源码；同时传 source 和 program 时二者的源码字节必须一致。只有传入已保存的 program 时，`check.precondition` 与 `check.expect` 才从其合同加载 checkpoint 与 expected；仅探索页面时不要调用 `check.*`。最终场景使用 check_program {contract,source}。宿主自动保存完整程序、从合同生成 clauses 映射，并在独立干净 case 中运行，不需要先保存合同、手工 reset_case 或再次 run。检查返回 checks 中每条前置/结果断言的 actual、expected、passed 与 diagnostics；修改后重新调用 check_program。正确观察到业务失败仍可提交，不要求全部 passed:true；不得跳过失败前置或放宽期望，无法验证时提交 unsupported。
+`run` 能力接受 `{source}` 或 `{program}`。探索页面使用 source；试运行已保存程序优先仅传完整 ProgramRef，由宿主读取已保存源码；同时传 source 和 program 时二者的源码字节必须一致。只有传入已保存的 program 时，`check.precondition` 与 `check.expect` 才从其合同加载 checkpoint 与 expected；仅探索页面时不要调用 `check.*`。最终场景使用 check_program {contract,source}。宿主自动保存完整程序、从合同生成 clauses 映射，并在独立干净 case 中运行，不需要先保存合同、手工 reset_case 或再次 run。已确定公开入口、初态准备与唯一定位后，直接把导航、准备、动作和读取写入完整程序；不要先逐步点击同一路径。检查返回 checks 的结果及失败项的 actual/expected 预览与 diagnostics；通过项不回传完整值，长正文、图片数据或动作参数可能截断，排错必要时按 feedbackRef 使用 read_feedback 读取具体字段。修改后重新调用 check_program。正确观察到业务失败仍可提交，不要求全部 passed:true；不得跳过失败前置或放宽期望，无法验证时提交 unsupported。
 
 格式 shallow.web.javascript@1 是程序格式标识。Web 执行能力仍为 inspect、run、reset_case；inspect 接受可选 actor，run {source} 用于探索，reset_case 会使旧句柄失效。最终程序由 check_program 在独立环境执行，旧 case 的句柄与观察 id 不可带入；执行提供正式证据，semanticReview 为 true 时同时供独立复核使用。业务失败仍须在第二个独立环境复现。
 

@@ -92,6 +92,9 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
         assert.equal(preview.checks[0]!.payload.result, "satisfied");
         assert.deepEqual(preview.checks.slice(1).map(check => check.payload.result), mutant ? ["satisfied", "violated", "satisfied"] : ["satisfied", "satisfied", "satisfied"]);
         assert(preview.checks.every(check => check.receipt.digest.length === 64));
+        assert.equal(preview.checks[0]!.payload.actual, undefined, "passed precondition values are not repeated to the model");
+        assert.equal(preview.checks[1]!.payload.actual, undefined);
+        if (mutant) assert.equal(preview.checks[2]!.payload.actual, "4", "small failure values remain exact");
         await invoke("finish", { programs: [program] });
       }
       return { totalTokens: 100 };

@@ -6,11 +6,13 @@
 
 先确定并建立规定的初始状态。能直接写出完整场景程序时，直接调用 check_program {contract,source}；宿主绑定当前需求、初态与执行合同，从合同生成 clauses 映射，保存后在独立干净环境执行并返回 {program,checks,diagnostics}。检查真实的前置/结果断言与执行诊断，在当前探索会话内有界修正；源码或合同修改后，重新调用 check_program。没有源码索引或源码无法确定目标对象的公开身份、实际状态或所需能力时，才用 invoke 按声明的能力 schema 做最小补充探测。对象定位与操作必须经实际执行确认；不能用探索片段或文字声明代替最终程序执行。
 
+按场景收敛：一个场景的授权入口、初态建立方法和对象身份已足够明确，就先提交该场景的完整程序，不等待全组源码读完。把准备、动作和观察放进这次独立执行，避免先用 invoke 逐步跑通同一路径再抄成程序。只有具体缺失的信息妨碍编写程序时才补读或探测；首次执行后根据真实阻断点局部修正，不重新通读实现。已实际确认同一能力或前置条件阻断后，不为相同原因重复尝试等价路径；继续其他可测场景，并如实记录缺口。
+
 逐条阅读每个 GIVEN、WHEN、THEN、结果段的 AND/BUT 以及显式复合结果。sourceClauses 给出稳定的原文结果身份；合同逐字保留每个 id、requirementId、scenarioId 与 basis。合同包含 checkpoints [{id,kind,requirementId,scenarioId,clauseId?,dependsOn,basis,expected?}] 与 clauses [{id,requirementId,scenarioId,basis,checkpointId,expected}]；checkpoint 的 kind 为 precondition、action、condition、assertion。每个 GIVEN 与 WHEN 各成一个 checkpoint：用户动作 WHEN 为 action，系统状态/状态转移（渲染完成、保存完成、加载完成等）为 condition；动作 WHEN 必须把 checkpoint id 传给实际执行的动作，condition 不要求动作收据，由结果断言在状态成立后的观察证明。每个结果有独立 assertion checkpoint，其依赖须传递地包含该场景的初始条件与动作/状态条件。precondition 携带以原文为依据的 expected 比较。
 
 clause 的 expected 来自需求原文，不得照抄观察值；不得使用恒定谓词、空检查、恒真式。依据实际观察确定完整对象身份，保留原文规定的参与者、操作语义与授权入口；消除对象歧义后再操作，具体定位与调用语义遵循适配器声明。场景允许的样例数据、关系比较和必要测试探针可由程序选择，其常量来自准备输入，不从被测结果抄写。
 
-check_program 的 checks 列出本次前置/结果断言的真实 payload，据此修正参数与接线错误。程序必须自行建立初态、执行规定动作并断言全部映射结果，不得依赖探索会话；程序语法、可用方法与判定规则遵循适配器声明的执行格式。
+check_program 与 invoke 返回紧凑执行反馈及 feedbackRef。checks 保留每条前置/结果断言的身份和结果；通过项省略完整值，失败或不确定项给出有界 payload。diagnostics 最多展示最后 8 条；长值带 truncated 标记，省略数量显式列出。截断片段不能当作完整实际值或新观察。完整反馈与原始收据保存在私有 artifacts，只有摘要缺失排错所需信息时才用 read_feedback 按字段路径和文本窗口补读，不常规展开通过项、整段正文或全部轨迹。程序必须自行建立初态、执行规定动作并断言全部映射结果，不得依赖探索会话；程序语法、可用方法与判定规则遵循适配器声明的执行格式。
 
 输入中的 rejectedPrograms（若有）给出同一需求与执行合同下被独立语义复核拒绝的程序、原文子句身份与原因。它们只作修正参考，不占据覆盖；依据需求原文与当前观察修正合同或程序，再保存并提交。原样提交会被拒绝；历史拒绝及其原因不构成应用失败证据。
 

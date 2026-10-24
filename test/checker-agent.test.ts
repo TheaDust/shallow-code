@@ -98,7 +98,7 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
       assert.deepEqual(request.tools.map(item => item.name), ["finish"]);
       await tool("finish", { reviews: promptInput.programs.map((item: { programId: string; contract: AcceptanceContract }) => ({ programId: item.programId, approved: !config.rejectReview, reasons: config.rejectReview ? ["Constant predicate does not test source result"] : [], clauseIds: item.contract.clauses.map(clause => clause.id) })) });
     } else {
-      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish", ...config.sourceTools && !config.emptySource ? ["source_tree", "source_search", "source_read"] : []]);
+      assert.deepEqual(request.tools.map(item => item.name), ["invoke", "check_program", "finish", "read_feedback", ...config.sourceTools && !config.emptySource ? ["source_tree", "source_search", "source_read"] : []]);
       if (config.sourceTools && !config.emptySource) {
         const tree = await tool("source_tree", { depth: 1 }) as { entries: Array<{ path: string; kind: string }> };
         assert.deepEqual(tree.entries.map(entry => [entry.path, entry.kind]), [["cancel.ts", "file"]]);
@@ -168,6 +168,63 @@ test("semantic review off retains evidence validation and independent business f
     assert.equal(f.replays, 2);
     assert.deepEqual(f.roles, ["exploration"]);
     assert.match(report.outcomes[1]!.reason!, /independent fresh environment/);
+  } finally { await f.cleanup(); }
+});
+
+test("compact model feedback keeps full artifacts, targeted reads and original review/failure evidence", async () => {
+  const f = await fixture({ failures: [0, 1] });
+  const long = "INPUT-CONTENT-".repeat(10_000) + "EXACT-END";
+  const prepare = f.adapter.prepare.bind(f.adapter);
+  let previews = 0;
+  try {
+    f.adapter.prepare = async (...args) => {
+      const session = await prepare(...args);
+      const replay = session.replay.bind(session);
+      session.replay = async (...args) => Promise.all((await replay(...args)).map(async ref => {
+        const receipt = await f.store.getJson<EvidenceReceipt>(ref);
+        if (receipt.kind !== "assertion") return ref;
+        const result = receipt.assertion!.result;
+        const payload = { result, passed: result === "satisfied", expected: 5, actual: result === "satisfied" ? 5 : 4,
+          context: long };
+        return f.store.putReceipt(f.job, { ...receipt, payload: await f.store.putTypedJson(payload, receipt.payload.schema) });
+      }));
+      return session;
+    };
+    const checker = createCheckerAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
+      if (request.role === "semantic_review") {
+        assert(request.tools.every(tool => tool.name !== "read_feedback"));
+        assert.match(request.prompt, /EXACT-END/, "independent review retains unabridged receipt payloads");
+        return f.model.run(request);
+      }
+      const read = request.tools.find(tool => tool.name === "read_feedback")!;
+      await assert.rejects(read.execute({ feedbackRef: f.job.requirements }), /not returned/);
+      return f.model.run({ ...request, tools: request.tools.map(tool => tool.name !== "check_program" ? tool : {
+        ...tool, async execute(args) {
+          const preview = await tool.execute(args) as { feedbackRef: ContentRef; checks: Array<{ payload: Record<string, unknown> }> };
+          previews++;
+          assert(JSON.stringify(preview).length < 5000);
+          assert.deepEqual(preview.checks[1]!.payload, { result: "satisfied", passed: true });
+          assert.equal(preview.checks[2]!.payload.result, "violated");
+          const full = await f.store.getJson<{ checks: Array<{ payload: { context?: string } }> }>(preview.feedbackRef);
+          assert.equal(full.checks[2]!.payload.context, long);
+          const slice = await read.execute({ feedbackRef: preview.feedbackRef, path: ["checks", 2, "payload", "context"], offset: long.length - 9 }) as { text: string };
+          assert.equal(slice.text, "EXACT-END");
+          await assert.rejects(read.execute({ feedbackRef: { ...preview.feedbackRef, digest: "wrong" } }), /not returned/);
+          await assert.rejects(read.execute({ feedbackRef: preview.feedbackRef, path: ["__proto__"] }), /does not exist/);
+          return preview;
+        },
+      }) });
+    } } });
+    const report = await checker.check(f.job, new AbortController().signal);
+    assert.equal(previews, 1);
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "fail"]);
+    assert.equal(f.replays, 2, "compaction does not remove independent failure confirmation");
+    const manifest = await f.store.getJson<CheckerManifest>(report.manifest);
+    assert.equal(manifest.feedback!.length, 2, "both invoke and check_program retain their full feedback");
+    const receipts = await Promise.all(manifest.receipts.map(ref => f.store.getJson<EvidenceReceipt>(ref)));
+    for (const receipt of receipts.filter(item => item.kind === "assertion")) {
+      assert.equal((await f.store.readTypedJson<{ context: string }>(receipt.payload)).context, long);
+    }
   } finally { await f.cleanup(); }
 });
 
@@ -303,7 +360,10 @@ test("Checker assembles final-program self-check guidance with its exploration s
         assert.match(request.systemPrompt, /check_program.*独立干净环境/);
         assert.match(request.systemPrompt, /源码或合同修改后，重新调用 check_program/);
         assert.match(request.systemPrompt, /业务断言失败不要求把正确程序改到通过/);
-        assert.match(request.systemPrompt, /checker-tools@5/);
+        assert.match(request.systemPrompt, /checker-tools@6/);
+        assert.match(request.systemPrompt, /不等待全组源码读完/);
+        assert.match(request.systemPrompt, /避免先用 invoke 逐步跑通同一路径/);
+        assert.match(request.systemPrompt, /摘要缺失排错所需信息时才用 read_feedback/);
         assert.match(request.tools.find(tool => tool.name === "check_program")!.description, /execute the saved program in an independent clean environment/);
         assert.match(request.tools.find(tool => tool.name === "finish")!.description, /returned by check_program/);
       }
