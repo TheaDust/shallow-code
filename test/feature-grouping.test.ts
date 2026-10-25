@@ -7,7 +7,7 @@ import { validateGrouping } from "../src/feature-grouping-tools.js";
 import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets } from "../src/scheduler.js";
 import type { RequirementCatalog } from "../src/types.js";
 
-const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })) });
+const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })), scenarioPrerequisites: [] });
 const github = () => loadRequirementCatalog("data/official-competition/hackathon--github/requirements.yaml");
 const sheet = () => loadRequirementCatalog("data/official-competition/hackathon--sheet/requirements.yaml");
 
@@ -112,4 +112,31 @@ test("Tool merge facts respect all original capacity limits, including oversized
     assert.deepEqual(validateGrouping(catalog, groups(ids)).mergeableAdjacentGroups, []);
   }
   assert.deepEqual(validateGrouping({ requirements: [], statusById: {} }, groups([])).groups, []);
+});
+
+test("Scenario prerequisites enforce grounded cross-module ordering without amending Catalog dependencies", () => {
+  const catalog = smallCatalog([
+    { id: "receipt", module: "reports", text: "Create a receipt for the current session." },
+    { id: "session", module: "access", text: "Users can sign in and establish a current session." },
+  ]);
+  catalog.requirements[0].scenarioContracts = [{ id: "create", name: "Create", steps: [
+    { keyword: "GIVEN", content: "A customer exists" }, { keyword: "AND", content: "The user has signed in" },
+    { keyword: "WHEN", content: "Create a receipt" }, { keyword: "THEN", content: "A receipt is displayed" },
+  ] }];
+  const edge = { requirementId: "receipt", scenarioId: "create", stepIndex: 1, prerequisiteId: "session",
+    prerequisiteQuote: "Users can sign in and establish a current session." };
+  const before = structuredClone(catalog);
+  assert.throws(() => parseFeatureGrouping({ ...groups([["receipt"], ["session"]]), scenarioPrerequisites: [edge] }, catalog), /Scenario prerequisite session must precede receipt/);
+  const proposal = { ...groups([["session"], ["receipt"]]), scenarioPrerequisites: [edge] };
+  assert.deepEqual(validateGrouping(catalog, proposal).scenarioPrerequisites, [{ ...edge, fromGroup: 1, toGroup: 2 }]);
+  assert.deepEqual(catalog, before);
+  for (const changed of [
+    { prerequisiteId: "previous-stage" }, { prerequisiteId: "receipt" }, { scenarioId: "invented" },
+    { stepIndex: -1 }, { stepIndex: 2 }, { stepIndex: 3 }, { prerequisiteQuote: "Invented capability" },
+  ]) assert.throws(() => parseFeatureGrouping({ ...proposal, scenarioPrerequisites: [{ ...edge, ...changed }] }, catalog));
+  assert.throws(() => parseFeatureGrouping({ ...proposal, scenarioPrerequisites: null }, catalog), /must be an array/);
+  // A shared module still requires the provider to precede its consumer inside the group.
+  catalog.requirements[1].folderPath = ["ROOT", "reports"];
+  assert.throws(() => parseFeatureGrouping({ ...groups([["receipt", "session"]]), scenarioPrerequisites: [edge] }, catalog), /must precede/);
+  assert.equal(parseFeatureGrouping({ ...groups([["session", "receipt"]]), scenarioPrerequisites: [edge] }, catalog).packets.length, 1);
 });

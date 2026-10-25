@@ -36,5 +36,7 @@ export function validateGrouping(catalog: RequirementCatalog, proposal: unknown)
     return revisit ? [{ moduleId: group.moduleId, group: group.group }] : [];
   });
   return { valid: true as const, stats: grouping.stats, groups, crossGroupDependencies,
+    scenarioPrerequisites: grouping.scenarioPrerequisites.map(edge => ({ ...edge,
+      fromGroup: positions.get(edge.prerequisiteId)!, toGroup: positions.get(edge.requirementId)! })),
     mergeableAdjacentGroups, moduleRevisits };
 }

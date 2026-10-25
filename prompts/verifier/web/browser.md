@@ -56,7 +56,9 @@ await check.expect("no-download", [observed.id], "(values,expected)=>values[0].c
 - `inspect()` 返回 `{id,value:{url,text,accessibility}}`；`viewport()` 返回 `{id,value:{width,height,scrollWidth,scrollHeight}}`。
 - `clipboard.writeText(value)`、`clipboard.readText()` 访问当前应用文本剪贴板。`storage.fill(bytes)` 仅为原文要求的配额前置准备写入独立 fixture 键，最多 16 MiB，保留现有键，返回 `{id,value:{writtenBytes,quotaExceeded}}`。
 - `locator.pasteImage(file)` 对唯一目标执行真实 PNG 图片粘贴；`locator.dropFiles(files)` 派发携带 File 的 dragenter/dragover/drop，证明页面投放处理；`locator.uploadDirectory({name,files:[{path,text?|base64?|fixture?,mimeType?}]})` 上传宿主隔离生成的目录树。使用同一套严格唯一的 Playwright 定位器；动作使用 check.action 关联 checkpoint。
-- `render(download.id,options?)` 解析当前 actor/window 已读取的 base64 下载；`locator.image(options?)` 对唯一可见元素截图。支持 PDF、PNG、JPEG、WebP 与离线 OCR，返回 `{id,value}`，并保存 PNG 附件。PDF page 为 1–100、默认 1，scale 为 0.25–3、PDF 默认 1.5、图片默认 1。结果含 format/page/pageCount/width/height/text/textItems/truncated/pixels/samples；samples 最多 64 个 `{x,y}`，返回 rgba；region 选择像素区域时不提供整页提取文本。每边最多 4096 像素。ocr 可选 eng/chi_sim/eng+chi_sim，返回 ocr.text/confidence。同 case 相同内容与选项复用解析结果。
+- `render(download.id,options?)` 解析当前 actor/window 已读取的 base64 下载；`locator.image(options?)` 对唯一可见元素截图。支持 HTML（.html/.htm）、PDF、PNG、JPEG、WebP 与离线 OCR，返回 `{id,value}`，并保存 PNG 附件。PDF page 为 1–100、默认 1，scale 为 0.25–3、PDF 默认 1.5、图片与 HTML 默认 1。结果含 format/page/pageCount/width/height/text/textItems/truncated/pixels/samples；samples 最多 64 个 `{x,y}`，返回 rgba；region 选择像素区域时不提供整页提取文本。每边最多 4096 像素。ocr 可选 eng/chi_sim/eng+chi_sim，返回 ocr.text/confidence。同 case 相同内容与选项复用解析结果。
+
+HTML 从真实下载字节在独立浏览器上下文以 1280×720 视口整页渲染，page 只能为 1；禁用脚本与外部资源，仅允许内联样式及 data: 图片/字体，不继承应用的登录、存储或主题。restrictions 明示这些限制；依赖脚本或外部资源的结果须报告证据不足。无需通过 data:/file: 导航打开文件。HTML 可附 selectors（最多 32 个、各最多 512 字符），每个选择器须严格唯一，elements 返回 selector/text/visible/color/backgroundColor/box（原始页面坐标），用于观察实际计算样式与布局。例如 `const rendered=await page.render(file.id,{selectors:['body','h1']});`。HTML text 是渲染 DOM 的 innerText，不能单独证明像素可见；视觉内容仍须结合附件、元素可见性、像素或 OCR。
 
 验证导出内容时使用 page.render / locator.image 的 observation.id。文件名、尺寸、hash、非空字节或非白像素只能证明相应属性，
 不能单独证明原文要求的文字、图片或布局。PDF text/textItems 是文档提取结果，不能单独证明文字可见；
@@ -80,4 +82,4 @@ Checkpoint 与期望来自验收合同。用 `await check.precondition(checkpoin
 
 Web 的二进制下载在复核输入中以 {encoding,bytes,sha256,artifact} 标识，原始字节仍由宿主保存；引用及摘要只证明该份文件的身份，不能证明 PDF/图片渲染内容。文本下载正文保持原样。下载文件名有独立宿主 observation，可直接参与断言。宿主生成的 text/png fixture 是真实上传输入；PNG 的附加文本决定文件大小，仍是有效图片。storage.fill 只建立原文要求的配额前置状态，业务结果仍须从应用 UI 观察；viewport 返回实际窗口与页面尺寸。
 
-Web rendered-content 收据记录实际 PDF/图片渲染或可见元素截图，包含像素、文字位置、按需 OCR 的文字与置信度，原始 PNG 留在附件中。PDF text/textItems 是提取的文档内容，单独不能证明视觉可见；视觉文字须结合 OCR、像素或区域证据。尺寸、hash、非白像素仅能证明其本身，不可替代原文要求的内容与布局。truncated 或低置信度 OCR 不足以证明文字缺失。图片粘贴、文件投放、目录上传的动作收据证明相应输入操作，仍须观察应用处理结果。
+Web rendered-content 收据记录实际 HTML/PDF/图片渲染或可见元素截图，包含像素、文字位置、按需 OCR 的文字与置信度，原始 PNG 留在附件中。PDF text/textItems 是提取的文档内容，单独不能证明视觉可见；视觉文字须结合 OCR、像素或区域证据。尺寸、hash、非白像素仅能证明其本身，不可替代原文要求的内容与布局。truncated 或低置信度 OCR 不足以证明文字缺失。图片粘贴、文件投放、目录上传的动作收据证明相应输入操作，仍须观察应用处理结果。

@@ -140,8 +140,9 @@ function toolResult(value: unknown) { return { content: [{ type: "text" as const
 
 /** Called only after the Catalog validator has accepted the proposal. */
 function groupingKey(proposal: unknown): string {
-  return JSON.stringify((proposal as { groups: Array<{ requirementIds: string[]; purpose: string }> }).groups
-    .map(({ requirementIds, purpose }) => ({ requirementIds, purpose })));
+  const value = proposal as { groups: Array<{ requirementIds: string[]; purpose: string }>; scenarioPrerequisites?: unknown[] };
+  return JSON.stringify({ groups: value.groups.map(({ requirementIds, purpose }) => ({ requirementIds, purpose })),
+    scenarioPrerequisites: value.scenarioPrerequisites ?? [] });
 }
 
 function groupingPrompt(catalog: RequirementCatalog, options: FeatureGroupingOptions): string {
@@ -161,5 +162,6 @@ function groupingPrompt(catalog: RequirementCatalog, options: FeatureGroupingOpt
     ancestors: [...ancestors.values()], modules: [...modules].map(([moduleId, requirementIds]) => ({ moduleId, requirementIds })),
     referenceGroups: featureGroupPackets(catalog).packets.map(packet => packet.requirementIds), agentBudget: { maxTurns: MAX_AGENT_TURNS },
     scenarioInput: "scenarioFacts 按 GIVEN/WHEN/THEN 阶段保留原文摘录与全部来源；重复原文只在同一阶段合并。容量仍用原始场景计数与完整文本长度。",
+    prerequisiteReview: "逐个检查 given 阶段的全部 sources。当前需求中有明确提供该前置能力的需求时，以 scenarioPrerequisites 记录来源和提供方原文，并安排提供方在前；包括没有 dependencyIds 的跨模块前置。",
     requirements, ...(options.feedback ? { previousAttempt: options.feedback } : {}) });
 }

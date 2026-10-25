@@ -54,7 +54,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const spec = parseProjectSpec(options.spec);
   const store = options.artifacts;
   const require = createRequire(import.meta.url);
-  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./playwright-interface.ts", "./fixtures.ts", "./file-inputs.ts", "./binary-renderer.ts", "./binary-worker.mjs", "./review-evidence.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../../builder/sse-resilience.ts", "../../../gateway-failure.ts", "../../../gateway-recovery.ts", "../../artifacts.ts", "../../agent.ts", "../../feedback.ts", "../../evidence.ts", "../../model.ts", "../../source-index.ts"];
+  const releaseFiles = ["./index.ts", "./program-runtime.ts", "./playwright-interface.ts", "./fixtures.ts", "./file-inputs.ts", "./binary-renderer.ts", "./html-renderer.ts", "./binary-worker.mjs", "./review-evidence.ts", "./sandbox-worker.mjs", "../../../application/candidate-runtime.ts", "../../../project-spec.ts", "../../../application/commands.ts", "../../../application/port.ts", "../../../adapters/web/runtime.ts", "../../../adapters/web/project-spec.ts", "../../../inherited-data.ts", "../../../process-lifecycle.ts", "../../../process-spawn.ts", "../../../adapters/web/ports.ts", "../../../snapshot-store.ts", "../../../builder/sse-resilience.ts", "../../../gateway-failure.ts", "../../../gateway-recovery.ts", "../../artifacts.ts", "../../agent.ts", "../../feedback.ts", "../../evidence.ts", "../../model.ts", "../../source-index.ts"];
   const release = hashBytes(Buffer.concat(await Promise.all(releaseFiles.map((path) => readFile(new URL(path, import.meta.url))))));
   const executor = { id: "shallow.web.quickjs", version: "1", digest: release };
   const objectSchema = await store.putJson(OBJECT);
@@ -77,7 +77,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
     resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
-      { id: "run", version: "5", description: "Run isolated JavaScript with controlled native Playwright locators, keyboard/mouse/touchscreen, media preferences, page lifecycle and download controls, browser event observations and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
+      { id: "run", version: "6", description: "Run isolated JavaScript with controlled native Playwright locators, browser events, isolated downloaded HTML/PDF/image rendering and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
       { id: "reset_case", version: "1", description: "Rebuild an independent case from declared initial state; expire all browser handles.", inputSchema: resetSchema, outputSchema: objectSchema },
     ],
     programFormat: { id: "shallow.web.javascript", version: "1", mediaType: "text/javascript", schema: programSchema },

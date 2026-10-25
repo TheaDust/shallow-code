@@ -10,9 +10,11 @@ export interface RenderOptions {
   region?: { x: number; y: number; width: number; height: number };
   samples?: Array<{ x: number; y: number }>;
   ocr?: "eng" | "chi_sim" | "eng+chi_sim";
+  /** Unique elements to observe in a downloaded HTML document. */
+  selectors?: string[];
 }
 export interface RenderedContent {
-  format: "pdf" | "image";
+  format: "pdf" | "image" | "html";
   page: number;
   pageCount: number;
   width: number;
@@ -23,13 +25,18 @@ export interface RenderedContent {
   pixels: { sha256: string; nonWhiteRatio: number; bounds: { x: number; y: number; width: number; height: number } | null };
   samples: Array<{ x: number; y: number; rgba: number[] }>;
   ocr?: { text: string; confidence: number };
+  elements?: Array<{ selector: string; text: string; visible: boolean; color: string; backgroundColor: string;
+    box: { x: number; y: number; width: number; height: number } | null }>;
+  restrictions?: string[];
 }
 export interface RenderResult { value: RenderedContent; png: Buffer }
 
 export function renderOptions(raw: unknown): RenderOptions {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Render options must be an object");
   const options = raw as RenderOptions;
-  if (Object.keys(options).some(key => !["page", "scale", "region", "samples", "ocr"].includes(key))) throw new Error("Unknown render option");
+  if (Object.keys(options).some(key => !["page", "scale", "region", "samples", "ocr", "selectors"].includes(key))) throw new Error("Unknown render option");
+  if (options.selectors !== undefined && (!Array.isArray(options.selectors) || options.selectors.length > 32 ||
+    options.selectors.some(selector => typeof selector !== "string" || !selector.trim() || selector.length > 512))) throw new Error("HTML render selectors require at most 32 nonempty selectors of at most 512 characters");
   if (options.page !== undefined && (!Number.isInteger(options.page) || options.page < 1 || options.page > 100)) throw new Error("Render page must be between 1 and 100");
   if (options.scale !== undefined && (!Number.isFinite(options.scale) || options.scale < 0.25 || options.scale > 3)) throw new Error("Render scale must be between 0.25 and 3");
   if (options.region !== undefined && (!options.region || Object.keys(options.region).length !== 4 ||

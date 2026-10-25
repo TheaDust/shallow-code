@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Locator, Download } from "@playwright/test";
 import { getQuickJS } from "quickjs-emscripten";
 import { renderBinary, renderOptions, type RenderResult } from "./binary-renderer.js";
+import { renderHtml } from "./html-renderer.js";
 import { PLAYWRIGHT_GUEST, PlaywrightInterface } from "./playwright-interface.js";
 
 export interface SandboxOptions { signal: AbortSignal; timeoutMs: number; memoryLimitBytes?: number }
@@ -161,14 +162,14 @@ export interface WebRuntimeEvent {
 }
 interface Actor { context: BrowserContext; windows: Map<string, Page>; hasTouch: boolean }
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
-const DOWNLOAD_TEXT_EXTENSIONS = /\.(?:txt|csv|tsv|json|xml|html|md)$/i;
+const DOWNLOAD_TEXT_EXTENSIONS = /\.(?:txt|csv|tsv|json|xml|html|htm|md)$/i;
 
 /** Enforces browser ownership and records actual observations before the guest can consume them. */
 export class WebProgramRuntime {
   private readonly actors = new Map<string, Actor>();
   private readonly openingActors = new Set<string>();
   private readonly observations = new Map<string, unknown>();
-  private readonly binaries = new Map<string, { bytes: Buffer; actor: string; window: string }>();
+  private readonly binaries = new Map<string, { bytes: Buffer; actor: string; window: string; html: boolean }>();
   private readonly rendered = new Map<string, RenderResult>();
   private readonly inputCleanup = new Set<() => Promise<void>>();
   private readonly pending = new Set<Promise<unknown>>();
@@ -288,7 +289,7 @@ export class WebProgramRuntime {
       const sourceId = string(input.sourceId, "sourceId");
       const source = this.binaries.get(sourceId);
       if (!source || source.actor !== actorName || source.window !== windowName) throw new Error("Render requires a binary download observation from this actor and window");
-      return this.renderObservation(source.bytes, actorName, windowName, input.options ?? {}, [sourceId], signal);
+      return this.renderObservation(source.bytes, actorName, windowName, input.options ?? {}, [sourceId], signal, undefined, source.html);
     }
     if (method === "viewport") return this.observation({ actor: actorName, window: windowName, kind: "viewport", value: await page.evaluate(() => ({
       width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
@@ -325,12 +326,13 @@ export class WebProgramRuntime {
     if (!box || box.width > 4096 || box.height > 4096) throw new Error("Image observation requires a visible element of at most 4096 pixels per side");
     return this.renderObservation(await locator.screenshot({ timeout: this.timeoutMs }), actor, window, options, [], signal, steps);
   }
-  private async renderObservation(bytes: Buffer, actor: string, window: string, rawOptions: unknown, inputs: string[], signal: AbortSignal, locator?: unknown): Promise<unknown> {
+  private async renderObservation(bytes: Buffer, actor: string, window: string, rawOptions: unknown, inputs: string[], signal: AbortSignal, locator?: unknown, html = false): Promise<unknown> {
     const options = renderOptions(rawOptions);
-    const key = createHash("sha256").update(bytes).update(JSON.stringify(options)).digest("hex");
+    if (!html && options.selectors !== undefined) throw new Error("Render selectors require an HTML download");
+    const key = createHash("sha256").update(html ? "html" : "binary").update(bytes).update(JSON.stringify(options)).digest("hex");
     let result = this.rendered.get(key);
     if (!result) {
-      result = await renderBinary(bytes, options, signal);
+      result = html ? await renderHtml(this.browser, bytes, options, signal) : await renderBinary(bytes, options, signal);
       if (this.rendered.size >= 16) this.rendered.delete(this.rendered.keys().next().value!);
       this.rendered.set(key, result);
     }
@@ -357,7 +359,7 @@ export class WebProgramRuntime {
     const content = await this.observation({ actor: actorName, window: windowName, kind: "download", filename: download.suggestedFilename(), encoding, value }, inputs);
     if (encoding === "base64") {
       if ([...this.binaries.values()].reduce((total, source) => total + source.bytes.length, bytes.length) > 16 * 1024 * 1024) throw new Error("Binary downloads exceed the 16 MiB case limit");
-      this.binaries.set(content.id, { bytes, actor: actorName, window: windowName });
+      this.binaries.set(content.id, { bytes, actor: actorName, window: windowName, html: /\.html?$/i.test(download.suggestedFilename()) });
     }
     const filename = await this.observation({ actor: actorName, window: windowName, kind: "download-filename", value: download.suggestedFilename() });
     return { ...content, filename };

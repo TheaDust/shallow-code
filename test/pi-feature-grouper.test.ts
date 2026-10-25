@@ -14,7 +14,7 @@ import { withTempDir } from "./helpers/temp-dir.js";
 
 type Payload = { model: string; messages: Array<{ role: string; content: string | Array<{ text: string }> }>;
   tools: Array<{ function: { name: string; parameters: { type: string } } }> };
-const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })) });
+const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })), scenarioPrerequisites: [] });
 const text = (message: Payload["messages"][number]) => typeof message.content === "string"
   ? message.content : message.content.map(item => item.text).join("\n");
 const observation = (payload: Payload) => JSON.parse(text(payload.messages.filter(message => message.role === "tool").at(-1)!));
@@ -123,6 +123,38 @@ test("Pi Grouper requires a later turn to read validation feedback and rejects a
     if (calls === 3) send(res, [call("finish", merged)]);
     calls++;
   }, async grouper => { assert.deepEqual(await grouper.group(catalog(), { timeoutMs: 10_000 }), merged); assert.equal(calls, 4); });
+});
+
+test("Pi Grouper corrects scenario prerequisite order and binds finish to the reviewed evidence", async () => {
+  const input = catalog();
+  input.requirements[0].folderPath = ["ROOT", "operations"];
+  input.requirements[1].folderPath = ["ROOT", "access"];
+  input.requirements[0].scenarioContracts = [{ id: "move", name: "Move", steps: [
+    { keyword: "GIVEN", content: "The destination permissions have been configured" },
+    { keyword: "WHEN", content: "Move the folder" }, { keyword: "THEN", content: "Children retain visibility" },
+  ] }];
+  const edge = { requirementId: "MOVE", scenarioId: "move", stepIndex: 0, prerequisiteId: "ACCESS",
+    prerequisiteQuote: input.requirements[1].text };
+  const reversed = { ...groups([["MOVE"], ["ACCESS"]]), scenarioPrerequisites: [edge] };
+  const ordered = { ...groups([["ACCESS"], ["MOVE"]]), scenarioPrerequisites: [edge] };
+  const actions = [call("validate_grouping", { grouping: reversed }), call("validate_grouping", { grouping: ordered }),
+    call("finish", { ...ordered, scenarioPrerequisites: [] }), call("finish", ordered)];
+  let calls = 0;
+  await withGrouper((payload, res) => {
+    if (calls === 0) {
+      assert.match(text(payload.messages[0]), /模块连续性让位于场景前置/);
+      const source = JSON.parse(text(payload.messages.find(message => message.role === "user")!));
+      assert.match(source.prerequisiteReview, /given/);
+      assert.deepEqual(source.requirements[0].scenarioFacts[0].sources, [{ scenarioId: "move", stepIndex: 0 }]);
+    }
+    if (calls === 1) { assert.equal(observation(payload).valid, false); assert.match(observation(payload).error, /must precede MOVE/); }
+    if (calls === 2) assert.deepEqual(observation(payload).scenarioPrerequisites, [{ ...edge, fromGroup: 1, toGroup: 2 }]);
+    if (calls === 3) assert.match(text(payload.messages.at(-1)!), /exact proposal/);
+    send(res, [actions[calls++]]);
+  }, async grouper => {
+    assert.deepEqual(await grouper.group(input, { timeoutMs: 10_000 }), ordered);
+    assert.deepEqual(input.requirements.map(item => item.dependencyIds), [[], []]);
+  });
 });
 
 test("Pi Grouper bounds text-only answers to six planning turns and retains their failed-call usage", async () => {
