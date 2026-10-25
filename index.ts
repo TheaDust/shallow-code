@@ -5,16 +5,17 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { agentEnv } from "./src/agent-config.js";
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
 import { discoverRequirementsDir, parseInvocation, type CliOptions } from "./src/cli.js";
 import { SnapshotStore } from "./src/snapshot-store.js";
-import { CheckerSourceIndex, checkerSourceExclusions } from "./src/checker/source-index.js";
-import { ArtifactStore, atomicWrite } from "./src/checker/artifacts.js";
-import type { ContentRef } from "./src/checker/port.js";
-import { createCheckerAgent, createPiCheckerModel, type CheckerModelUsage } from "./src/checker/agent.js";
-import type { CheckerRuntime } from "./src/checker-pipeline.js";
+import { VerifierSourceIndex, verifierSourceExclusions } from "./src/verifier/source-index.js";
+import { ArtifactStore, atomicWrite } from "./src/verifier/artifacts.js";
+import type { ContentRef } from "./src/verifier/port.js";
+import { createVerifierAgent, createPiVerifierModel, type VerifierModelUsage } from "./src/verifier/agent.js";
+import type { VerifierRuntime } from "./src/verifier-pipeline.js";
 import type { RequirementNode } from "./src/types.js";
 import { GitCliOps } from "./src/git-ops.js";
 import { HumanRunFormatter } from "./src/human-log.js";
@@ -33,7 +34,7 @@ import { resolveModelRates, type ModelRates } from "./src/model-usage.js";
 import {
   deriveModelTimeouts,
   parseBuilderContextWindow,
-  parseCheckerConfig,
+  parseVerifierConfig,
   parseEvolutionAuditInherited,
   parseRunDirOverride,
   readEnvFile,
@@ -47,7 +48,7 @@ import { initializeProject, readProjectIntent, selectInitializationPath, type In
 import { verifyInitializedWebProject } from "./src/adapters/web/initialization.js";
 import { RunStateStore } from "./src/run-state.js";
 import { applications } from "./src/adapters/index.js";
-import { checkerAdapters } from "./src/adapters/checker.js";
+import { verifierAdapters } from "./src/adapters/verifier.js";
 import { copyProjectWorkspace, hasProjectFiles, writeProjectPatch } from "./src/project-workspace.js";
 import { applyRun, digest, loadPendingInitialization, loadRunRecord, lockWorkspace, readResumeCheckpoint,
   savePendingInitialization, saveRunRecord, snapshotFiles, writeRunReport, type PendingInitialization, type RunRecord } from "./src/run-record.js";
@@ -63,18 +64,18 @@ export interface AgentExecutionContext {
   sourceProjectDir?: string;
   /** Builder 侧网关（SHALLOW_BUILDER_* 覆盖，缺省公共网关）。 */
   builderGateway: GatewayConfig;
-  /** Checker 侧网关（SHALLOW_CHECKER_* 覆盖，缺省公共网关）。 */
-  checkerGateway: GatewayConfig;
-  /** Planner 侧网关（SHALLOW_PLANNER_* 覆盖，缺省公共网关）。 */
-  plannerGateway: GatewayConfig;
+  /** Verifier 侧网关（SHALLOW_VERIFIER_* 覆盖，缺省公共网关）。 */
+  verifierGateway: GatewayConfig;
+  /** Grouper 侧网关（SHALLOW_GROUPER_* 覆盖，缺省公共网关）。 */
+  grouperGateway: GatewayConfig;
   /** 解析后的模型单价（USD / 百万 token）；null 表示只统计 token。 */
   builderModelCost: ModelRates | null;
-  checkerModelCost: ModelRates | null;
-  plannerModelCost: ModelRates | null;
+  verifierModelCost: ModelRates | null;
+  grouperModelCost: ModelRates | null;
   pipelineOptions: PipelineOptions;
   modelTimeouts: {
     builderTimeoutMs: number;
-    checkerTimeoutMs: number;
+    verifierTimeoutMs: number;
   };
   /** Mainline Pi context ceiling (`SHALLOW_BUILDER_CONTEXT_WINDOW`). */
   builderContextWindow: number;
@@ -117,7 +118,7 @@ export async function main(
   let prior: RunRecord | undefined;
   if (invocation.command === "resume") {
     if (pending) {
-      // A crash can leave the pending marker behind after Checker binding was saved.
+      // A crash can leave the pending marker behind after Verifier binding was saved.
       try {
         const frozen = await loadRunRecord(invocation.runDirectory);
         if (frozen.bindingDigest) { prior = frozen; pending = null; }
@@ -132,25 +133,25 @@ export async function main(
     budgetMs: invocation.budgetMs,
   };
   const mergedEnv = await mergeGatewayEnv(env, envFile);
-  const requestedChecker = parseCheckerConfig(mergedEnv);
-  if (prior?.checker && ((mergedEnv.SHALLOW_CHECKER_MODE && requestedChecker.mode !== prior.checker.mode) ||
-    (mergedEnv.SHALLOW_CHECKER_CONCURRENCY && requestedChecker.concurrency !== prior.checker.concurrency) ||
-    (mergedEnv.SHALLOW_CHECKER_SEMANTIC_REVIEW && requestedChecker.semanticReview !== prior.checker.semanticReview) ||
-    (mergedEnv.SHALLOW_CHECKER_REPLAY && requestedChecker.replay !== prior.checker.replay))) {
-    throw new Error("Resume Checker settings changed; start a new run for the updated settings");
+  const requestedVerifier = parseVerifierConfig(mergedEnv);
+  if (prior?.verifier && ((agentEnv(mergedEnv, "verifier", "MODE") !== undefined && requestedVerifier.mode !== prior.verifier.mode) ||
+    (agentEnv(mergedEnv, "verifier", "CONCURRENCY") !== undefined && requestedVerifier.concurrency !== prior.verifier.concurrency) ||
+    (agentEnv(mergedEnv, "verifier", "SEMANTIC_REVIEW") !== undefined && requestedVerifier.semanticReview !== prior.verifier.semanticReview) ||
+    (agentEnv(mergedEnv, "verifier", "REPLAY") !== undefined && requestedVerifier.replay !== prior.verifier.replay))) {
+    throw new Error("Resume Verifier settings changed; start a new run for the updated settings");
   }
-  const checker = prior?.checker ?? requestedChecker;
-  const builderGateway = readGatewayConfig(mergedEnv, "SHALLOW_BUILDER");
-  const checkerGateway = readGatewayConfig(mergedEnv, "SHALLOW_CHECKER");
-  const plannerGateway = readGatewayConfig(mergedEnv, "SHALLOW_PLANNER");
+  const verifier = prior?.verifier ?? requestedVerifier;
+  const builderGateway = readGatewayConfig(mergedEnv, "builder");
+  const verifierGateway = readGatewayConfig(mergedEnv, "verifier");
+  const grouperGateway = readGatewayConfig(mergedEnv, "grouper");
   // 单价来自内置模型目录，可被 MODEL_COST_* / SHALLOW_BUILDER_COST_* /
-  // SHALLOW_CHECKER_COST_* / SHALLOW_PLANNER_COST_* 按字段覆盖；缺失时只统计 token。
+  // SHALLOW_VERIFIER_COST_* / SHALLOW_GROUPER_COST_* 按字段覆盖；缺失时只统计 token。
   const builderModelCost = resolveModelRates(builderGateway.baseUrl, builderGateway.model,
-    { component: "SHALLOW_BUILDER", env: mergedEnv });
-  const checkerModelCost = resolveModelRates(checkerGateway.baseUrl, checkerGateway.model,
-    { component: "SHALLOW_CHECKER", env: mergedEnv });
-  const plannerModelCost = resolveModelRates(plannerGateway.baseUrl, plannerGateway.model,
-    { component: "SHALLOW_PLANNER", env: mergedEnv });
+    { agent: "builder", env: mergedEnv });
+  const verifierModelCost = resolveModelRates(verifierGateway.baseUrl, verifierGateway.model,
+    { agent: "verifier", env: mergedEnv });
+  const grouperModelCost = resolveModelRates(grouperGateway.baseUrl, grouperGateway.model,
+    { agent: "grouper", env: mergedEnv });
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
   try {
     await access(requirementsFile);
@@ -208,7 +209,7 @@ export async function main(
   const initializationTui = execute === executeProduction && !prior && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb"
     ? new BuildTui({ requirementIds: Object.keys(requirementDigests), requirementTree: inputCatalog.tree,
       requirementsText: requirementsContext,
-      models: { builder: builderGateway.model, checker: checkerGateway.model },
+      models: { grouper: grouperGateway.model, builder: builderGateway.model, verifier: verifierGateway.model },
       onInterrupt: () => { process.kill(process.pid, "SIGINT"); } }) : undefined;
   // executeProduction 在 resume 等路径自行创建 TUI 时，通过上下文交回同一个句柄。
   let activeTui = initializationTui;
@@ -236,14 +237,14 @@ export async function main(
         startedAtMs, totalBudgetMs: cli.budgetMs }, join(runDirectory, "run-ledger.jsonl"),
         createRunLogSink(join(runDirectory, "run-log.txt"), undefined, process.stderr,
           initializationTui ? (raw, line) => initializationTui.record(raw, line) : undefined),
-        gatewaySecrets(builderGateway, checkerGateway, plannerGateway));
+        gatewaySecrets(builderGateway, verifierGateway, grouperGateway));
       initialization = await initializeProject({ outputDir: workingDirectory, privateDir: runDirectory,
         verify: verifyInitializedWebProject,
         requirementsContext, intent,
         resumePath: pendingRecord.path, previousUsage: pendingRecord.modelUsage,
         existingConfigContent: pendingRecord.existingConfigContent,
         env: mergedEnv, startedAtMs, budgetMs: cli.budgetMs, applications,
-        diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway, plannerGateway),
+        diagnosticSecrets: gatewaySecrets(builderGateway, verifierGateway, grouperGateway),
         createBuilder: () => new PiWorkerClient(builderGateway, join(runDirectory, "pi-sessions"), undefined,
           { ...(builderModelCost ? { modelCost: builderModelCost } : {}), applications }),
         onEvent: (type, detail) => initState.record({ at: new Date().toISOString(), type, detail } as import("./src/types.js").RunEvent),
@@ -275,7 +276,7 @@ export async function main(
     const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME)) : undefined;
     const historicalRequirements = prior?.historicalRequirements ?? (sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined);
     const pipelineOptions: PipelineOptions = {
-      checker,
+      verifier,
       requirementDigests,
       historicalRequirements,
       requirementsFile: join(requirementSnapshot, "requirements.yaml"),
@@ -294,8 +295,8 @@ export async function main(
       ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
     };
     const runRecord: RunRecord = {
-      version: 3, checker,
-      checkerRunId: prior?.checkerRunId ?? runId,
+      version: 4, verifier,
+      verifierRunId: prior?.verifierRunId ?? runId,
       ...(prior?.bindingDigest ? { bindingDigest: prior.bindingDigest } : {}),
       requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
       ...(initialization ? { initializationPath: initialization.path }
@@ -313,7 +314,7 @@ export async function main(
       : initialization.path === "existing" || initialization.path === "complete_existing" ? "inherited_application" : "unknown";
     await saveRunRecord(runDirectory, runRecord);
     if (invocation.command === "resume" && prior) {
-      await cp(join(invocation.runDirectory, "checker"), join(runDirectory, "checker"), { recursive: true,
+      await cp(join(invocation.runDirectory, "verifier"), join(runDirectory, "verifier"), { recursive: true,
         filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
     }
     // TUI 已接管终端时直接写 stderr 会破坏主屏的差量重绘定位。
@@ -323,11 +324,11 @@ export async function main(
       runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
       ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
       builderGateway,
-      checkerGateway,
-      plannerGateway,
+      verifierGateway,
+      grouperGateway,
       builderModelCost,
-      checkerModelCost,
-      plannerModelCost,
+      verifierModelCost,
+      grouperModelCost,
       pipelineOptions,
       modelTimeouts: deriveModelTimeouts(cli.budgetMs),
       builderContextWindow: parseBuilderContextWindow(mergedEnv),
@@ -335,7 +336,7 @@ export async function main(
       referenceImages,
     };
     const summary = await execute(context).catch((error: unknown) => {
-      throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, checkerGateway, plannerGateway)));
+      throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, verifierGateway, grouperGateway)));
     });
     activeTui = context.tui ?? activeTui;
     const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
@@ -345,7 +346,7 @@ export async function main(
     await writeRunReport(runDirectory, summary, patch);
     const elapsedMs = Date.now() - startedAtMs;
     if (activeTui) {
-      // 完成后保留交互页面，用户可继续查看花费、需求书与日志，按 Ctrl+C 主动退出。
+      // 完成后保留交互页面，用户可继续查看花费、需求树与日志，按 Ctrl+C 主动退出。
       activeTui.complete({ status: summary.status, runDirectory,
         projectDirectory: runRecord.sourceProjectDir ?? workingDirectory, elapsedMs,
         ...(patch ? { patch } : {}) });
@@ -406,9 +407,9 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, checkerGateway, plannerGateway, builderModelCost, checkerModelCost, plannerModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
-  // Builder, Planner and Checker share one cooldown so a gateway outage pauses
+  // Builder, Grouper and Verifier share one cooldown so a gateway outage pauses
   // every client instead of letting each one discover it independently.
   const gatewayRecovery = new GatewayRecovery();
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
@@ -423,7 +424,7 @@ async function executeProduction(
         requirementIds: Object.keys(context.runRecord.requirementDigests!),
         requirementTree,
         requirementsText: await readFile(pipelineOptions.requirementsFile, "utf8").catch(() => undefined),
-        models: { builder: builderGateway.model, checker: checkerGateway.model },
+        models: { grouper: grouperGateway.model, builder: builderGateway.model, verifier: verifierGateway.model },
         onInterrupt: () => { process.kill(process.pid, "SIGINT"); },
       });
       context.tui = tui;
@@ -495,36 +496,36 @@ async function executeProduction(
     }
     const logSink = createRunLogSink(runLogFile, new ProgressJournal(pipelineOptions.outputDir), process.stderr,
       tui ? (rawLine, line) => tui!.record(rawLine, line) : undefined);
-    let checkerRuntime!: CheckerRuntime;
+    let verifierRuntime!: VerifierRuntime;
     {
-      const directory = join(dirname(runLogFile), "checker");
-      const artifacts = new ArtifactStore(directory, context.runRecord.checkerRunId!);
+      const directory = join(dirname(runLogFile), "verifier");
+      const artifacts = new ArtifactStore(directory, context.runRecord.verifierRunId!);
       const snapshots = new SnapshotStore(join(directory, "snapshots"));
       let initialDataSnapshot: ContentRef;
       try { initialDataSnapshot = JSON.parse(await readFile(join(directory, "baseline.json"), "utf8")) as ContentRef; await snapshots.open(initialDataSnapshot); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT" || context.runRecord.resumedFrom) throw error;
         initialDataSnapshot = (await snapshots.seal({ sourceDirectory: pipelineOptions.outputDir,
-          sourceSha: await git.captureAccepted("shallow: Checker input baseline"), packetId: "input-baseline",
+          sourceSha: await git.captureAccepted("shallow: Verifier input baseline"), packetId: "input-baseline",
           generatedPaths: pipelineOptions.applicationContract.generatedPaths, dataPaths: pipelineOptions.applicationContract.dataPaths })).ref;
         await atomicWrite(join(directory, "baseline.json"), JSON.stringify(initialDataSnapshot) + "\n");
       }
-      const execution = await checkerAdapters.get(pipelineOptions.applicationContract.adapterId)({ artifacts, snapshots, spec: context.runRecord.projectSpec,
+      const execution = await verifierAdapters.get(pipelineOptions.applicationContract.adapterId)({ artifacts, snapshots, spec: context.runRecord.projectSpec,
         workspace: join(directory, "workers"), initialDataSnapshot,
         applicationContract: pipelineOptions.applicationContract });
-      if (context.runRecord.bindingDigest && context.runRecord.bindingDigest !== execution.adapter.binding.digest) throw new Error("Checker execution binding changed; start a new run");
+      if (context.runRecord.bindingDigest && context.runRecord.bindingDigest !== execution.adapter.binding.digest) throw new Error("Verifier execution binding changed; start a new run");
       context.runRecord.bindingDigest = execution.adapter.binding.digest;
       await saveRunRecord(dirname(runLogFile), context.runRecord);
       await rm(join(dirname(runLogFile), "initialization.json"), { force: true });
-      let recordUsage: (item: CheckerModelUsage) => void = () => {};
-      let recordUsageProgress: (item: CheckerModelUsage) => void = () => {};
-      const model = createPiCheckerModel({ gateway: checkerGateway, sessionDir: join(directory, "sessions"),
+      let recordUsage: (item: VerifierModelUsage) => void = () => {};
+      let recordUsageProgress: (item: VerifierModelUsage) => void = () => {};
+      const model = createPiVerifierModel({ gateway: verifierGateway, sessionDir: join(directory, "sessions"),
         recovery: gatewayRecovery,
-        ...(checkerModelCost ? { modelCost: checkerModelCost } : {}), onUsage: item => recordUsage(item),
+        ...(verifierModelCost ? { modelCost: verifierModelCost } : {}), onUsage: item => recordUsage(item),
         onProgress: item => recordUsageProgress(item) });
-      const sourceIndex = new CheckerSourceIndex(snapshots, checkerSourceExclusions(pipelineOptions.applicationContract));
-      checkerRuntime = { directory, artifacts, snapshots, checker: createCheckerAgent({ artifacts, adapter: execution.adapter, model, sourceIndex,
-        semanticReview: pipelineOptions.checker.semanticReview === true }),
+      const sourceIndex = new VerifierSourceIndex(snapshots, verifierSourceExclusions(pipelineOptions.applicationContract));
+      verifierRuntime = { directory, artifacts, snapshots, verifier: createVerifierAgent({ artifacts, adapter: execution.adapter, model, sourceIndex,
+        semanticReview: pipelineOptions.verifier.semanticReview === true }),
         binding: execution.adapter.binding, initialState: execution.initialState, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },
         setUsageProgressRecorder: recorder => { recordUsageProgress = recorder; },
@@ -536,15 +537,15 @@ async function executeProduction(
         } };
     }
     const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
-      checker: checkerRuntime,
-      grouper: new PiFeatureGrouper({ gateway: plannerGateway, sessionDir: join(dirname(runLogFile), "planner-sessions"),
-        recovery: gatewayRecovery, ...(plannerModelCost ? { modelCost: plannerModelCost } : {}) }),
+      verifier: verifierRuntime,
+      grouper: new PiFeatureGrouper({ gateway: grouperGateway, sessionDir: join(dirname(runLogFile), "grouper-sessions"),
+        recovery: gatewayRecovery, ...(grouperModelCost ? { modelCost: grouperModelCost } : {}) }),
       builder,
       git,
       clock: { nowMs: () => Date.now() },
       logSink,
       gatewayRecovery,
-      diagnosticSecrets: gatewaySecrets(builderGateway, checkerGateway, plannerGateway),
+      diagnosticSecrets: gatewaySecrets(builderGateway, verifierGateway, grouperGateway),
       assertContractUnchanged: async () => {
         const actual = await loadProjectSpec(pipelineOptions.outputDir, undefined, (raw, origin) =>
           applications.get((raw as { adapter?: string })?.adapter ?? "web").parseSpec(raw, origin));
@@ -552,7 +553,7 @@ async function executeProduction(
           throw new Error("Project run configuration changed after initialization; start a new run for the updated contract");
         }
       },
-      runMetadata: { model: builderGateway.model, checkerModel: checkerGateway.model, plannerModel: plannerGateway.model,
+      runMetadata: { model: builderGateway.model, verifierModel: verifierGateway.model, grouperModel: grouperGateway.model,
         builderTimeoutMs: modelTimeouts.builderTimeoutMs,
         builderContextWindow,
         starterScaffold,

@@ -39,7 +39,7 @@ export interface BuilderRunOptions {
   onUsage?: (usage: UsageSummary) => void | Promise<void>;
   /** Controller-owned conversation key; omitted for isolated repair calls. */
   sessionKey?: string;
-  /** Concrete controller build/start failure, never hidden Checker plans. */
+  /** Concrete controller build/start failure, never hidden Verifier plans. */
   continuationFeedback?: string;
   /** Fresh-session completion of a controller-observed interrupted implementation. */
   resumeInterrupted?: boolean;

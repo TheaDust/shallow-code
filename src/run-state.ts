@@ -92,7 +92,7 @@ export class RunStateStore {
     const safeEvent = this.envelope(event);
     this.state.ledger.push(safeEvent);
     try {
-      // Planner response previews are private controller diagnostics, not public stderr.
+      // Grouper response previews are private controller diagnostics, not public stderr.
       this.logSink?.write(`${JSON.stringify(safeEvent, (key, value: unknown) => key === "contentPreview" ? undefined : value)}\n`);
     } catch {
       // Diagnostic sink failures must never change the decision path.
@@ -104,7 +104,7 @@ export class RunStateStore {
         await mkdir(dirname(this.ledgerFile!), { recursive: true });
         await appendFile(this.ledgerFile!, `${JSON.stringify(safeEvent)}\n`, { encoding: "utf8", mode: 0o600 });
       } catch {
-        // Durable Checker transitions use their own store; this ledger is diagnostic.
+        // Durable Verifier transitions use their own store; this ledger is diagnostic.
       }
     });
     await this.ledgerWrites;
@@ -135,8 +135,8 @@ function redactEvent(event: RunEvent, secrets: readonly string[]): RunEvent {
 
 function eventPhase(event: RunEvent): RunEvent["phase"] {
   if (event.type.startsWith("initialization_")) return "application";
-  if (event.type.startsWith("check_") || event.type.startsWith("module_check") || event.type === "checker_usage" ||
-    event.type === "checker_usage_progress") return "checker";
+  if (event.type.startsWith("check_") || event.type.startsWith("module_check") || event.type === "verifier_usage" ||
+    event.type === "verifier_usage_progress") return "verifier";
   if (event.type.startsWith("evidence_")) return "evidence";
   if (event.type.startsWith("builder_")) return "builder";
   if (event.type.startsWith("application_")) return "application";

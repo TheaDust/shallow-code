@@ -27,7 +27,7 @@ test("Gateway wait transport reasons are redacted in both machine and human logs
     const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { chunks.push(chunk); } }, ["opaque-credential"]);
     await store.record({ at: "2026-09-07T00:00:00Z", type: "gateway_wait", packetId: "p", detail: {
-      source: "planning", retry: 1, delayMs: 30_000, failure: { kind: "unavailable", retryable: true },
+      source: "grouper", retry: 1, delayMs: 30_000, failure: { kind: "unavailable", retryable: true },
       reason: "TypeError: fetch failed → Error: token=opaque-credential [ECONNRESET]",
     } });
     const ledger = await readFile(join(directory, "ledger.jsonl"), "utf8");
@@ -37,8 +37,8 @@ test("Gateway wait transport reasons are redacted in both machine and human logs
   });
 });
 
-test("Checker progress redacts rejection reasons and remains separate from requirement outcomes", async () => {
-  await withTempDir("shallow-checker-progress-", async directory => {
+test("Verifier progress redacts rejection reasons and remains separate from requirement outcomes", async () => {
+  await withTempDir("shallow-verifier-progress-", async directory => {
     const chunks: string[] = [];
     const store = new RunStateStore({ statusByRequirementId: { R: "todo" }, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { chunks.push(chunk); } }, ["opaque-credential"]);
@@ -51,7 +51,7 @@ test("Checker progress redacts rejection reasons and remains separate from requi
     assert.doesNotMatch(human, /\n|opaque-credential/);
     assert.doesNotMatch(await readFile(join(directory, "ledger.jsonl"), "utf8"), /opaque-credential/);
     assert.equal(store.snapshot.statusByRequirementId.R, "todo");
-    assert.equal(store.snapshot.ledger[0]!.phase, "checker");
+    assert.equal(store.snapshot.ledger[0]!.phase, "verifier");
   });
 });
 
@@ -62,15 +62,15 @@ test("Display-only usage reaches the presenter without entering the ledger or ru
     const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { written.push(chunk); }, present: chunk => { presented.push(chunk); } });
     await store.record({ at: "2026-10-19T00:00:00Z", type: "phase_started", detail: { phase: "audit" } });
-    store.present({ at: "2026-10-19T00:00:01Z", type: "checker_usage_progress", detail: {
+    store.present({ at: "2026-10-19T00:00:01Z", type: "verifier_usage_progress", detail: {
       jobId: "j", role: "exploration", input: 10, output: 2, cacheRead: 0, cacheWrite: 0, total: 12,
     } });
     assert.equal(store.snapshot.ledger.length, 1);
     assert.equal(written.length, 1);
     assert.equal(presented.length, 1);
-    assert.equal(JSON.parse(presented[0]!).type, "checker_usage_progress");
-    assert.equal(JSON.parse(presented[0]!).phase, "checker");
-    assert.doesNotMatch(await readFile(join(directory, "ledger.jsonl"), "utf8"), /checker_usage_progress/);
+    assert.equal(JSON.parse(presented[0]!).type, "verifier_usage_progress");
+    assert.equal(JSON.parse(presented[0]!).phase, "verifier");
+    assert.doesNotMatch(await readFile(join(directory, "ledger.jsonl"), "utf8"), /verifier_usage_progress/);
   });
 });
 

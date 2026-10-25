@@ -119,7 +119,7 @@ export async function initializeProject(options: InitializationOptions): Promise
       const remaining = options.budgetMs <= 0 ? 180_000 : options.startedAtMs + options.budgetMs - Date.now();
       if (remaining <= 0) throw new Error("Project initialization budget exhausted; resume this run to continue");
       const inspection = await builder.run({
-        systemPrompt: await readFile(new URL("../prompts/system/project-intent-inspection.md", import.meta.url), "utf8"),
+        systemPrompt: await readFile(new URL("../prompts/builder/project-intent-inspection.md", import.meta.url), "utf8"),
         taskPrompt: `用户技术要求：\n${options.intent}`,
         outputDir, timeoutMs: Math.min(remaining, 180_000), sessionKey: "initialization-inspect", toolMode: "read_only",
       });
@@ -152,7 +152,7 @@ export async function initializeProject(options: InitializationOptions): Promise
       const adapterId = workingContract?.adapterId ?? (explicitConfig === undefined ? "web" : (JSON.parse(explicitConfig) as { adapter?: string }).adapter ?? "web");
       const initializationInstructions = applications.get(adapterId).initializationInstructions;
       const result = await builder.run({
-        systemPrompt: [await readFile(new URL("../prompts/system/project-initialization.md", import.meta.url), "utf8"), initializationInstructions].filter(Boolean).join("\n\n"),
+        systemPrompt: [await readFile(new URL("../prompts/builder/project-initialization.md", import.meta.url), "utf8"), initializationInstructions].filter(Boolean).join("\n\n"),
         taskPrompt: [
           `初始化路径：${path}`,
           `用户明确技术要求：\n${options.intent ?? "无；沿用现有项目技术栈与目录"}`,

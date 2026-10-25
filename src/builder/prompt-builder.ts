@@ -38,9 +38,9 @@ export class PromptBuilder implements BuilderPort {
       timeoutMs: remainingMs(), sessionKey: options.sessionKey, applicationContract: request.applicationContract, requirementsDir: this.options.requirementsDir,
       references, textOnly: this.textOnly, attachReferences, visionUnsupported: this.visionUnsupported,
       contextWindow: this.options.contextWindow };
-    if (options.continuationFeedback) input.taskPrompt += "\n\n" + loadPrompt("system", "implementation-continuation")
+    if (options.continuationFeedback) input.taskPrompt += "\n\n" + loadPrompt("builder", "implementation-continuation")
       .replace("{{FAILURE}}", () => options.continuationFeedback!);
-    if (options.resumeInterrupted) input.taskPrompt += "\n\n" + loadPrompt("system", "implementation-resume");
+    if (options.resumeInterrupted) input.taskPrompt += "\n\n" + loadPrompt("builder", "implementation-resume");
     let result = await this.client.run(input);
     if (result.execution?.usage.status === "available") await reportUsage(result.execution.usage);
     if (result.imageUnsupported && !this.textOnly && remainingMs() > 0) {

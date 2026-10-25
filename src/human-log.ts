@@ -1,17 +1,17 @@
 import type { RunEvent } from "./types.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { formatCostUsd, formatModelUsageSummary, type ModelUsageSummary, type UsageSummary } from "./model-usage.js";
-import type { CheckerProgress } from "./checker/port.js";
+import type { VerifierProgress } from "./verifier/port.js";
 
-export function checkerProgressLabel(progress: CheckerProgress): string {
-  const labels: Record<CheckerProgress["stage"], string> = {
+export function verifierProgressLabel(progress: VerifierProgress): string {
+  const labels: Record<VerifierProgress["stage"], string> = {
     prepare: "准备隔离环境", exploration: "探索并编写验收程序", rediscovery: "按拒绝原因修正验收程序",
     replay: "独立重放当前版本", semantic_review: "独立语义复核", review_approved: "验收程序复核通过",
     review_rejected: progress.cached ? "跳过已被拒绝的程序" : "验收程序复核未通过",
     review_cached: "复用已批准复核，跳过该程序的 LLM 复核", confirmation: "在第二个独立环境复现失败",
     diagnostic: "检查遇到问题，保留诊断", cleanup: "释放本次隔离环境",
   };
-  return `Checker · ${labels[progress.stage]}`;
+  return `Verifier · ${labels[progress.stage]}`;
 }
 
 export class HumanRunFormatter {
@@ -63,33 +63,33 @@ function describe(event: RunEvent): string | null {
   const reason = pickString(detail, "reason");
   switch (event.type) {
     case "check_progress":
-      return `${checkerProgressLabel(event.detail!)}（${packetId}）${event.detail?.archived ? "；历史任务" : ""}${reason ? `；原因：${reason}` : ""}`;
+      return `${verifierProgressLabel(event.detail!)}（${packetId}）${event.detail?.archived ? "；历史任务" : ""}${reason ? `；原因：${reason}` : ""}`;
     case "snapshot_sealed":
       return `源码已封存；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "check_queued":
-      return `Checker 已排队（${packetId}）；版本 ${pickString(detail, "snapshotId")}`;
+      return `Verifier 已排队（${packetId}）；版本 ${pickString(detail, "snapshotId")}`;
     case "check_started":
-      return `Checker 开始检查（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史任务" : ""}`;
+      return `Verifier 开始检查（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史任务" : ""}`;
     case "check_completed":
-      return `Checker 检查${detail?.status === "failed" || detail?.status === "interrupted" ? "未完成" : "完成"}（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
+      return `Verifier 检查${detail?.status === "failed" || detail?.status === "interrupted" ? "未完成" : "完成"}（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
     case "check_cancelled":
-      return `Checker 任务已结束（${packetId}）；${reason ?? "检查范围由模块收口接续"}`;
+      return `Verifier 任务已结束（${packetId}）；${reason ?? "检查范围由模块收口接续"}`;
     case "module_check_started":
       return `开始模块集中检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "module_check_finished":
       if (detail?.replay === false) return `${detail?.moduleId === "<final>" ? "最终功能组结果汇总" : "模块功能组结果汇总"}；交付版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
       return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
-    case "checker_usage": {
+    case "verifier_usage": {
       const tokens = tokenUsageParts(detail);
       const role = pickString(detail, "role");
       const label = role === "exploration" ? "探索" : role === "semantic_review" ? "独立复核" : role;
-      return tokens.length ? `Checker ${label} 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
+      return tokens.length ? `Verifier ${label} 用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
-    case "checker_usage_progress": {
+    case "verifier_usage_progress": {
       const tokens = tokenUsageParts(detail);
       const role = pickString(detail, "role");
       const label = role === "exploration" ? "探索" : role === "semantic_review" ? "独立复核" : role;
-      return tokens.length ? `Checker ${label} 进行中用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
+      return tokens.length ? `Verifier ${label} 进行中用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
     case "run_resumed":
       return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
@@ -135,11 +135,11 @@ function describe(event: RunEvent): string | null {
       const evolutionStart = pickString(evolution, "startingPoint");
       const evolutionText = evolution ? `；增量开发 Evolution${evolutionStage === null ? "" : ` Stage ${evolutionStage}`}${evolutionStart === "inherited_application" ? "（继承已有应用）" : evolutionStart === "blank_template" ? "（空白模板）" : ""}` : "";
       const model = pickString(detail, "model");
-      const checkerModel = pickString(detail, "checkerModel");
-      const checkerText = checkerModel && checkerModel !== model ? `；Checker 模型 ${checkerModel}` : "";
-      const plannerModel = pickString(detail, "plannerModel");
-      const plannerText = plannerModel && plannerModel !== model ? `；Planner 模型 ${plannerModel}` : "";
-      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${checkerText}${plannerText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
+      const verifierModel = pickString(detail, "verifierModel");
+      const verifierText = verifierModel && verifierModel !== model ? `；Verifier 模型 ${verifierModel}` : "";
+      const grouperModel = pickString(detail, "grouperModel");
+      const grouperText = grouperModel && grouperModel !== model ? `；Grouper 模型 ${grouperModel}` : "";
+      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${verifierText}${grouperText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
     }
     case "packet_selected":
       return `选定需求包 ${packetId}${strings(detail?.names).length ? `：${strings(detail?.names).join("、")}` : ""}`;
@@ -311,7 +311,7 @@ function tokenPart(label: string, value: unknown): string | null {
 /**
  * Renders 入/出/缓存读/缓存写/总计. The total is the sum of all four, so a
  * non-zero cache write has to appear or the printed parts stop adding up.
- * Shared by the Builder summary and the Probe Planner usage line.
+ * Shared by the Builder summary and the Probe Grouper usage line.
  */
 function tokenUsageParts(usage: unknown): string[] {
   const record = asRecord(usage);
@@ -356,10 +356,10 @@ function modelUsageSummary(value: unknown): ModelUsageSummary | null {
   const record = asRecord(value);
   const total = usageSummary(record);
   const builder = usageSummary(record?.builder);
-  const checker = usageSummary(record?.checker);
-  // 旧运行记录没有 Planner 分组；缺失时按零处理，总计保持不变。
-  const planner = usageSummary(record?.planner) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  return total && builder && checker ? { ...total, builder, checker, planner } : null;
+  const verifier = usageSummary(record?.verifier);
+  // 旧运行记录没有 Grouper 分组；缺失时按零处理，总计保持不变。
+  const grouper = usageSummary(record?.grouper) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  return total && builder && verifier ? { ...total, builder, verifier, grouper } : null;
 }
 
 function asNumber(value: unknown): number | null {

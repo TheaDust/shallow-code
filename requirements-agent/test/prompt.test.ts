@@ -20,7 +20,7 @@ test("requirements prompt carries the downstream acceptance contract", async () 
   }
   for (const anchor of [
     "Builder",
-    "Checker",
+    "Verifier",
     "独立重放",
     "每个结果子句只写一个可独立判定的结果",
     "description",

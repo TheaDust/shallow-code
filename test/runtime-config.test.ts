@@ -39,82 +39,91 @@ test("Runtime config requires the three explicit gateway variables", () => {
   }
 });
 
-test("Runtime config supports component-scoped gateway overrides", () => {
+test("Runtime config supports independent Grouper, Builder and Verifier gateway overrides", () => {
   const complete = {
     OPENAI_API_KEY: "key",
     OPENAI_BASE_URL: "https://gateway.example/v1/",
     MODEL: "provider/model",
   };
   // 未配置覆盖时与公共网关完全一致。
-  assert.deepEqual(readGatewayConfig(complete, "SHALLOW_BUILDER"), {
-    apiKey: "key",
-    baseUrl: "https://gateway.example/v1",
-    model: "provider/model",
-  });
+  for (const role of ["grouper", "builder", "verifier"] as const) {
+    assert.deepEqual(readGatewayConfig(complete, role), {
+      apiKey: "key",
+      baseUrl: "https://gateway.example/v1",
+      model: "provider/model",
+    });
+  }
 
-  // 三个字段可分别覆盖，未覆盖的字段回退公共值；空白覆盖视为缺省。
+  // 三个角色可分别覆盖不同字段，未覆盖的字段回退公共值；空白覆盖视为缺省。
   const scoped = {
     ...complete,
+    SHALLOW_GROUPER_MODEL: "grouper/model",
     SHALLOW_BUILDER_API_KEY: " builder-key ",
     SHALLOW_BUILDER_MODEL: "  ",
-    SHALLOW_CHECKER_BASE_URL: "https://judge.example/v1",
-    SHALLOW_CHECKER_MODEL: "judge/model",
+    SHALLOW_VERIFIER_BASE_URL: "https://verifier.example/v1",
+    SHALLOW_VERIFIER_MODEL: "verifier/model",
   };
-  assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_BUILDER"), {
+  assert.deepEqual(readGatewayConfig(scoped, "grouper"), {
+    apiKey: "key",
+    baseUrl: "https://gateway.example/v1",
+    model: "grouper/model",
+  });
+  assert.deepEqual(readGatewayConfig(scoped, "builder"), {
     apiKey: "builder-key",
     baseUrl: "https://gateway.example/v1",
     model: "provider/model",
   });
-  assert.deepEqual(readGatewayConfig(scoped, "SHALLOW_CHECKER"), {
+  assert.deepEqual(readGatewayConfig(scoped, "verifier"), {
     apiKey: "key",
-    baseUrl: "https://judge.example/v1",
-    model: "judge/model",
+    baseUrl: "https://verifier.example/v1",
+    model: "verifier/model",
   });
 
-  // 组件值可独立成立；组件与公共值都缺失时错误信息包含组件变量名。
+  // 角色值可独立成立；角色与公共值都缺失时错误信息包含角色变量名。
   const onlyBuilder = {
     SHALLOW_BUILDER_API_KEY: "key",
     SHALLOW_BUILDER_BASE_URL: "https://builder.example/v1",
     SHALLOW_BUILDER_MODEL: "builder/model",
   };
-  assert.deepEqual(readGatewayConfig(onlyBuilder, "SHALLOW_BUILDER"), {
+  assert.deepEqual(readGatewayConfig(onlyBuilder, "builder"), {
     apiKey: "key",
     baseUrl: "https://builder.example/v1",
     model: "builder/model",
   });
   assert.throws(
-    () => readGatewayConfig(onlyBuilder, "SHALLOW_CHECKER"),
-    /SHALLOW_CHECKER_API_KEY or OPENAI_API_KEY/,
+    () => readGatewayConfig(onlyBuilder, "verifier"),
+    /SHALLOW_VERIFIER_API_KEY or OPENAI_API_KEY/,
   );
-  assert.deepEqual(readGatewayConfig({ ...scoped, SHALLOW_PLANNER_MODEL: "planner/model" }, "SHALLOW_PLANNER"), {
-    apiKey: "key", baseUrl: "https://gateway.example/v1", model: "planner/model",
+  assert.deepEqual(readGatewayConfig({ ...scoped, SHALLOW_GROUPER_MODEL: "grouper/model" }, "grouper"), {
+    apiKey: "key", baseUrl: "https://gateway.example/v1", model: "grouper/model",
   });
-  assert.deepEqual(readGatewayConfig({ SHALLOW_PLANNER_API_KEY: "planner-key",
-    SHALLOW_PLANNER_BASE_URL: "https://planner.example/v1/", SHALLOW_PLANNER_MODEL: "planner/model" }, "SHALLOW_PLANNER"), {
-    apiKey: "planner-key", baseUrl: "https://planner.example/v1", model: "planner/model",
+  assert.deepEqual(readGatewayConfig({ SHALLOW_GROUPER_API_KEY: "grouper-key",
+    SHALLOW_GROUPER_BASE_URL: "https://grouper.example/v1/", SHALLOW_GROUPER_MODEL: "grouper/model" }, "grouper"), {
+    apiKey: "grouper-key", baseUrl: "https://grouper.example/v1", model: "grouper/model",
   });
+
 });
 
 test("Runtime config bounds model calls by the total budget", () => {
   assert.deepEqual(deriveModelTimeouts(600_000), {
     builderTimeoutMs: 240_000,
-    checkerTimeoutMs: 60_000,
+    verifierTimeoutMs: 60_000,
   });
   assert.deepEqual(deriveModelTimeouts(60_000), {
     builderTimeoutMs: 30_000,
-    checkerTimeoutMs: 10_000,
+    verifierTimeoutMs: 10_000,
   });
   assert.deepEqual(deriveModelTimeouts(0), {
     builderTimeoutMs: 5_400_000,
-    checkerTimeoutMs: 720_000,
+    verifierTimeoutMs: 720_000,
   });
   assert.deepEqual(deriveModelTimeouts(10_800_000), {
     builderTimeoutMs: 4_320_000,
-    checkerTimeoutMs: 720_000,
+    verifierTimeoutMs: 720_000,
   });
   assert.deepEqual(deriveModelTimeouts(3_600_000), {
     builderTimeoutMs: 1_440_000,
-    checkerTimeoutMs: 360_000,
+    verifierTimeoutMs: 360_000,
   });
 });
 

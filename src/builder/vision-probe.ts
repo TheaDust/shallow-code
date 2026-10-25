@@ -53,7 +53,7 @@ export class VisionCapability {
         headers: {
           authorization: `Bearer ${this.gateway.apiKey}`,
           "content-type": "application/json",
-          // Some OpenAI-compatible gateways route on this header; the Planner sends the same one.
+          // Some OpenAI-compatible gateways route on this header; the Grouper sends the same one.
           "x-opencode-session": randomUUID(),
         },
         body: JSON.stringify({

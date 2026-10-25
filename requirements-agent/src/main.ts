@@ -42,7 +42,7 @@ export async function main(): Promise<number> {
   const baseDir = process.cwd();
   const gateway = await loadGatewayEnv({
     cwd: baseDir,
-    // 仓库根目录 .env（与 ShallowCode 的 builder / judge 共用同一份配置）。
+    // 仓库根目录 .env（与 ShallowCode 的 Grouper / Builder / Verifier 共用同一份配置）。
     rootEnvFile: fileURLToPath(new URL("../../.env", import.meta.url)),
   });
   const systemPrompt = await readFile(

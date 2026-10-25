@@ -34,7 +34,7 @@ test("Pi adapter preserves native file tools and guards their actual execution",
       "---\nname: unapproved\ndescription: WORKSPACE_SKILL_SENTINEL\n---\nworkspace skill");
     const cases = [
       { name: "read", arguments: { path: skillFile }, expected: /# 可访问 Web 交互/ },
-      { name: "read", arguments: { path: join(BUILDER_SKILLS_DIR, "..", "system", "builder-system.md") }, expected: /outside the application/ },
+      { name: "read", arguments: { path: join(BUILDER_SKILLS_DIR, "..", "builder", "builder-system.md") }, expected: /outside the application/ },
       { name: "write", arguments: { path: skillFile, content: skillContent }, expected: /outside the application/ },
       { name: "edit", arguments: { path: skillFile, edits: [{ oldText: "SKILL_GUARD_SENTINEL_NOT_PRESENT", newText: "unchanged" }] }, expected: /outside the application/ },
       { name: "read", arguments: { path: visibleFile }, expected: /visible content/ },

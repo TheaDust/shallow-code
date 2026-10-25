@@ -2,7 +2,7 @@ import { parseFeatureGrouping } from "./feature-grouper.js";
 import { DEFAULT_FEATURE_GROUP_THRESHOLDS, requirementTextChars } from "./scheduler.js";
 import type { RequirementCatalog } from "./types.js";
 
-/** Structural facts for the planner; dependency edges do not establish semantic coupling. */
+/** Structural facts for the grouper; dependency edges do not establish semantic coupling. */
 export function validateGrouping(catalog: RequirementCatalog, proposal: unknown) {
   const grouping = parseFeatureGrouping(proposal, catalog);
   const positions = new Map(grouping.packets.flatMap((packet, index) =>

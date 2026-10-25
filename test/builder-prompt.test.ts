@@ -77,7 +77,7 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.taskPrompt, /需求核对/);
   assert.doesNotMatch(compiled.systemPrompt, /REQ-PROFILE/);
   assert.match(compiled.taskPrompt, /# 行动：实现当前工作包/);
-  const actionIndex = compiled.taskPrompt.indexOf(loadPrompt("system", "action-implement"));
+  const actionIndex = compiled.taskPrompt.indexOf(loadPrompt("builder", "action-implement"));
   const packetIndex = compiled.taskPrompt.indexOf("## 当前工作包");
   assert.ok(actionIndex >= 0 && packetIndex > actionIndex, "implement action stays ahead of packet-specific context");
   assert.match(compiled.taskPrompt, /先规划，再实施/);
@@ -163,8 +163,8 @@ test("Evolution packets share the static context before their prerequisite ids",
   assert.ok(boundary > 0);
   const prefix = prompts[0]!.slice(0, boundary + marker.length);
   assert.ok(prefix.includes("## 增量开发上下文"));
-  assert.ok(prefix.includes(loadPrompt("system", "evolution-audit-all")));
-  assert.ok(prefix.includes(loadPrompt("system", "incremental-start-inherited")));
+  assert.ok(prefix.includes(loadPrompt("builder", "evolution-audit-all")));
+  assert.ok(prefix.includes(loadPrompt("builder", "incremental-start-inherited")));
   assert.ok(prefix.includes("继承应用的持久化目录"), "the last static paragraph stays in the shared prefix");
   for (const prompt of prompts) assert.ok(prompt.startsWith(prefix));
   assert.notEqual(prompts[0]!.slice(boundary), prompts[1]!.slice(boundary));
@@ -191,8 +191,8 @@ test("Builder receives progressive-stage rules for inherited and blank starting 
     assert.ok(prompt.includes(`本轮起点：${expected}`));
     assert.match(prompt, /REQ-1-1-2、REQ-3-3/);
     assert.match(prompt, /不是本轮单独验收的需求/);
-    assert.ok(prompt.includes(loadPrompt("system", "action-implement")));
-    assert.ok(compiled.systemPrompt.includes(loadPrompt("system", "self-test")));
+    assert.ok(prompt.includes(loadPrompt("builder", "action-implement")));
+    assert.ok(compiled.systemPrompt.includes(loadPrompt("builder", "self-test")));
     if (startingPoint === "inherited_application") assert.match(prompt, /不换栈、不推倒重写/);
     else assert.match(prompt, /最小必要的前序支撑能力/);
   }
@@ -221,8 +221,8 @@ test("Evolution context reaches implementation and repair modes for each startin
       assert.match(prompt, /原功能复用符合当前合同的部分，局部修改变化/);
       assert.match(prompt, /新增功能沿用既有模型和接口补齐完整业务链路/);
       assert.match(prompt, /不能凭旧需求 ID 或前次通过结果跳过核对/);
-      assert.ok(compiled.systemPrompt.includes(loadPrompt("system", "self-test")));
-      assert.equal(prompt.includes(loadPrompt("system", "action-implement")), request.mode === "implement");
+      assert.ok(compiled.systemPrompt.includes(loadPrompt("builder", "self-test")));
+      assert.equal(prompt.includes(loadPrompt("builder", "action-implement")), request.mode === "implement");
       if (startingPoint === "inherited_application") assert.match(prompt, /沿用现有技术栈、模型和接口/);
       else if (startingPoint === "blank_template") assert.match(prompt, /最小必要的前序支撑能力/);
       else assert.match(prompt, /先阅读项目目录、其中适用的 AGENTS\.md、ARCHITECTURE\.md/);
@@ -242,15 +242,15 @@ test("Evolution and progressive stages share starting-point actions across imple
       const stagePrompt = compileBuilderPrompt(request).taskPrompt;
       request.projectContext.evolution = { stageIndex: 2, startingPoint, externalPrerequisiteIds: [] };
       const evolutionPrompt = compileBuilderPrompt(request).taskPrompt;
-      const action = loadPrompt("system", assetName);
+      const action = loadPrompt("builder", assetName);
       assert.equal(stagePrompt.split(action).length, 2);
       assert.equal(evolutionPrompt.split(action).length, 2);
       assert.match(evolutionPrompt, /当前任务：Evolution；Stage 2/);
       assert.doesNotMatch(evolutionPrompt, /## 分阶段增量上下文/);
       for (const other of ["incremental-start-inherited", "incremental-start-blank", "incremental-start-unknown"]) {
         if (other !== assetName) {
-          assert.ok(!stagePrompt.includes(loadPrompt("system", other)));
-          assert.ok(!evolutionPrompt.includes(loadPrompt("system", other)));
+          assert.ok(!stagePrompt.includes(loadPrompt("builder", other)));
+          assert.ok(!evolutionPrompt.includes(loadPrompt("builder", other)));
         }
       }
     }
@@ -265,7 +265,7 @@ test("Evolution context includes a declared stage as optional metadata", () => {
 });
 
 test("Every Builder mode includes shared handoff and public-entry contracts", () => {
-  const architectureNotes = loadPrompt("system", "architecture-notes");
+  const architectureNotes = loadPrompt("builder", "architecture-notes");
   for (const request of [implementRequest(), repairRequest("repair"), repairRequest("root_cause_repair"), deliveryRequest()]) {
     const compiled = compileBuilderPrompt(request);
     assert.equal(compiled.systemPrompt.split(architectureNotes).length, 2);

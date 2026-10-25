@@ -220,7 +220,7 @@ export class RequirementsTui {
     if (!this.assistant) {
       const component = new Markdown(text, 1, 0, this.markdownTheme);
       this.assistant = { component, text };
-      this.append(new Text(this.theme.planner("需求助手"), 1, 0));
+      this.append(new Text(this.theme.grouper("需求助手"), 1, 0));
       this.append(component);
       return;
     }
@@ -371,7 +371,7 @@ export function formatRequirementPreview(tree: RequirementNode, theme?: Terminal
   const visit = (node: RequirementNode, depth: number): void => {
     const indent = "  ".repeat(depth);
     const marker = node.type === "ATOMIC" ? "◆" : "▸";
-    const marked = theme ? (node.type === "ATOMIC" ? theme.accent(marker) : theme.planner(marker)) : marker;
+    const marked = theme ? (node.type === "ATOMIC" ? theme.accent(marker) : theme.grouper(marker)) : marker;
     lines.push(`${indent}${marked} ${node.name} · ${theme ? theme.muted(node.id) : node.id}`);
     if (node.description) lines.push(...node.description.split("\n").map(line => `${indent}  ${line}`));
     if (node.guidance?.length) {

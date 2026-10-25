@@ -33,15 +33,15 @@ export async function runPiWorker(input: PiWorkerRequest, capabilities?: Builder
   const capture = input.sseCaptureDir ? installSseCapture(input.sseCaptureDir, input.sessionKey ?? "builder") : undefined;
   try {
     const imageNote = !input.references?.length ? "" : !attach || input.visionUnsupported
-      ? loadPrompt("system", "reference-images-text-fallback")
-      : input.textOnly ? loadPrompt("system", "reference-images-text-fallback")
-      : fillTemplate(loadPrompt("system", "reference-images"), {
+      ? loadPrompt("builder", "reference-images-text-fallback")
+      : input.textOnly ? loadPrompt("builder", "reference-images-text-fallback")
+      : fillTemplate(loadPrompt("builder", "reference-images"), {
         ATTACHED_REFERENCES: loaded.images.map(image => `- ${image.reference}`).join("\n") || "无",
         UNAVAILABLE_REFERENCES: loaded.skipped.map(item => `- ${item.reference}: ${item.reason}`).join("\n") || "无",
       });
     let result = await session.prompt(`${input.taskPrompt}\n\n${imageNote}`, images);
     if (result.terminationReason === "empty_terminal_response") {
-      result = await session.prompt(loadPrompt("system", "completion-receipt"));
+      result = await session.prompt(loadPrompt("builder", "completion-receipt"));
     }
     const { outcome, summary, gatewayFailure, terminationReason } = result;
     const stats = rebase(session.snapshot());

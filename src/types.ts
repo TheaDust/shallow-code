@@ -1,4 +1,5 @@
-import type { CheckerProgress } from "./checker/port.js";
+import type { AgentRole } from "./agent-config.js";
+import type { VerifierProgress } from "./verifier/port.js";
 
 export type RequirementStatus = "todo" | "verified" | "blocked" | "failed" | "inconclusive";
 export type InconclusiveKind = "planning" | "coverage" | "preparation" | "locator" | "execution" | "review" | "gateway" | "budget" | "unreproduced";
@@ -124,7 +125,7 @@ interface RunEventEnvelope {
   eventId?: string;
   sequence?: number;
   elapsedMs?: number;
-  phase?: "pipeline" | "builder" | "planning" | "application" | "checker" | "decision" | "delivery" | "evidence";
+  phase?: "pipeline" | "builder" | "planning" | "application" | "verifier" | "decision" | "delivery" | "evidence";
   acceptedSha?: string;
   attempt?: number;
 }
@@ -145,7 +146,7 @@ interface RunEventDetails {
     implementedRequirementIds?: string[]; sequence: number; authoritative?: boolean };
   check_queued: CheckEventDetail;
   check_started: CheckEventDetail;
-  check_progress: CheckEventDetail & CheckerProgress;
+  check_progress: CheckEventDetail & VerifierProgress;
   check_completed: CheckEventDetail;
   check_cancelled: CheckEventDetail;
   module_check_started: { moduleId: string; moduleEpoch: number; snapshotId: string; requirementIds: string[] };
@@ -156,10 +157,10 @@ interface RunEventDetails {
     scenarioResults?: RunScenarioResult[];
     /** Cumulative scenario coverage across the current audit scope. */
     scenarioCoverage?: ScenarioCoverageCounts };
-  checker_usage: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
+  verifier_usage: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
     total: number; cost?: number; reasoning?: number };
-  /** 进行中 Checker 会话的累计用量；仅投递交互终端实时展示，不写账本或日志，最终以 checker_usage 结算。 */
-  checker_usage_progress: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
+  /** 进行中 Verifier 会话的累计用量；仅投递交互终端实时展示，不写账本或日志，最终以 verifier_usage 结算。 */
+  verifier_usage_progress: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
     total: number; cost?: number; reasoning?: number };
   evolution_scope_selected: { historicalPlans: number; ignoredPlans: number;
     historicalPlanRequirementCount: number; historicalCheckpointRequirementCount: number;
@@ -168,7 +169,7 @@ interface RunEventDetails {
     auditRequirementIds?: string[]; skippedRequirementIds?: string[];
     delivery?: { ok: boolean; stage: string; message: string; candidate?: CandidateEvidence };
     scenarioResults?: RunScenarioResult[] };
-  gateway_wait: { source: "builder" | "planning" | "checker"; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
+  gateway_wait: { source: AgentRole; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
   builder_work_preserved: { preserved: boolean; requirementIds: string[]; reason?: string };
   implementation_retry: { requirementIds: string[]; timeoutMs: number; reason?: "timeout" | import("./builder/port.js").BuilderResult["terminationReason"] };
   implementation_split: { requirementIds: string[]; reason: string; kind?: "recovery" | "dependency"; packets: Array<{ packetId: string; requirementIds: string[] }> };
@@ -187,7 +188,7 @@ interface RunEventDetails {
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
 
   pipeline_started: { requirements?: number; totalBudgetMs?: number; adapterId?: string; model?: string;
-    checkerModel?: string; plannerModel?: string;
+    verifierModel?: string; grouperModel?: string;
     auditInheritedRequirements?: boolean;
     builderTimeoutMs?: number; builderContextWindow?: number;
     promptSha256?: string;

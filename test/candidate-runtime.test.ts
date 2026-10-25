@@ -192,7 +192,7 @@ res.end(req.url === '/health' ? 'ok' : '<main>' + workbooks.map(item => '<a href
     await before.stop();
 
     // Simulate the Builder adding an idempotent old-store migration. The next
-    // Checker run receives a fresh copy of the same inherited delivery data.
+    // Verifier run receives a fresh copy of the same inherited delivery data.
     await writeFile(join(output, "migrate.flag"), "enabled\n");
     const after = await candidate.start(output, contract);
     assert.match(await (await fetch((after.metadata as { baseUrl: string }).baseUrl)).text(), /EVO Revenue Model/);

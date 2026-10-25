@@ -103,13 +103,13 @@ test("Gateway recovery logs distinguish saved code from completed requirements",
     packetId: "a", detail: { source: "builder", retry: 2, delayMs: 60_000, failure: { kind: "rate_limit", retryable: true, status: 429 } },
   })), /网关恢复等待.*a.*builder.*1m.*重试 2/);
   assert.match(formatLine(formatter, eventLine(at, "gateway_wait", {
-    packetId: "a", detail: { source: "planning", retry: 1, delayMs: 30_000,
+    packetId: "a", detail: { source: "grouper", retry: 1, delayMs: 30_000,
       failure: { kind: "unavailable", retryable: true }, reason: "TypeError: fetch failed → Error: other side closed [UND_ERR_SOCKET]" },
-  })), /底层原因：TypeError: fetch failed → Error: other side closed \[UND_ERR_SOCKET\]/);
+  })), /调用方 grouper.*底层原因：TypeError: fetch failed → Error: other side closed \[UND_ERR_SOCKET\]/);
   assert.match(formatLine(formatter, eventLine(at, "gateway_wait", {
-    packetId: "check", detail: { source: "checker", retry: 0, delayMs: 5_000,
+    packetId: "check", detail: { source: "verifier", retry: 0, delayMs: 5_000,
       failure: { kind: "unavailable", retryable: true, status: 503 } },
-  })), /check.*checker.*5s.*重试 0/);
+  })), /check.*verifier.*5s.*重试 0/);
   assert.match(formatLine(formatter, eventLine(at, "builder_work_preserved", {
     packetId: "a", detail: { preserved: true, requirementIds: ["A"] },
   })), /保存为可运行检查点.*仍待完成/);
@@ -146,21 +146,21 @@ test("HumanRunFormatter records whether the generic starter scaffold was install
   assert.match(line, /通用脚手架 installed/);
 });
 
-test("HumanRunFormatter shows Checker and Planner models when they differ from the Builder", () => {
+test("HumanRunFormatter shows Verifier and Grouper models when they differ from the Builder", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
-    detail: { model: "provider/builder", checkerModel: "provider/judge", plannerModel: "provider/planner" },
+    detail: { model: "provider/builder", verifierModel: "provider/verifier", grouperModel: "provider/grouper" },
   }));
   assert.match(line, /；模型 provider\/builder/);
-  assert.match(line, /；Checker 模型 provider\/judge/);
-  assert.match(line, /；Planner 模型 provider\/planner/);
+  assert.match(line, /；Verifier 模型 provider\/verifier/);
+  assert.match(line, /；Grouper 模型 provider\/grouper/);
 
   const same = formatLine(formatter, eventLine("2026-10-11T00:00:00Z", "pipeline_started", {
-    detail: { model: "provider/model", checkerModel: "provider/model", plannerModel: "provider/model" },
+    detail: { model: "provider/model", verifierModel: "provider/model", grouperModel: "provider/model" },
   }));
   assert.match(same, /；模型 provider\/model/);
-  assert.doesNotMatch(same, /Checker 模型/);
-  assert.doesNotMatch(same, /Planner 模型/);
+  assert.doesNotMatch(same, /Verifier 模型/);
+  assert.doesNotMatch(same, /Grouper 模型/);
 });
 
 test("HumanRunFormatter identifies progressive stage starting points", () => {
@@ -326,7 +326,7 @@ test("Human logs explain a same-session continuation with its actual failure", (
   })), /同会话续做一次.*missing export/);
 });
 
-test("Human logs cover Checker queue, module checks and cancellation", () => {
+test("Human logs cover Verifier queue, module checks and cancellation", () => {
   const formatter = new HumanRunFormatter();
   const base = "2026-10-16T00:00:00.000Z";
   const job = { jobId: "j1", snapshotId: "snap-1", checkedSourceSha: "sha", moduleEpoch: 1, attempt: 1, mode: "discover", requirementIds: ["A"] };
@@ -334,24 +334,24 @@ test("Human logs cover Checker queue, module checks and cancellation", () => {
     detail: { snapshotId: "snap-1", sourceSha: "sha", requirementIds: ["A", "B"], sequence: 2 } })),
     /源码已封存；版本 snap-1；需求 A、B$/);
   assert.match(formatLine(formatter, eventLine(base, "check_queued", { packetId: "g1", detail: job })),
-    /Checker 已排队（g1）；版本 snap-1$/);
+    /Verifier 已排队（g1）；版本 snap-1$/);
   assert.match(formatLine(formatter, eventLine(base, "check_started", { packetId: "g1", detail: job })),
-    /Checker 开始检查（g1）；版本 snap-1$/);
+    /Verifier 开始检查（g1）；版本 snap-1$/);
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "completed" } })),
-    /Checker 检查完成（g1）；版本 snap-1；等待当前版本汇总$/);
+    /Verifier 检查完成（g1）；版本 snap-1；等待当前版本汇总$/);
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "completed", archived: true, reason: "版本已收口" } })),
     /历史结果已归档；版本已收口$/);
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "interrupted", reason: "Execution interrupted" } })),
-    /Checker 检查未完成.*Execution interrupted/);
+    /Verifier 检查未完成.*Execution interrupted/);
   assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
     detail: { ...job, status: "cancelled" } })),
-    /Checker 任务已结束（g1）；检查范围由模块收口接续$/);
+    /Verifier 任务已结束（g1）；检查范围由模块收口接续$/);
   assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
     detail: { ...job, status: "cancelled", reason: "Budget exhausted" } })),
-    /Checker 任务已结束（g1）；Budget exhausted$/);
+    /Verifier 任务已结束（g1）；Budget exhausted$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_started",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", requirementIds: ["A"] } })),
     /开始模块集中检查；版本 snap-2；需求 A$/);
@@ -363,16 +363,16 @@ test("Human logs cover Checker queue, module checks and cancellation", () => {
     /模块集中检查完成；版本 snap-2；结果已归档$/);
 });
 
-test("Human-readable projection shows in-flight Checker usage separately from settlement", () => {
-  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-16T00:00:00.000Z", "checker_usage_progress", {
+test("Human-readable projection shows in-flight Verifier usage separately from settlement", () => {
+  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-16T00:00:00.000Z", "verifier_usage_progress", {
     detail: { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 },
   }));
-  assert.match(line, /Checker 探索 进行中用量/);
+  assert.match(line, /Verifier 探索 进行中用量/);
   assert.match(line, /tokens .*100.*20.*120/);
   assert.match(line, /费用 \$0\.0001/);
 });
 
-test("Human logs explain Checker stages, cache reuse and rejection feedback", () => {
+test("Human logs explain Verifier stages, cache reuse and rejection feedback", () => {
   const formatter = new HumanRunFormatter();
   for (const [stage, label] of [
     ["prepare", "准备隔离环境"], ["exploration", "探索并编写"], ["rediscovery", "按拒绝原因修正"],

@@ -20,9 +20,9 @@ export interface CompiledBuilderPrompt {
 }
 
 const SYSTEM_PROMPT = [
-  loadPrompt("system", "builder-system"),
-  loadPrompt("system", "architecture-notes"),
-  loadPrompt("system", "self-test"),
+  loadPrompt("builder", "builder-system"),
+  loadPrompt("builder", "architecture-notes"),
+  loadPrompt("builder", "self-test"),
 ].join("\n\n");
 
 export function compileBuilderPrompt(
@@ -31,7 +31,7 @@ export function compileBuilderPrompt(
   return {
     systemPrompt: SYSTEM_PROMPT,
     taskPrompt: buildBuilderTaskPrompt(request) + (request.initialization ? "\n\n" + fillTemplate(
-      loadPrompt("system", "initialization-context"), {
+      loadPrompt("builder", "initialization-context"), {
         INITIALIZATION_PATH: request.initialization.path,
         PROJECT_INTENT: request.initialization.intent ?? "未指定；采用与现有工程兼容的简单方案",
       }) : ""),
@@ -43,7 +43,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
   switch (request.mode) {
     case "implement": {
       const task = fillTemplate(
-        loadPrompt("system", "task-implement"),
+        loadPrompt("builder", "task-implement"),
         {
           PACKET_ID: request.packet.id,
           PACKET_ATTEMPT: String(request.packet.attempt),
@@ -62,7 +62,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
     case "root_cause_repair": {
       const name =
         request.mode === "repair" ? "task-repair" : "task-root-cause-repair";
-      const task = fillTemplate(loadPrompt("system", name), {
+      const task = fillTemplate(loadPrompt("builder", name), {
         PACKET_ID: request.packet.id,
         PACKET_ATTEMPT: String(request.packet.attempt),
         OUTPUT_DIR: request.outputDir,
@@ -80,7 +80,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
     }
     case "delivery_repair": {
       const task = fillTemplate(
-        loadPrompt("system", "task-delivery-repair"),
+        loadPrompt("builder", "task-delivery-repair"),
         {
           OUTPUT_DIR: request.outputDir,
           ACTION: deliveryRepairAction(request.deliveryFailure),
@@ -94,18 +94,18 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
 }
 
 function implementAction(): string {
-  return loadPrompt("system", "action-implement");
+  return loadPrompt("builder", "action-implement");
 }
 
 function repairAction(observation: BuilderShadowObservation): string {
-  return fillTemplate(loadPrompt("system", "action-repair"), {
+  return fillTemplate(loadPrompt("builder", "action-repair"), {
     PASSED_CASE_IDS: observation.passedCaseIds.join("、") || "无",
     FAILURES: renderFailures(observation),
   });
 }
 
 function rootCauseRepairAction(observation: BuilderShadowObservation): string {
-  return fillTemplate(loadPrompt("system", "action-root-cause-repair"), {
+  return fillTemplate(loadPrompt("builder", "action-root-cause-repair"), {
     PASSED_CASE_IDS: observation.passedCaseIds.join("、") || "无",
     FAILURES: renderFailures(observation),
   });
@@ -114,7 +114,7 @@ function rootCauseRepairAction(observation: BuilderShadowObservation): string {
 function deliveryRepairAction(
   failure: DeliveryFailureObservation,
 ): string {
-  return fillTemplate(loadPrompt("system", "action-delivery-repair"), {
+  return fillTemplate(loadPrompt("builder", "action-delivery-repair"), {
     FAILURE_STAGE: failure.stage,
     FAILURE_COMMAND: failure.command ?? "未提供",
     FAILURE_EXPECTED: failure.expected,
@@ -135,7 +135,7 @@ function productContextSection(product: ProductContext): string {
     ] : []),
     ...(product.seedData.length > 0 ? [
       "",
-      fillTemplate(loadPrompt("system", "seed-data"), {
+      fillTemplate(loadPrompt("builder", "seed-data"), {
         SEED_DATA: product.seedData.map(({ category, items }) =>
           [`### ${category}`, ...items.map((item) => `- ${item}`)].join("\n"),
         ).join("\n\n"),
@@ -174,14 +174,14 @@ function projectContextSection(context: BuilderProjectContext): string {
 
 function evolutionSection(context: NonNullable<BuilderProjectContext["evolution"]>): string {
   const inherited = context.startingPoint === "inherited_application";
-  return fillTemplate(loadPrompt("system", "evolution-context"), {
+  return fillTemplate(loadPrompt("builder", "evolution-context"), {
     STAGE_CONTEXT: context.stageIndex === undefined ? "" : `；Stage ${context.stageIndex}`,
     STARTING_POINT: inherited ? "已有应用"
       : context.startingPoint === "blank_template" ? "空白通用模板" : "未明确；先检查项目目录判断是否已有应用",
     EXTERNAL_PREREQUISITES: context.externalPrerequisiteIds.join("、") || "无",
     STARTING_POINT_ACTION: incrementalStartingPointAction(context.startingPoint),
-    IMPLEMENTATION_SCOPE: context.changesOnly ? loadPrompt("system", "evolution-changes-only") : "",
-    AUDIT_SCOPE: loadPrompt("system", context.auditInheritedRequirements === false ? "evolution-audit-changes" : "evolution-audit-all"),
+    IMPLEMENTATION_SCOPE: context.changesOnly ? loadPrompt("builder", "evolution-changes-only") : "",
+    AUDIT_SCOPE: loadPrompt("builder", context.auditInheritedRequirements === false ? "evolution-audit-changes" : "evolution-audit-all"),
   });
 }
 
@@ -192,7 +192,7 @@ function progressiveStageSection(stage: NonNullable<BuilderProjectContext["progr
     : stage.startingPoint === "blank_template"
       ? "空白通用模板"
       : "未明确；先检查项目目录判断是否已有应用";
-  return fillTemplate(loadPrompt("system", "progressive-stage-context"), {
+  return fillTemplate(loadPrompt("builder", "progressive-stage-context"), {
     STAGE_INDEX: String(stage.index),
     STARTING_POINT: startingPoint,
     EXTERNAL_PREREQUISITES: stage.externalPrerequisiteIds.join("、") || "无",
@@ -203,7 +203,7 @@ function progressiveStageSection(stage: NonNullable<BuilderProjectContext["progr
 function incrementalStartingPointAction(startingPoint: NonNullable<BuilderProjectContext["evolution"]>["startingPoint"]): string {
   const asset = startingPoint === "inherited_application" ? "incremental-start-inherited"
     : startingPoint === "blank_template" ? "incremental-start-blank" : "incremental-start-unknown";
-  return loadPrompt("system", asset);
+  return loadPrompt("builder", asset);
 }
 
 function workPacketSection(packet: WorkPacket): string {
@@ -282,7 +282,7 @@ function applicationContractSection(contract: ApplicationContract): string {
 }
 
 function receiptSection(): string {
-  return loadPrompt("system", "receipt");
+  return loadPrompt("builder", "receipt");
 }
 
 function renderCommand(command: ProcessCommand): string {

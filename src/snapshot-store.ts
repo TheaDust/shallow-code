@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, realpath, rename, rm, rmdir } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { NON_APPLICATION_METADATA } from "./controller-metadata.js";
-import { atomicWrite, canonicalJson, contentDigest, hashBytes } from "./checker/artifacts.js";
-import type { ContentRef } from "./checker/port.js";
+import { atomicWrite, canonicalJson, contentDigest, hashBytes } from "./verifier/artifacts.js";
+import type { ContentRef } from "./verifier/port.js";
 
 export interface SnapshotFile { path: string; digest: string; bytes: number; mode: number }
 export interface SnapshotManifest {

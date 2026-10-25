@@ -10,7 +10,7 @@ for (const [name, value] of Object.entries(await readEnvFile(".env"))) {
   if (!(name in process.env)) process.env[name] = value;
 }
 const enabled = process.env.RUN_CREDENTIAL_SMOKE === "1" && ["OPENAI_API_KEY", "OPENAI_BASE_URL", "MODEL"].every(name => process.env[name]);
-test("credential smoke uses real Pi Builder and Checker with independent Web evidence", {
+test("credential smoke uses real Pi Builder and Verifier with independent Web evidence", {
   skip: enabled ? false : "set RUN_CREDENTIAL_SMOKE=1 and gateway credentials",
 }, async () => {
   await withTempDir("shallow-credential-", async directory => {
@@ -29,6 +29,6 @@ test("credential smoke uses real Pi Builder and Checker with independent Web evi
     assert.equal(code, 0);
     const result = JSON.parse(await readFile(join(runs, (await readdir(runs))[0], "result.json"), "utf8"));
     assert.deepEqual(result.verifiedRequirementIds, ["PROFILE"]);
-    assert.equal(result.checker.mode, "active");
+    assert.equal(result.verifier.mode, "active");
   });
 });

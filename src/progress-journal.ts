@@ -8,7 +8,7 @@ import { join } from "node:path";
  * template, so ignoring it would hide it. Instead it is kept untracked
  * (excluded from `git add`), excluded from acceptance digests and preserved by
  * rollbacks, exactly like `.arc` — but unlike `.arc` the platform does not hide
- * it. Builder tools are blocked from reading it because it carries hidden Checker
+ * it. Builder tools are blocked from reading it because it carries hidden Verifier
  * plans.
  */
 export const PROGRESS_DIR_NAME = "shallow-progress";

@@ -21,7 +21,7 @@ shallow req
 
 ## 配置
 
-模型凭证按下列顺序合并：**进程环境变量 > 当前目录 `.env` > 仓库根目录 `.env`**（即与 ShallowCode 的 builder、judge 共用的那份配置）。
+模型凭证按下列顺序合并：**进程环境变量 > 当前目录 `.env` > 仓库根目录 `.env`**（即与 ShallowCode 的 Grouper、Builder、Verifier 共用的那份配置）。
 
 - 公共值：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`
 - 本 agent 单独覆盖：`REQUIREMENTS_AGENT_API_KEY`、`REQUIREMENTS_AGENT_BASE_URL`、`REQUIREMENTS_AGENT_MODEL`（字段级回退公共值）
@@ -36,15 +36,15 @@ OPENAI_API_KEY=...
 OPENAI_BASE_URL=https://gateway.example.com/v1
 MODEL=provider/model
 
-# 可选：三个组件分别指定
+# 可选：三个角色分别指定
+SHALLOW_GROUPER_MODEL=provider/grouper
 SHALLOW_BUILDER_MODEL=provider/builder
-SHALLOW_JUDGE_MODEL=provider/judge
-REQUIREMENTS_AGENT_MODEL=provider/requirements
+SHALLOW_VERIFIER_MODEL=provider/verifier
 ```
 
 在真实终端中启动后使用内置的 **轻量 TUI**：进入时清空控制台页面，从全新页面开始渲染。多行编辑、输入历史、Markdown 流式回复与紧凑的工具活动行。输入区上方持续显示当前模型、草案版本、功能与场景数、待确认问题，并在模型回复后刷新累计 token 与花费（价格未知时只显示 token）。Enter 提交，Shift+Enter 换行，Esc 中止当前回合；F2 打开草案预览，方向键、PgUp/PgDn 或鼠标滚轮滚动，v 切换完整 YAML，Enter 或 Esc 返回对话。Ctrl+C 清空输入，空输入时连续两次 Ctrl+C 退出，Ctrl+D 在空输入时退出。回合处理期间再提交的文字会保留在编辑器，待本轮完成后继续提交。`NO_COLOR` 关闭界面配色。退出时输出一行累计用量。
 
-用普通文字描述需求，智能体整理草案并追问；回答、补充或纠正后继续下一轮。无法独立验收的期望（页面主题、风格、美观、语气等）不会被丢弃：它们写入对应节点的 `guidance` 实现指引，随需求文档交接给 Builder 按原文实现，正式验收仍以可观察场景为准。已经有写好的需求文档时，直接给出文件或目录路径：智能体会用 Pi 内置的 `read` 工具读取文本内容，给出目录时先用 `ls` 列出目录内容、再读取其中相关的文本文件（相对路径以启动目录为基准）。需要写出时可以说“生成”，也可以说“根据最新草案更新需求”“把刚才整理的内容同步进 YAML”；智能体通过 `review_requirements` 请求相应操作，程序校验并展示完整草案，回答“是”后写出。更新操作会显示原文件路径与改动摘要，写回启动目录的 `requirements/requirements.yaml`；创建新文档时使用新的需求目录。F2 可滚动审阅或查看同一份草案的 YAML，完成后显示可复制的 `shallow build` 命令。“生成”“生成需求文档”“整理好了”等纯生成指令直接由程序处理；同一句中包含需求修改，或仍有此前未完成的输入时，先由智能体处理再进入审阅。重定向或脚本管道输入使用纯文本模式，行尾加 `\` 可以续行。生成的场景按 Builder/Checker 的验收合同组织：每个 ATOMIC 的场景独立可准备，THEN 给出可判定结果，共享种子与场景初态分开；`guidance` 只保留不可独立验收的期望。
+用普通文字描述需求，智能体整理草案并追问；回答、补充或纠正后继续下一轮。无法独立验收的期望（页面主题、风格、美观、语气等）不会被丢弃：它们写入对应节点的 `guidance` 实现指引，随需求文档交接给 Builder 按原文实现，正式验收仍以可观察场景为准。已经有写好的需求文档时，直接给出文件或目录路径：智能体会用 Pi 内置的 `read` 工具读取文本内容，给出目录时先用 `ls` 列出目录内容、再读取其中相关的文本文件（相对路径以启动目录为基准）。需要写出时可以说“生成”，也可以说“根据最新草案更新需求”“把刚才整理的内容同步进 YAML”；智能体通过 `review_requirements` 请求相应操作，程序校验并展示完整草案，回答“是”后写出。更新操作会显示原文件路径与改动摘要，写回启动目录的 `requirements/requirements.yaml`；创建新文档时使用新的需求目录。F2 可滚动审阅或查看同一份草案的 YAML，完成后显示可复制的 `shallow build` 命令。“生成”“生成需求文档”“整理好了”等纯生成指令直接由程序处理；同一句中包含需求修改，或仍有此前未完成的输入时，先由智能体处理再进入审阅。重定向或脚本管道输入使用纯文本模式，行尾加 `\` 可以续行。生成的场景按 Builder/Verifier 的验收合同组织：每个 ATOMIC 的场景独立可准备，THEN 给出可判定结果，共享种子与场景初态分开；`guidance` 只保留不可独立验收的期望。
 
 草稿自动保存在启动目录的 `.requirements-agent/draft.json`：每次草案更新都会先保存完整需求树、版本和未决问题；用户输入在发给模型前保存，回合中断时也能找回。中途退出、关闭终端或处理失败后，在**同一目录**重新运行 `shallow req` 即可恢复；F2 可查看恢复的草案，此前未完成的输入会随下一轮一起提供给智能体。恢复后需要重新请求生成、审阅并确认。成功生成文档后清理当前草稿，下次启动开始新需求；未生成时保留草稿。不同目录各自保存一份草稿。草稿损坏会明确报错并保留原文件。
 

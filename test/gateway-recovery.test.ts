@@ -64,34 +64,34 @@ test("Scoped gateway observation keeps concurrent failures separate", async () =
   }
 });
 
-test("Checker recovery retries and authentication stays scoped to auxiliary clients", async () => {
+test("Verifier recovery retries and authentication stays scoped to auxiliary clients", async () => {
   const f = fixture();
   let calls = 0;
-  const result = await f.recovery.run("checker", "a", unlimited, async () => {
+  const result = await f.recovery.run("verifier", "a", unlimited, async () => {
     if (++calls === 1) throw down();
     return "recovered";
   });
   assert.equal(result, "recovered");
   assert.equal(calls, 2);
   assert.deepEqual(f.delays, [30_000]);
-  await assert.rejects(f.recovery.run("checker", "b", unlimited, async () => {
+  await assert.rejects(f.recovery.run("verifier", "b", unlimited, async () => {
     throw new GatewayRequestError(httpGatewayFailure(401));
   }));
   assert.equal(await f.recovery.run("builder", "c", unlimited, async () => "ok"), "ok");
 });
 
-test("Planner gateway waits report the nested transport error and code", async () => {
+test("Grouper gateway waits report the nested transport error and code", async () => {
   const f = fixture();
   const waits: string[] = [];
   f.recovery.setRecorder(async event => { if (event.reason) waits.push(event.reason); });
   const socketError = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
   const fetchError = new TypeError("fetch failed", { cause: socketError });
-  const plannerError = Object.assign(new Error("Probe planner request failed", { cause: fetchError }), {
+  const grouperError = Object.assign(new Error("Probe grouper request failed", { cause: fetchError }), {
     gatewayFailure: { kind: "unavailable" as const, retryable: true },
   });
   let attempts = 0;
-  await f.recovery.run("planning", "packet-a", unlimited, async () => {
-    if (++attempts === 1) throw plannerError;
+  await f.recovery.run("grouper", "packet-a", unlimited, async () => {
+    if (++attempts === 1) throw grouperError;
     return "recovered";
   });
   assert.equal(waits[0], "TypeError: fetch failed → Error: other side closed [UND_ERR_SOCKET]");
@@ -142,7 +142,7 @@ test("Switching between rate limits and outages starts each delay schedule at it
   const attemptTimes: number[] = [];
   const failures = [httpGatewayFailure(503), httpGatewayFailure(429),
     { kind: "unavailable" as const, retryable: true }, httpGatewayFailure(408)];
-  await f.recovery.run("planning", "packet-a", unlimited, async () => {
+  await f.recovery.run("grouper", "packet-a", unlimited, async () => {
     attemptTimes.push(f.now());
     const failure = failures.shift();
     if (failure) throw new GatewayRequestError(failure);
@@ -155,7 +155,7 @@ test("Persistent outages exhaust the caller's window without disabling later cal
   const f = fixture();
   const windowMs = 3_600_000;
   let calls = 0;
-  await assert.rejects(f.recovery.run("planning", "packet-a", () => windowMs - f.now(), async () => { calls++; throw down(); }),
+  await assert.rejects(f.recovery.run("grouper", "packet-a", () => windowMs - f.now(), async () => { calls++; throw down(); }),
     error => error instanceof GatewayRequestError && error.gatewayFailure.status === 429);
   assert.ok(calls > 10, `expected recovery to outlast the old five-attempt cap, saw ${calls} attempts`);
   assert.equal(f.now(), windowMs);
@@ -203,55 +203,55 @@ test("Authentication and request failures are not retried, and ordinary error te
   }
 });
 
-test("Two Planner requests run alongside Builder while additional requests wait", async () => {
+test("Two Grouper requests run alongside Builder while additional requests wait", async () => {
   const f = fixture();
   const calls: string[] = [];
   let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
-  const first = f.recovery.run("planning", "a", unlimited, async () => { calls.push("planner-a"); await blocked; });
-  const second = f.recovery.run("planning", "b", unlimited, async () => { calls.push("planner-b"); await blocked; });
-  const third = f.recovery.run("planning", "c", unlimited, async () => { calls.push("planner-c"); });
+  const first = f.recovery.run("grouper", "a", unlimited, async () => { calls.push("grouper-a"); await blocked; });
+  const second = f.recovery.run("grouper", "b", unlimited, async () => { calls.push("grouper-b"); await blocked; });
+  const third = f.recovery.run("grouper", "c", unlimited, async () => { calls.push("grouper-c"); });
   await f.recovery.run("builder", "build", unlimited, async () => { calls.push("builder"); });
-  assert.ok(calls.includes("planner-a"));
+  assert.ok(calls.includes("grouper-a"));
   assert.ok(calls.includes("builder"));
-  assert.ok(calls.includes("planner-b"));
-  assert.ok(!calls.includes("planner-c"));
+  assert.ok(calls.includes("grouper-b"));
+  assert.ok(!calls.includes("grouper-c"));
   release();
   await Promise.all([first, second, third]);
-  assert.equal(calls.at(-1), "planner-c");
+  assert.equal(calls.at(-1), "grouper-c");
 });
 
-test("Planner-specific authorization errors leave Builder available", async () => {
+test("Grouper-specific authorization errors leave Builder available", async () => {
   const f = fixture();
-  await assert.rejects(f.recovery.run("planning", "a", unlimited, async () => {
+  await assert.rejects(f.recovery.run("grouper", "a", unlimited, async () => {
     throw new GatewayRequestError(httpGatewayFailure(401));
   }));
   assert.equal(await f.recovery.run("builder", "a", unlimited, async () => "ok"), "ok");
 });
 
-test("Cancelling a queued Planner removes it without consuming an execution slot", async () => {
+test("Cancelling a queued Grouper removes it without consuming an execution slot", async () => {
   const f = fixture();
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const first = f.recovery.run("planning", "a", unlimited, () => held);
-  const second = f.recovery.run("planning", "b", unlimited, () => held);
+  const first = f.recovery.run("grouper", "a", unlimited, () => held);
+  const second = f.recovery.run("grouper", "b", unlimited, () => held);
   const controller = new AbortController();
   let queuedCalls = 0;
-  const cancelled = assert.rejects(f.recovery.run("planning", "c", unlimited,
+  const cancelled = assert.rejects(f.recovery.run("grouper", "c", unlimited,
     async () => { queuedCalls++; }, controller.signal), { name: "AbortError" });
   controller.abort();
   await cancelled;
   release();
   await Promise.all([first, second]);
   assert.equal(queuedCalls, 0);
-  assert.equal(await f.recovery.run("planning", "d", unlimited, async () => "ok"), "ok");
+  assert.equal(await f.recovery.run("grouper", "d", unlimited, async () => "ok"), "ok");
 });
 
-test("Cancelling a Planner interrupts gateway backoff", async () => {
+test("Cancelling a Grouper interrupts gateway backoff", async () => {
   const recovery = new GatewayRecovery();
   const controller = new AbortController();
   recovery.setRecorder(async () => { controller.abort(); });
-  await assert.rejects(recovery.run("planning", "a", unlimited, async () => {
+  await assert.rejects(recovery.run("grouper", "a", unlimited, async () => {
     throw new GatewayRequestError(httpGatewayFailure(503));
   }, controller.signal), { name: "AbortError" });
   assert.equal(recovery.exhausted, false);
@@ -261,28 +261,28 @@ test("An in-flight success cannot release a cooldown raised by the other client"
   let now = 0;
   const sleepers: Array<() => void> = [];
   const recovery = new GatewayRecovery({ now: () => now, sleep: () => new Promise<void>(resolve => { sleepers.push(resolve); }) });
-  let finishPlanner!: () => void;
-  let plannerStarted!: () => void;
-  const started = new Promise<void>(resolve => { plannerStarted = resolve; });
-  const planner = recovery.run("planning", "a", unlimited, async () => {
-    plannerStarted();
-    await new Promise<void>(resolve => { finishPlanner = resolve; });
+  let finishGrouper!: () => void;
+  let grouperStarted!: () => void;
+  const started = new Promise<void>(resolve => { grouperStarted = resolve; });
+  const grouper = recovery.run("grouper", "a", unlimited, async () => {
+    grouperStarted();
+    await new Promise<void>(resolve => { finishGrouper = resolve; });
   });
   await started;
   let builderCalls = 0;
   const builder = recovery.run("builder", "a", unlimited, async () => { if (++builderCalls === 1) throw down(); });
   await new Promise<void>(resolve => setImmediate(resolve));
-  finishPlanner();
-  await planner;
-  let secondPlannerCalls = 0;
-  const next = recovery.run("planning", "b", unlimited, async () => { secondPlannerCalls++; });
+  finishGrouper();
+  await grouper;
+  let secondGrouperCalls = 0;
+  const next = recovery.run("grouper", "b", unlimited, async () => { secondGrouperCalls++; });
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(secondPlannerCalls, 0);
+  assert.equal(secondGrouperCalls, 0);
   assert.equal(builderCalls, 1);
   now = 30_000;
   sleepers.forEach(resolve => resolve());
   await Promise.all([builder, next]);
-  assert.equal(secondPlannerCalls, 1);
+  assert.equal(secondGrouperCalls, 1);
   assert.equal(builderCalls, 2);
 });
 

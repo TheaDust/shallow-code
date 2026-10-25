@@ -13,7 +13,7 @@ import type { RequirementNode, RunEvent } from "../src/types.js";
 import { MemoryTerminal } from "./helpers/terminal.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-const options = { requirementIds: ["A", "B", "C"], models: { builder: "gateway/builder-model", checker: "gateway/checker-model" }, onInterrupt() {} };
+const options = { requirementIds: ["A", "B", "C"], models: { grouper: "gateway/grouper-model", builder: "gateway/builder-model", verifier: "gateway/verifier-model" }, onInterrupt() {} };
 const formatter = new HumanRunFormatter();
 function requirementNode(id: string, name: string, type: RequirementNode["type"], children: RequirementNode[] = [],
   scenarioIds: string[] = []): RequirementNode {
@@ -101,13 +101,15 @@ test("Evolution skips stay outside the current numerator and denominator", () =>
   assert.match(text, /沿用跳过 1/);
 });
 
-test("Run view names the models it runs with in full and compact layouts", () => {
+test("Run view names all three models in full and compact layouts", () => {
   const full = new BuildView(options, () => 24, terminalTheme(false)).render(80).join("\n");
-  assert.match(full, /模型\s+Builder gateway\/builder-model/);
-  assert.match(full, /Checker gateway\/checker-model/);
+  assert.match(full, /Grouper gateway\/grouper-model/);
+  assert.match(full, /Builder gateway\/builder-model/);
+  assert.match(full, /Verifier gateway\/verifier-model/);
   const compact = new BuildView(options, () => 8, terminalTheme(false)).render(80).join("\n");
-  assert.match(compact, /模型\s+Builder gateway\/builder-model/);
-  assert.match(compact, /Checker gateway\/checker-model/);
+  assert.match(compact, /Grouper grouper-model/);
+  assert.match(compact, /Builder builder-model/);
+  assert.match(compact, /Verifier verifier-model/);
 });
 
 test("Run view preserves foreground activity during background planning and fits smaller terminals", () => {
@@ -124,7 +126,7 @@ test("Run view preserves foreground activity during background planning and fits
   }
 });
 
-test("Checker stages stay visible beside foreground Builder and take focus when it finishes", () => {
+test("Verifier stages stay visible beside foreground Builder and take focus when it finishes", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "packet_selected", { names: ["当前模块"] });
   receive(view, "builder_started");
@@ -133,11 +135,11 @@ test("Checker stages stay visible beside foreground Builder and take focus when 
   receive(view, "check_progress", { ...job, stage: "semantic_review" }, "opaque-audit-packet");
   let rendered = view.render(100).join("\n");
   assert.match(rendered, /Builder · 实现当前模块/);
-  assert.match(rendered, /后台.*Checker · 独立语义复核/);
+  assert.match(rendered, /后台.*Verifier · 独立语义复核/);
   assert.match(rendered, /已验证 0\/3/);
   receive(view, "builder_finished", { outcome: "completed" });
   rendered = view.render(100).join("\n");
-  assert.match(rendered, /Checker · 独立语义复核/);
+  assert.match(rendered, /Verifier · 独立语义复核/);
   assert.doesNotMatch(rendered, /后台|Builder · 实现当前模块/);
   receive(view, "check_progress", { ...job, stage: "review_rejected", cached: true, reason: "INTERNAL-REJECTION-DETAIL" }, "opaque-audit-packet");
   receive(view, "check_progress", { ...job, stage: "rediscovery" }, "opaque-audit-packet");
@@ -147,7 +149,7 @@ test("Checker stages stay visible beside foreground Builder and take focus when 
   assert.match(rendered, /已验证 0\/3/);
 });
 
-test("Concurrent Checker jobs clear on cancellation and historical progress cannot replace current activity", () => {
+test("Concurrent Verifier jobs clear on cancellation and historical progress cannot replace current activity", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "builder_started");
   receive(view, "check_progress", { jobId: "j1", stage: "replay" }, "audit-1");
@@ -166,7 +168,7 @@ test("Concurrent Checker jobs clear on cancellation and historical progress cann
   assert.match(rendered, /本轮结束/);
 });
 
-test("Background Checker progress preserves counts and controls in compact terminals", () => {
+test("Background Verifier progress preserves counts and controls in compact terminals", () => {
   for (const [columns, rows] of [[80, 24], [40, 18], [24, 8]]) {
     const view = new BuildView(options, () => rows!, terminalTheme(false));
     receive(view, "builder_started");
@@ -180,7 +182,7 @@ test("Background Checker progress preserves counts and controls in compact termi
   }
 });
 
-test("Delivery checks show their current activity after Checker preparation ends", () => {
+test("Delivery checks show their current activity after Verifier preparation ends", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
   receive(view, "delivery_started", {}, "");
   receive(view, "check_completed", { jobId: "prepare" }, "delivery");
@@ -318,7 +320,7 @@ test("Returning from build help and logs clears their full-screen content before
 
     const output = terminal.writes.slice(before).join("");
     assert.ok(output.includes("\x1b[2J\x1b[H\x1b[3J"), `${title} should be cleared before returning`);
-    assert.match(output, /Shallow Code.*Build Agent/);
+    assert.match(output, /Shallow Code.*Builder/);
     assert.doesNotMatch(output, /运行帮助|详细日志 · 最近/);
     assert.equal(ui.tui.hasOverlay(), false);
   }
@@ -387,9 +389,9 @@ test("Interactive presentation keeps human-readable logs on disk and routes live
     assert.match(log, /tokens.*42.*8/);
     assert.doesNotMatch(log, /\x1b\[/);
 
-    sink.present?.(JSON.stringify({ at: "2026-10-13T00:00:01Z", type: "checker_usage_progress",
+    sink.present?.(JSON.stringify({ at: "2026-10-13T00:00:01Z", type: "verifier_usage_progress",
       detail: { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120 } }));
-    assert.equal(received.at(-2), "checker_usage_progress", "live usage still reaches the interactive presenter");
+    assert.equal(received.at(-2), "verifier_usage_progress", "live usage still reaches the interactive presenter");
     assert.equal(plain.length, 0, "live usage never reaches the console or log file");
     const after = await readFile(file, "utf8");
     assert.match(after, /tokens.*42.*8/, "persistent human log is unchanged");
@@ -416,13 +418,13 @@ test("Result card offers applicable commands, quotes paths and separates skips f
   assert.doesNotMatch(delivered, /\x1b\[/);
   const usage = new ModelUsageTotals();
   usage.add("builder", { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
-  usage.add("planner", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.0001 });
+  usage.add("grouper", { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.0001 });
   const withUsage = buildResult({ ...summary, modelUsage: usage.summary() },
     "run", "changes.patch", "demo", 5_000, false);
   assert.match(withUsage, /总计\s+tokens 1\.3k（入 1\.1k \/ 出 220） · 费用 \$0\.0101/);
   assert.match(withUsage, /Builder\s+tokens 1\.2k/);
-  assert.match(withUsage, /Checker\s+tokens 0/);
-  assert.doesNotMatch(withUsage, /Planner/);
+  assert.match(withUsage, /Verifier\s+tokens 0/);
+  assert.match(withUsage, /Grouper\s+tokens 120/);
 });
 
 test("Run view accumulates model tokens and cost and shows in-flight progress until the call settles", () => {
@@ -431,11 +433,11 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   receive(view, "feature_grouping_usage", { operation: "plan", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   const collapsed = view.render(80).join("\n");
   assert.match(collapsed, /总计\s+tokens 240（入 200 \/ 出 40） · 费用 \$0\.0002/);
-  assert.doesNotMatch(collapsed, /Builder\s+tokens|Checker\s+tokens|Planner\s+tokens/);
+  assert.doesNotMatch(collapsed, /Builder\s+tokens|Verifier\s+tokens|Grouper\s+tokens/);
   view.toggleUsage();
   const expanded = view.render(80).join("\n");
   assert.doesNotMatch(expanded, /Builder\s+tokens 0/, "zero groups stay out of the expanded view");
-  assert.match(expanded, /Planner\s+tokens 240/);
+  assert.match(expanded, /Grouper\s+tokens 240/);
   view.liveUsage({ usage: { status: "available", input: 800, output: 200, cacheRead: 0, cacheWrite: 0, total: 1000, cost: 0.0012 } });
   assert.match(view.render(80).join("\n"), /Builder\s+tokens 1\.0k（入 800 \/ 出 200） · 费用 \$0\.0012/);
   assert.match(view.render(80).join("\n"), /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
@@ -445,32 +447,32 @@ test("Run view accumulates model tokens and cost and shows in-flight progress un
   const text = view.render(80).join("\n");
   assert.match(text, /总计\s+tokens 1\.2k（入 1\.0k \/ 出 240） · 费用 \$0\.0014/);
   assert.match(text, /Builder\s+tokens 1\.0k/);
-  assert.doesNotMatch(text, /Checker\s+tokens 0/, "zero groups stay out of the expanded view");
-  assert.match(text, /Planner\s+tokens 240/);
+  assert.doesNotMatch(text, /Verifier\s+tokens 0/, "zero groups stay out of the expanded view");
+  assert.match(text, /Grouper\s+tokens 240/);
 });
 
-test("Run view attributes verification usage to the Checker group", () => {
+test("Run view attributes verification usage to the Verifier group", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
-  receive(view, "checker_usage", { jobId: "j1", role: "semantic_review", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  receive(view, "verifier_usage", { jobId: "j1", role: "semantic_review", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
   view.toggleUsage();
   const text = view.render(80).join("\n");
-  assert.match(text, /Checker\s+tokens 120（入 100 \/ 出 20） · 费用 \$0\.0001/);
+  assert.match(text, /Verifier\s+tokens 120（入 100 \/ 出 20） · 费用 \$0\.0001/);
   assert.doesNotMatch(text, /Builder\s+tokens 0/, "zero groups stay out of the expanded view");
   assert.match(text, /总计\s+tokens 120/);
 });
 
-test("In-flight Checker usage updates immediately and is replaced by the settled result", () => {
+test("In-flight Verifier usage updates immediately and is replaced by the settled result", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
-  receive(view, "checker_usage_progress", { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
-  receive(view, "checker_usage_progress", { jobId: "j2", role: "exploration", input: 50, output: 10, cacheRead: 0, cacheWrite: 0, total: 60 });
+  receive(view, "verifier_usage_progress", { jobId: "j1", role: "exploration", input: 100, output: 20, cacheRead: 0, cacheWrite: 0, total: 120, cost: 0.0001 });
+  receive(view, "verifier_usage_progress", { jobId: "j2", role: "exploration", input: 50, output: 10, cacheRead: 0, cacheWrite: 0, total: 60 });
   assert.match(view.render(80).join("\n"), /总计\s+tokens 180/);
-  receive(view, "checker_usage_progress", { jobId: "j1", role: "exploration", input: 200, output: 40, cacheRead: 0, cacheWrite: 0, total: 240, cost: 0.0002 });
+  receive(view, "verifier_usage_progress", { jobId: "j1", role: "exploration", input: 200, output: 40, cacheRead: 0, cacheWrite: 0, total: 240, cost: 0.0002 });
   view.toggleUsage();
-  assert.match(view.render(80).join("\n"), /Checker\s+tokens 300/);
-  receive(view, "checker_usage", { jobId: "j1", role: "exploration", input: 220, output: 44, cacheRead: 0, cacheWrite: 0, total: 264, cost: 0.00022 });
-  assert.match(view.render(80).join("\n"), /Checker\s+tokens 324/);
-  receive(view, "checker_usage", { jobId: "j2", role: "exploration", input: 55, output: 11, cacheRead: 0, cacheWrite: 0, total: 66 });
-  assert.match(view.render(80).join("\n"), /Checker\s+tokens 330/);
+  assert.match(view.render(80).join("\n"), /Verifier\s+tokens 300/);
+  receive(view, "verifier_usage", { jobId: "j1", role: "exploration", input: 220, output: 44, cacheRead: 0, cacheWrite: 0, total: 264, cost: 0.00022 });
+  assert.match(view.render(80).join("\n"), /Verifier\s+tokens 324/);
+  receive(view, "verifier_usage", { jobId: "j2", role: "exploration", input: 55, output: 11, cacheRead: 0, cacheWrite: 0, total: 66 });
+  assert.match(view.render(80).join("\n"), /Verifier\s+tokens 330/);
 });
 
 test("Run view keeps grouped cache counts and partial cost visible in an 80-column terminal", () => {
@@ -485,7 +487,7 @@ test("Run view keeps grouped cache counts and partial cost visible in an 80-colu
   assert.ok(lines.every(line => visibleWidth(line) <= 80));
   assert.match(text, /总计/);
   assert.match(text, /Builder/);
-  assert.match(text, /Checker/);
+  assert.match(text, /Verifier/);
   assert.match(text, /缓存读 1\.00M/);
   assert.match(text, /缓存写 1\.00M/);
   assert.match(text, /部分未计价/);
@@ -557,7 +559,7 @@ test("Completed build TUI stays open for cost, requirements and logs until Ctrl+
   ui.tui.renderNow();
   terminal.input("v");
   ui.tui.renderNow();
-  assert.match(terminal.writes.join(""), /需求书 · requirements\.yaml/);
+  assert.match(terminal.writes.join(""), /需求树 · requirements\.yaml/);
   assert.match(terminal.writes.join(""), /name: Demo/);
   terminal.input("\x1b");
 
@@ -573,15 +575,15 @@ test("Completed build TUI stays open for cost, requirements and logs until Ctrl+
   assert.equal(terminal.stops, 0, "入口在等待退出后负责恢复终端");
 });
 
-test("Live Checker usage updates the cost panel without flooding the detailed log", (t) => {
+test("Live Verifier usage updates the cost panel without flooding the detailed log", (t) => {
   const terminal = new MemoryTerminal();
   const ui = new BuildTui(options, terminal);
   t.after(() => ui.stop());
   ui.start();
   for (let index = 1; index <= 12; index++) {
-    ui.record(JSON.stringify({ at: "2026-10-13T00:00:00Z", type: "checker_usage_progress",
+    ui.record(JSON.stringify({ at: "2026-10-13T00:00:00Z", type: "verifier_usage_progress",
       detail: { jobId: "j1", role: "exploration", input: index * 100, output: index * 20,
-        cacheRead: 0, cacheWrite: 0, total: index * 120 } }), `Checker 探索 进行中用量 ${index}`);
+        cacheRead: 0, cacheWrite: 0, total: index * 120 } }), `Verifier 探索 进行中用量 ${index}`);
   }
   ui.tui.renderNow();
   const frame = (ui.tui as TuiMainScreen).captureRenderState().previousLines.join("\n");
@@ -718,8 +720,8 @@ test("Semantic colours use the restrained 256-colour palette", () => {
   assert.match(theme.brand("x"), /^\x1b\[1;38;5;111m/);
   assert.match(theme.accent("x"), /^\x1b\[38;5;111m/);
   assert.match(theme.builder("x"), /^\x1b\[38;5;111m/);
-  assert.match(theme.checker("x"), /^\x1b\[38;5;74m/);
-  assert.match(theme.planner("x"), /^\x1b\[38;5;141m/);
+  assert.match(theme.verifier("x"), /^\x1b\[38;5;74m/);
+  assert.match(theme.grouper("x"), /^\x1b\[38;5;141m/);
   assert.match(theme.success("x"), /^\x1b\[38;5;108m/);
   assert.match(theme.warning("x"), /^\x1b\[38;5;179m/);
   assert.match(theme.error("x"), /^\x1b\[38;5;167m/);
@@ -727,13 +729,13 @@ test("Semantic colours use the restrained 256-colour palette", () => {
   assert.match(theme.border("x"), /^\x1b\[38;5;238m/);
 });
 
-test("Role colours distinguish Builder, Checker and Planner activity", () => {
+test("Role colours distinguish Builder, Verifier and Grouper activity", () => {
   const view = new BuildView(options, () => 24, terminalTheme(true));
   receive(view, "builder_started");
   assert.match(view.render(100).join("\n"), /\x1b\[38;5;111mBuilder/);
   receive(view, "feature_grouping_started");
-  assert.match(view.render(100).join("\n"), /\x1b\[38;5;141mPlanner/);
+  assert.match(view.render(100).join("\n"), /\x1b\[38;5;141mGrouper/);
   receive(view, "builder_started");
   receive(view, "check_started", { jobId: "j1" });
-  assert.match(view.render(100).join("\n"), /\x1b\[38;5;74mChecker/);
+  assert.match(view.render(100).join("\n"), /\x1b\[38;5;74mVerifier/);
 });

@@ -1,4 +1,5 @@
 import { GatewayRequestError, type GatewayFailure } from "./gateway-failure.js";
+import type { AgentRole } from "./agent-config.js";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const MAX_CONCURRENT_AUXILIARY = 2;
@@ -10,7 +11,7 @@ interface AuxiliaryWaiter {
 }
 
 export interface GatewayWait {
-  source: "builder" | "planning" | "checker";
+  source: AgentRole;
   packetId: string;
   retry: number;
   delayMs: number;
@@ -21,7 +22,7 @@ export interface GatewayWait {
 export class GatewayUnavailableError extends GatewayRequestError {}
 
 /**
- * One recovery window shared by Builder, Planner and Checker, scoped to a
+ * One recovery window shared by Builder, Grouper and Verifier, scoped to a
  * pipeline run.
  *
  * Retryable transport failures are retried with capped exponential backoff for
@@ -29,8 +30,8 @@ export class GatewayUnavailableError extends GatewayRequestError {}
  * spent the last failed response is returned as a `GatewayRequestError` so the
  * caller can retry the same work with a fresh window. Waiting never disables
  * later calls. Only Builder authentication failures stop the run, because
- * rejected credentials cannot recover by waiting; auxiliary clients (planning
- * and Checker) leave Builder available.
+ * rejected credentials cannot recover by waiting; auxiliary clients (Grouper
+ * and Verifier) leave Builder available.
  */
 export class GatewayRecovery {
   private blockedUntil = 0;

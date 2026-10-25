@@ -1,5 +1,5 @@
-import { runCheckerPipeline, type CheckerRuntime } from "./checker-pipeline.js";
-import type { CheckerConfig } from "./runtime-config.js";
+import { runVerifierPipeline, type VerifierRuntime } from "./verifier-pipeline.js";
+import type { VerifierConfig } from "./runtime-config.js";
 import type { BuilderPort } from "./builder/port.js";
 import type { GitOps } from "./git-ops.js";
 import type { FeatureGrouper } from "./feature-grouper.js";
@@ -11,7 +11,7 @@ import type { ApplicationContract, DeliveryReport } from "./application/port.js"
 import type { InconclusiveKind, RunScenarioResult } from "./types.js";
 
 export interface PipelineDeps {
-  checker: CheckerRuntime;
+  verifier: VerifierRuntime;
   builder: BuilderPort;
   git: GitOps;
   grouper?: FeatureGrouper;
@@ -24,7 +24,7 @@ export interface PipelineDeps {
 }
 
 export interface PipelineOptions {
-  checker: CheckerConfig;
+  verifier: VerifierConfig;
   requirementsFile: string;
   outputDir: string;
   ledgerFile: string;
@@ -43,15 +43,15 @@ export interface PipelineOptions {
   stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
   /** Evolution only: true includes inherited atomics in audits and delivery coverage. Default false. */
   auditInheritedRequirements?: boolean;
-  /** Runnable implementations recovered from an owned checkpoint; replay follows Checker settings. */
+  /** Runnable implementations recovered from an owned checkpoint; replay follows Verifier settings. */
   resumedRequirementIds?: string[];
   requirementDigests?: Record<string, string>;
 }
 
 export interface RunSummary {
-  checker?: { mode: "active"; producedHead?: import("./checker/checkpoints.js").ProducedSnapshot;
+  verifier?: { mode: "active"; producedHead?: import("./verifier/checkpoints.js").ProducedSnapshot;
     semanticReview?: boolean; replay?: boolean;
-    verifiedSnapshotId?: string; outcomes?: Array<import("./checker/port.js").CheckOutcome & { snapshotId?: string }> };
+    verifiedSnapshotId?: string; outcomes?: Array<import("./verifier/port.js").CheckOutcome & { snapshotId?: string }> };
   status: "delivered" | "partial" | "failed";
   verifiedRequirementIds: string[];
   blockedRequirementIds: string[];
@@ -70,5 +70,5 @@ export interface RunSummary {
 }
 
 export async function runPipeline(options: PipelineOptions, deps: PipelineDeps): Promise<RunSummary> {
-  return runCheckerPipeline(options, deps, deps.checker);
+  return runVerifierPipeline(options, deps, deps.verifier);
 }

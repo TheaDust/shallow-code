@@ -19,7 +19,7 @@ type Snapshot = Map<string, { digest: string; mode: number }>;
 type RunningApp = Awaited<ReturnType<ApplicationLifecycle["start"]>>;
 type Build = Omit<CandidateEvidence, "runtimeId"> & { dependencyState: string };
 
-/** One private build workspace per run. No Checker input is stored here or exposed by the tools. */
+/** One private build workspace per run. No Verifier input is stored here or exposed by the tools. */
 export class CandidateRuntime implements ApplicationRuntimePort {
   readonly directory: string;
   private build?: Build;

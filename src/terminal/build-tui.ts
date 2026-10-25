@@ -1,13 +1,14 @@
 import { join } from "node:path";
-import { matchesKey, ProcessTerminal, Text, TuiMainScreen, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
+import { matchesKey, ProcessTerminal, Text, TuiMainScreen, visibleWidth, type TUI, type Component, type OverlayHandle, type Terminal } from "@earendil-works/pi-tui";
 import type { RunSummary } from "../pipeline.js";
 import type { RequirementNode, RequirementStatus, RunEvent, RunScenarioResult } from "../types.js";
+import { AGENT_LABELS, AGENT_ROLES, type AgentRole } from "../agent-config.js";
 import type { PiWorkerProgress } from "../builder/pi-worker-client.js";
 import { ModelUsageTotals, UsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage, type UsageSummary } from "../model-usage.js";
 import { setMouseTracking } from "./mouse-wheel.js";
 import { clearTerminalScreen, elapsedTime, fitTerminalText, shellArgument, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
 import { TextViewer } from "./text-viewer.js";
-import { checkerProgressLabel } from "../human-log.js";
+import { verifierProgressLabel } from "../human-log.js";
 
 const PHASES: Record<string, string> = {
   implementation: "模块实现", audit: "独立验收", repair: "修复与回归", delivery: "最终交付",
@@ -66,10 +67,10 @@ export interface BuildTuiOptions {
   requirementIds: string[];
   /** 原始需求树；交互页面按子树聚合完成状态。 */
   requirementTree?: RequirementNode;
-  /** 本轮输入需求书的完整 YAML；需求页面可切换查看。 */
+  /** 本轮输入需求树的完整 YAML；需求页面可切换查看。 */
   requirementsText?: string;
-  /** 本轮实际使用的模型；状态页显式标注来源。 */
-  models: { builder: string; checker: string };
+  /** 本轮三个角色的实际模型；状态页逐一标注来源。 */
+  models: Record<AgentRole, string>;
   onInterrupt(): void;
 }
 
@@ -99,12 +100,12 @@ export class BuildView implements Component {
   private activity = "正在准备需求与执行环境";
   private packetId?: string;
   private builderRunning = false;
-  private readonly checkerTasks = new Map<string, { queued: boolean; label: string }>();
+  private readonly verifierTasks = new Map<string, { queued: boolean; label: string }>();
   private lastActivityAt = Date.now();
   private readonly startedAt = Date.now();
   private readonly usage = new ModelUsageTotals();
   private live?: TokenUsage;
-  private readonly checkerLive = new Map<string, TokenUsage>();
+  private readonly verifierLive = new Map<string, TokenUsage>();
   private usageExpanded = false;
   private awaitingStart = false;
   private completed = false;
@@ -130,7 +131,7 @@ export class BuildView implements Component {
     if (event.type === "snapshot_sealed" && detail?.authoritative !== false) {
       for (const id of ids("implementedRequirementIds")) this.implemented.add(id);
       // 封存新模块只代表源码更新；旧覆盖保留到后续验收明确给出失败或无法判断。
-      this.checkerTasks.clear();
+      this.verifierTasks.clear();
     }
     if (event.type === "evolution_scope_selected") {
       if (Array.isArray(detail?.auditRequirementIds)) this.scope = new Set(ids("auditRequirementIds"));
@@ -159,19 +160,19 @@ export class BuildView implements Component {
       for (const id of ids("blockedRequirementIds")) this.statuses.set(id, "blocked");
     }
     if (event.type === "feature_grouping_usage") {
-      this.addUsage("planner", detail);
+      this.addUsage("grouper", detail);
       return;
     }
-    if (event.type === "checker_usage_progress") {
+    if (event.type === "verifier_usage_progress") {
       const jobId = typeof detail?.jobId === "string" ? detail.jobId : undefined;
       const usage = this.usageFromDetail(detail);
-      if (jobId && usage) this.checkerLive.set(jobId, usage);
+      if (jobId && usage) this.verifierLive.set(jobId, usage);
       return;
     }
-    if (event.type === "checker_usage") {
+    if (event.type === "verifier_usage") {
       const jobId = typeof detail?.jobId === "string" ? detail.jobId : undefined;
-      if (jobId) this.checkerLive.delete(jobId);
-      this.addUsage("checker", detail);
+      if (jobId) this.verifierLive.delete(jobId);
+      this.addUsage("verifier", detail);
       return;
     }
     if (event.type === "builder_usage") {
@@ -186,23 +187,23 @@ export class BuildView implements Component {
     if (event.type === "builder_finished") this.builderRunning = false;
     if (event.type === "pipeline_finished" || event.type === "pipeline_failed") {
       this.builderRunning = false;
-      this.checkerTasks.clear();
+      this.verifierTasks.clear();
     }
     if (event.type.endsWith("_usage") || event.type === "builder_reference_images") return;
     const checkEvent = event.type.startsWith("check_");
     const jobId = typeof detail?.jobId === "string" ? detail.jobId : undefined;
     if (checkEvent && jobId) {
       if (event.type === "check_completed" || event.type === "check_cancelled") {
-        this.checkerTasks.delete(jobId);
-        this.checkerLive.delete(jobId);
+        this.verifierTasks.delete(jobId);
+        this.verifierLive.delete(jobId);
       }
       if (detail?.archived) return;
-      if (event.type === "check_queued") this.checkerTasks.set(jobId, { queued: true, label: "Checker · 等待执行" });
+      if (event.type === "check_queued") this.verifierTasks.set(jobId, { queued: true, label: "Verifier · 等待执行" });
       if (event.type === "check_started" || event.type === "check_progress") {
         // Keep the most recently active job last, independently of opaque packet ids.
-        this.checkerTasks.delete(jobId);
-        this.checkerTasks.set(jobId, { queued: false, label: event.type === "check_progress"
-          ? checkerProgressLabel(event.detail!) : "Checker · 开始检查" });
+        this.verifierTasks.delete(jobId);
+        this.verifierTasks.set(jobId, { queued: false, label: event.type === "check_progress"
+          ? verifierProgressLabel(event.detail!) : "Verifier · 开始检查" });
       }
     }
     const message = line.replace(/^\[[^\]]+\]\s*/, "").replace(/ \[#.*\]$/, "");
@@ -216,7 +217,7 @@ export class BuildView implements Component {
     if (this.recent.length > 5) this.recent.shift();
     if (checkEvent) {
       if (!this.builderRunning && !detail?.archived) {
-        this.activity = this.checkerActivity() ?? "Checker · 当前任务结束，等待结果汇总";
+        this.activity = this.verifierActivity() ?? "Verifier · 当前任务结束，等待结果汇总";
         this.lastActivityAt = Date.now();
       }
       return;
@@ -247,15 +248,15 @@ export class BuildView implements Component {
     this.lastActivityAt = Date.now();
   }
 
-  /** 运行结束后冻结计时并保留页面，供查看日志、需求书与花费。 */
+  /** 运行结束后冻结计时并保留页面，供查看日志、需求树与花费。 */
   finish(status: RunSummary["status"]): void {
     this.completed = true;
     this.outcome = status;
     this.finishedAt = Date.now();
     this.builderRunning = false;
-    this.checkerTasks.clear();
-    this.checkerLive.clear();
-    this.activity = "运行已结束，可查看日志、需求书与花费";
+    this.verifierTasks.clear();
+    this.verifierLive.clear();
+    this.activity = "运行已结束，可查看日志、需求树与花费";
     this.lastActivityAt = this.finishedAt;
   }
 
@@ -431,13 +432,29 @@ export class BuildView implements Component {
     node.children.forEach((child, index) => this.appendTree(child, childPrefix, index === node.children.length - 1, lines, theme));
   }
 
+  private modelLines(width: number, t: TerminalTheme, compact = false): string[] {
+    const entries = AGENT_ROLES.map(role => {
+      const colour = role === "builder" ? t.builder : role === "verifier" ? t.verifier : t.grouper;
+      const model = compact ? (this.options.models[role].split("/").at(-1) ?? this.options.models[role])
+        : this.options.models[role];
+      return `${colour(AGENT_LABELS[role])} ${model}`;
+    });
+    const line = ` ${t.label("模型")}  ${entries.join(` ${t.faint("·")} `)}`;
+    if (compact || visibleWidth(line) <= width) return [line];
+    return entries.map((entry, index) => ` ${index === 0 ? t.label("模型") : "    "}  ${entry}`);
+  }
+
   private usageLines(): string[] {
-    const summary = this.usage.summary(this.live, this.checkerProgressUsage());
+    const summary = this.usage.summary(this.live, this.verifierProgressUsage());
     const lines = [`总计  ${formatUsageSummary(summary)}`];
     if (this.usageExpanded) {
-      const rows: Array<[string, UsageSummary]> = [["Builder", summary.builder], ["Checker", summary.checker], ["Planner", summary.planner]];
       let details = 0;
-      for (const [label, usage] of rows) if (usage.total > 0) { lines.push(`${label}  ${formatUsageSummary(usage)}`); details += 1; }
+      for (const role of AGENT_ROLES) {
+        const usage = summary[role];
+        if (usage.total <= 0) continue;
+        lines.push(`${AGENT_LABELS[role]}  ${formatUsageSummary(usage)}`);
+        details += 1;
+      }
       // 启动前展开时给出明确反馈，避免按键看起来没有响应。
       if (!details) lines.push("花费明细  尚未产生用量");
     }
@@ -445,9 +462,9 @@ export class BuildView implements Component {
   }
 
   private highlightRole(text: string, t: TerminalTheme): { colour: (value: string) => string; text: string } {
-    const role = ["Builder", "Checker", "Planner"].find(name => text.startsWith(name));
+    const role = AGENT_ROLES.map(role => AGENT_LABELS[role]).find(name => text.startsWith(name));
     if (!role) return { colour: t.accent, text };
-    const colour = role === "Builder" ? t.builder : role === "Checker" ? t.checker : t.planner;
+    const colour = role === AGENT_LABELS.builder ? t.builder : role === AGENT_LABELS.verifier ? t.verifier : t.grouper;
     return { colour, text: colour(role) + text.slice(role.length) };
   }
 
@@ -490,24 +507,23 @@ export class BuildView implements Component {
       : this.completed
         ? ` ${completionColour("◆")} ${t.strong(this.activity)}`
         : ` ${activityRole.colour(frame)} ${activityRole.text}`;
-    const checker = this.builderRunning ? this.checkerActivity() : undefined;
-    const checkerLines = checker ? [` ${t.muted("后台")} ${this.highlightRole(checker, t).text}`] : [];
-    const models = ` ${t.label("模型")}  ${t.builder("Builder")} ${this.options.models.builder} ${t.faint("·")} ` +
-      `${t.checker("Checker")} ${this.options.models.checker}`;
+    const verifier = this.builderRunning ? this.verifierActivity() : undefined;
+    const verifierLines = verifier ? [` ${t.muted("后台")} ${this.highlightRole(verifier, t).text}`] : [];
+    const modelLines = this.modelLines(width, t);
     const keyHint = (key: string, label: string) => `${t.accent(key)} ${t.label(label)}`;
     const footer = this.awaitingStart
-      ? ` ${keyHint("Enter", "开始运行")}   ${keyHint("d", "日志")}   ${keyHint("t", "需求书")}   ` +
+      ? ` ${keyHint("Enter", "开始运行")}   ${keyHint("d", "日志")}   ${keyHint("t", "需求树")}   ` +
         `${keyHint("c", "花费")}   ${keyHint("?", "帮助")}   ${t.muted("^C 中断")}`
       : width >= 60
-        ? ` ${keyHint("d", "详细日志")}   ${keyHint("t", "需求书")}   ` +
+        ? ` ${keyHint("d", "详细日志")}   ${keyHint("t", "需求树")}   ` +
           `${keyHint("c", this.usageExpanded ? "收起花费" : "花费明细")}   ${keyHint("?", "帮助")}   ` +
           (this.completed ? keyHint("Ctrl+C", "退出") : t.muted("Ctrl+C 中断"))
-        : ` ${keyHint("d", "日志")}  ${keyHint("t", "需求书")}  ${keyHint("c", this.usageExpanded ? "收起" : "花费")}  ` +
+        : ` ${keyHint("d", "日志")}  ${keyHint("t", "需求树")}  ${keyHint("c", this.usageExpanded ? "收起" : "花费")}  ` +
           `${keyHint("?", "帮助")}  ${this.completed ? keyHint("^C", "退出") : t.muted("^C 中断")}`;
     const usage = this.usageLines();
     const progress = this.progressLines(width, counts, t);
     const compact = () => {
-      const head = [terminalHeader("Build Agent", width, t)[0], models, activity, ...checkerLines];
+      const head = [terminalHeader("Builder", width, t)[0], ...this.modelLines(width, t, true), activity, ...verifierLines];
       const tail = [...progress, footer];
       return [...head, ...usage.slice(0, Math.max(0, this.rows() - head.length - tail.length)).map(line => ` ${line}`), ...tail]
         .slice(0, this.rows()).map(line => fitTerminalText(line, width));
@@ -521,17 +537,17 @@ export class BuildView implements Component {
     const elapsed = elapsedTime((this.finishedAt ?? Date.now()) - this.startedAt);
     const runnable = [...this.scope].filter(id => this.runnable.has(id)).length;
     const lines = [
-      ...terminalHeader("Build Agent", width, t), "",
+      ...terminalHeader("Builder", width, t), "",
       terminalRow(` ${t.strong(t.accent(this.phase))}`, `${runState} ${t.muted(elapsed + " ")}`, width),
       ` ${t.label("模块")}  ${this.module}`,
-      models,
+      ...modelLines,
       ...usageLines,
       activity,
-      ...checkerLines,
+      ...verifierLines,
       this.awaitingStart
-        ? t.muted(" 尚未开始 · Enter 启动本轮运行，其他按键可先查看日志与需求书")
+        ? t.muted(" 尚未开始 · Enter 启动本轮运行，其他按键可先查看日志与需求树")
         : this.completed
-          ? t.muted(" 运行已结束 · 按 d 查看日志、t 查看需求书、c 查看花费；Ctrl+C 退出")
+          ? t.muted(" 运行已结束 · 按 d 查看日志、t 查看需求树、c 查看花费；Ctrl+C 退出")
           : t.muted(` 当前活动 ${elapsedTime(Date.now() - this.lastActivityAt)} · 持续等待时可查看详细日志`),
       "", ...progress,
       ` ${t.label("可运行检查点覆盖")} ${runnable ? t.accent(`${runnable} 条需求`) : t.muted("0 条需求")}` +
@@ -556,25 +572,25 @@ export class BuildView implements Component {
       ...(typeof usage.unpricedTokens === "number" ? { unpricedTokens: usage.unpricedTokens } : {}) };
   }
 
-  private addUsage(source: "builder" | "checker" | "planner", usage: Record<string, unknown> | undefined): void {
+  private addUsage(source: AgentRole, usage: Record<string, unknown> | undefined): void {
     const parsed = this.usageFromDetail(usage);
     if (parsed) this.usage.add(source, parsed);
   }
 
-  /** 并发 Checker 任务各自上报累计值，显示时汇总但不写入结算用量。 */
-  private checkerProgressUsage(): TokenUsage | undefined {
-    if (!this.checkerLive.size) return undefined;
+  /** 并发 Verifier 任务各自上报累计值，显示时汇总但不写入结算用量。 */
+  private verifierProgressUsage(): TokenUsage | undefined {
+    if (!this.verifierLive.size) return undefined;
     const totals = new UsageTotals();
-    for (const usage of this.checkerLive.values()) totals.add(usage);
+    for (const usage of this.verifierLive.values()) totals.add(usage);
     return totals.summary();
   }
 
-  private checkerActivity(): string | undefined {
-    const tasks = [...this.checkerTasks.values()];
+  private verifierActivity(): string | undefined {
+    const tasks = [...this.verifierTasks.values()];
     if (!tasks.length) return undefined;
     const active = tasks.filter(task => !task.queued);
     const queued = tasks.length - active.length;
-    return (active.at(-1)?.label ?? "Checker · 等待执行") +
+    return (active.at(-1)?.label ?? "Verifier · 等待执行") +
       (active.length > 1 ? ` · ${active.length} 项运行` : "") + (queued ? ` · ${queued} 项排队` : "");
   }
 
@@ -587,16 +603,16 @@ export class BuildView implements Component {
       case "initialization_verified": this.phase = "验证运行"; return "工程运行验证通过，保存基线";
       case "initialization_finished": this.phase = "开始功能开发"; return "工程可运行，准备功能分组与独立验收";
       case "snapshot_sealed": return "源码已封存，Builder 继续下一功能组";
-      case "module_check_started": return "Checker · 模块集中重放与确认";
+      case "module_check_started": return "Verifier · 模块集中重放与确认";
       case "module_check_finished": return detail?.moduleId === "<final>" ? "当前交付范围验收完成" : "模块当前版本检查完成";
-      case "feature_grouping_started": return "Planner · 整理功能分组";
+      case "feature_grouping_started": return "Grouper · 整理功能分组";
       case "feature_grouping_finished": return "功能分组完成，准备实现";
       case "phase_started": this.phase = PHASES[String(detail?.phase)] ?? "运行中"; return this.phase;
       case "packet_selected": return "已选择需求包，准备 Builder";
       case "builder_started": return `Builder · 实现当前模块${detail?.attempt ? ` · 第 ${detail.attempt} 次尝试` : ""}`;
-      case "builder_finished": return this.checkerActivity() ?? (detail?.outcome === "completed" ? "Builder 本轮完成，等待运行检查" : "Builder 本轮结束，检查候选与检查点");
+      case "builder_finished": return this.verifierActivity() ?? (detail?.outcome === "completed" ? "Builder 本轮完成，等待运行检查" : "Builder 本轮结束，检查候选与检查点");
       case "candidate_prepared": return "候选构建完成，准备独立验收";
-      case "gateway_wait": return `${detail?.source === "builder" ? "Builder" : detail?.source === "checker" ? "Checker" : "Planner"} · 等待模型网关恢复`;
+      case "gateway_wait": return `${detail?.source === "builder" ? "Builder" : detail?.source === "verifier" ? "Verifier" : "Grouper"} · 等待模型网关恢复`;
       case "repair_batch_started": return `Builder · 第 ${detail?.round ?? 1} 轮修复`;
       case "delivery_started": this.phase = "最终交付"; return "重新验收当前范围，检查交付入口";
       case "delivery_check_started": return "检查交付运行合同";
@@ -658,7 +674,7 @@ export class BuildTui {
     this.timer = setInterval(() => this.tui.requestRender(), RENDER_INTERVAL_MS);
   }
 
-  /** 等待用户在 TUI 中确认开始；确认前不启动 Builder 或 Checker。 */
+  /** 等待用户在 TUI 中确认开始；确认前不启动 Builder 或 Verifier。 */
   waitForStart(): Promise<void> { return this.startedRun; }
 
   /** 运行结束：冻结状态但保持页面，直到用户按 Ctrl+C 退出。 */
@@ -705,7 +721,7 @@ export class BuildTui {
     const event = JSON.parse(rawLine) as RunEvent;
     this.view.receive(event, line);
     // 进行中用量只刷新费用面板，不进入“详细日志”或在屏日志。
-    if (event.type === "checker_usage_progress") {
+    if (event.type === "verifier_usage_progress") {
       this.tui.requestRender();
       return;
     }
@@ -753,15 +769,15 @@ export class BuildTui {
   private refreshRequirementsViewer(): void {
     const viewer = this.treeViewer;
     if (!viewer) return;
-    viewer.setText(this.requirementsYaml ? "需求书 · requirements.yaml" : "需求树 · 完成情况",
+    viewer.setText(this.requirementsYaml ? "需求树 · requirements.yaml" : "需求树 · 完成情况",
       this.requirementsYaml ? this.options.requirementsText?.trimEnd() || "需求文件内容不可用。" : this.view.requirementTreeText(this.theme), false);
   }
 
   private showHelp(): void {
     this.treeViewer = undefined;
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
-      "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求书与每个需求的实现/验收状态；按 v 切换完整 requirements.yaml\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  运行中中断，运行结束后退出\n\n" +
-      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，模块推进时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Checker：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告、补丁与恢复命令追加在详细日志末尾，按 Ctrl+C 退出。",
+      "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求树与每个需求的实现/验收状态；按 v 切换完整 requirements.yaml\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  运行中中断，运行结束后退出\n\n" +
+      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，模块推进时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Verifier：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告、补丁与恢复命令追加在详细日志末尾，按 Ctrl+C 退出。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
@@ -791,7 +807,7 @@ export function buildResult(summary: RunSummary, runDirectory: string, patch: st
     ` 阻塞 ${summary.blockedRequirementIds.length} · 待处理 ${summary.pendingRequirementIds?.length ?? 0} · 沿用跳过 ${summary.skippedRequirementIds?.length ?? 0}`,
     ...(scenarios.length ? [` 场景覆盖 ${scenarioVerified}/${scenarios.length}${scenarioDetails ? ` · ${scenarioDetails}` : ""}`] : []),
     ` 总耗时  ${elapsedTime(elapsedMs)}`,
-    ...(summary.modelUsage ? formatModelUsageSummary(summary.modelUsage, { includePlanner: false }).map(line => ` ${line}`) : []),
+    ...(summary.modelUsage ? formatModelUsageSummary(summary.modelUsage).map(line => ` ${line}`) : []),
     "", ` 报告  ${join(runDirectory, "report.md")}`, ` 日志  ${join(runDirectory, "run-log.txt")}`,
     ...(patch ? [` 补丁  ${patch}`] : []), "", t.muted(" 下一步")];
   if (patch && summary.status === "delivered") lines.push(` shallow build apply --run-dir ${shellArgument(runDirectory)}`);

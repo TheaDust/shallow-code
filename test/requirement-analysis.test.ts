@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { maskRequirementLiterals, requirementLiterals, requirementOutcomeClauses, requirementSentences } from "../src/requirement-text.js";
 import { requirementScenarioFacts, scenarioPhaseIndex, scenarioStepPhases } from "../src/requirement-analysis.js";
-import { checkerSourceClauses } from "../src/checker/evidence.js";
+import { verifierSourceClauses } from "../src/verifier/evidence.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -57,7 +57,7 @@ test("Literal scanning preserves escaped quotes, apostrophes, code spans and sou
 
 test("Chinese outcomes retain quoted punctuation and each explicit result's source identity", () => {
   const input = requirement();
-  const outcomes = checkerSourceClauses({ requirements: [input] }, [input.id]).filter(outcome => outcome.scenarioId === "cancel-own");
+  const outcomes = verifierSourceClauses({ requirements: [input] }, [input.id]).filter(outcome => outcome.scenarioId === "cancel-own");
   assert.deepEqual(outcomes.map(({ id, basis }) => ({ id, basis })), [
     { id: "cancel:cancel-own:3:0", basis: "预约显示「已取消；可以重订」。" },
     { id: "cancel:cancel-own:3:1", basis: "名额释放。" },

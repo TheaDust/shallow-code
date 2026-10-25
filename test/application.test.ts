@@ -6,7 +6,7 @@ import { ApplicationRegistry } from "../src/application/registry.js";
 import { CandidateRuntime } from "../src/application/candidate-runtime.js";
 import type { RuntimeAdapter } from "../src/application/port.js";
 import { parseProjectSpec, resolveApplicationContract } from "../src/project-spec.js";
-import { CheckerAdapterRegistry } from "../src/checker/adapters/registry.js";
+import { VerifierAdapterRegistry } from "../src/verifier/adapters/registry.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 test("A non-Web adapter prepares isolated candidates and invalidates changed input without a network endpoint", async () => {
@@ -52,9 +52,9 @@ test("A non-Web adapter prepares isolated candidates and invalidates changed inp
   });
 });
 
-test("Checker adapter selection fails before execution for an unknown application platform", () => {
-  const registry = new CheckerAdapterRegistry(new Map());
-  assert.throws(() => registry.get("missing"), /Unknown Checker adapter missing/);
+test("Verifier adapter selection fails before execution for an unknown application platform", () => {
+  const registry = new VerifierAdapterRegistry(new Map());
+  assert.throws(() => registry.get("missing"), /Unknown Verifier adapter missing/);
 });
 
 test("Shared project parsing leaves platform selection and reserved variables to the adapter", () => {

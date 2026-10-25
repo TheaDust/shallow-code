@@ -91,7 +91,7 @@ export interface AcquiredSseResilience {
 
 /**
  * Reference-counted installer for in-process clients whose gateway calls may
- * overlap, such as Checker exploration and semantic review. The fetch wrapper
+ * overlap, such as Verifier exploration and semantic review. The fetch wrapper
  * stays installed until the last caller releases it.
  */
 export function acquireSseResilience(onRepair?: (raw: string) => void): AcquiredSseResilience {

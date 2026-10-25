@@ -40,7 +40,7 @@ export class PiFeatureGrouper implements FeatureGrouper {
       : timeout ?? options.signal ?? new AbortController().signal;
     const assertActive = () => {
       signal.throwIfAborted();
-      if (Date.now() >= deadlineAt) throw new Error("Planner deadline exhausted");
+      if (Date.now() >= deadlineAt) throw new Error("Grouper deadline exhausted");
     };
     assertActive();
     const cwd = join(this.config.sessionDir, randomUUID());
@@ -48,13 +48,13 @@ export class PiFeatureGrouper implements FeatureGrouper {
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
     const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
     const { gateway, modelCost } = this.config;
-    runtime.registerProvider("planner-gateway", { baseUrl: gateway.baseUrl, api: "openai-completions", apiKey: "PLANNER_RUNTIME_CREDENTIAL",
+    runtime.registerProvider("grouper-gateway", { baseUrl: gateway.baseUrl, api: "openai-completions", apiKey: "GROUPER_RUNTIME_CREDENTIAL",
       models: [piProviderModel(gateway.model, undefined, opencodeSessionHeaders(gateway.baseUrl, randomUUID()), modelCost)] });
-    await runtime.setRuntimeApiKey("planner-gateway", gateway.apiKey);
+    await runtime.setRuntimeApiKey("grouper-gateway", gateway.apiKey);
     const settingsManager = piGatewaySettings(deadlineAt - Date.now());
     const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true,
       disabledBuiltinExtensions: ["mcp"], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-      systemPrompt: loadPrompt("planning", "feature-grouping") });
+      systemPrompt: loadPrompt("grouper", "feature-grouping") });
     await resources.reload();
     let turns = 0;
     let validated: { key: string; turn: number } | undefined;
@@ -64,7 +64,7 @@ export class PiFeatureGrouper implements FeatureGrouper {
         parameters: Type.Object({ grouping: Type.Unsafe(FEATURE_GROUPING_SCHEMA) }), executionMode: "sequential",
         async execute(_id, input) {
           assertActive();
-          if (proposal !== undefined) throw new Error("Planner already finished");
+          if (proposal !== undefined) throw new Error("Grouper already finished");
           try {
             const candidate = (input as { grouping: unknown }).grouping;
             const result = validateGrouping(catalog, candidate);
@@ -77,7 +77,7 @@ export class PiFeatureGrouper implements FeatureGrouper {
         parameters: Type.Unsafe(FEATURE_GROUPING_SCHEMA), executionMode: "sequential",
         async execute(_id, input) {
           assertActive();
-          if (proposal !== undefined) throw new Error("Planner already finished");
+          if (proposal !== undefined) throw new Error("Grouper already finished");
           validateGrouping(catalog, input);
           if (!validated || validated.key !== groupingKey(input) || validated.turn >= turns) {
             throw new Error("Call validate_grouping for this exact proposal, then read its feedback in a subsequent turn before finish");
@@ -87,7 +87,7 @@ export class PiFeatureGrouper implements FeatureGrouper {
         } },
     ];
     const { session, modelFallbackMessage } = await createAgentSession({ cwd, agentDir, modelRuntime: runtime,
-      model: runtime.getModel("planner-gateway", gateway.model), settingsManager, resourceLoader: resources,
+      model: runtime.getModel("grouper-gateway", gateway.model), settingsManager, resourceLoader: resources,
       sessionManager: SessionManager.create(cwd, cwd), noTools: "builtin", tools: tools.map(tool => tool.name), customTools: tools });
     if (modelFallbackMessage) { session.dispose(); throw new Error(modelFallbackMessage); }
     const finishTurn = session.agent.finishTurn;
@@ -108,7 +108,7 @@ export class PiFeatureGrouper implements FeatureGrouper {
     const transport = createPiGateway(gateway.baseUrl);
     let prompt = groupingPrompt(catalog, options);
     try {
-      await this.recovery.run("planning", "feature-grouping", () => Math.max(0, deadlineAt - Date.now()),
+      await this.recovery.run("grouper", "feature-grouping", () => Math.max(0, deadlineAt - Date.now()),
         async () => {
           while (proposal === undefined && turns < MAX_AGENT_TURNS) {
             assertActive();
@@ -117,7 +117,7 @@ export class PiFeatureGrouper implements FeatureGrouper {
             await transport.prompt(session, nextPrompt, { signal });
             assertActive();
           }
-          if (proposal === undefined) throw new Error(`Planner did not finish a validated grouping within ${MAX_AGENT_TURNS} turns`);
+          if (proposal === undefined) throw new Error(`Grouper did not finish a validated grouping within ${MAX_AGENT_TURNS} turns`);
         }, signal);
       return proposal;
     } finally {

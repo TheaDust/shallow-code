@@ -25,9 +25,15 @@ test("Model rates resolve from the built-in catalog by gateway and model id", ()
 
 test("Cost overrides fall back field by field and win over the catalog", () => {
   const scoped = resolveModelRates(GATEWAY, MODEL, {
-    component: "SHALLOW_BUILDER", env: { SHALLOW_BUILDER_COST_OUTPUT: "9" },
+    agent: "builder", env: { SHALLOW_BUILDER_COST_OUTPUT: "9" },
   });
   assert.deepEqual(scoped, { input: 0.15, output: 9, cacheRead: 0.003, cacheWrite: 0 });
+  const allAgents = resolveModelRates(GATEWAY, MODEL, {
+    agent: "verifier", env: { SHALLOW_VERIFIER_COST_OUTPUT: "8", SHALLOW_GROUPER_COST_OUTPUT: "7" },
+  });
+  assert.equal(allAgents?.output, 8);
+  assert.equal(resolveModelRates(GATEWAY, MODEL, { agent: "grouper",
+    env: { SHALLOW_GROUPER_COST_OUTPUT: "7" } })?.output, 7);
   const common = resolveModelRates(GATEWAY, MODEL, {
     env: { MODEL_COST_INPUT: "1.5", MODEL_COST_CACHE_WRITE: "2" },
   });
@@ -60,43 +66,42 @@ test("Usage cost converts per-million rates and totals keep unknown prices out",
   assert.equal(unknown.count, 1);
 });
 
-test("Model totals separate Builder, Checker and Planner, preserve partial prices and include progress without settling it", () => {
+test("Model totals separate Builder, Verifier and Grouper, preserve partial prices and include progress without settling it", () => {
   const totals = new ModelUsageTotals();
   totals.add("builder", { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, cost: 0.002 });
-  totals.add("checker", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
-  totals.add("checker", { input: 30, output: 3, cacheRead: 0, cacheWrite: 0 });
-  totals.add("planner", { input: 20, output: 2, cacheRead: 0, cacheWrite: 0 });
+  totals.add("verifier", { input: 50, output: 5, cacheRead: 0, cacheWrite: 0 });
+  totals.add("verifier", { input: 30, output: 3, cacheRead: 0, cacheWrite: 0 });
+  totals.add("grouper", { input: 20, output: 2, cacheRead: 0, cacheWrite: 0 });
   const settled = totals.summary();
   assert.deepEqual(settled.builder, { input: 100, output: 20, cacheRead: 10, cacheWrite: 5, total: 135, cost: 0.002 });
-  assert.deepEqual(settled.checker, { input: 80, output: 8, cacheRead: 0, cacheWrite: 0, total: 88, unpricedTokens: 88 });
-  assert.deepEqual(settled.planner, { input: 20, output: 2, cacheRead: 0, cacheWrite: 0, total: 22, unpricedTokens: 22 });
-  assert.equal(settled.total, settled.builder.total + settled.checker.total + settled.planner.total);
+  assert.deepEqual(settled.verifier, { input: 80, output: 8, cacheRead: 0, cacheWrite: 0, total: 88, unpricedTokens: 88 });
+  assert.deepEqual(settled.grouper, { input: 20, output: 2, cacheRead: 0, cacheWrite: 0, total: 22, unpricedTokens: 22 });
+  assert.equal(settled.total, settled.builder.total + settled.verifier.total + settled.grouper.total);
   assert.equal(settled.total, 245);
   assert.equal(settled.cost, 0.002);
   assert.equal(settled.unpricedTokens, 110);
   assert.match(formatUsageSummary(settled), /已知费用 \$0\.002（部分未计价）/);
   const rows = formatModelUsageSummary(settled);
-  assert.ok(rows.some(line => /^Checker\s+tokens 88/.test(line)), "Checker 用量单独成行");
-  assert.ok(rows.some(line => /^Planner\s+tokens 22/.test(line)), "Planner 用量默认单独成行");
-  assert.ok(!formatModelUsageSummary(settled, { includePlanner: false }).some(line => line.startsWith("Planner")),
-    "终端可省略 Planner 明细但总计仍包含它");
+  assert.ok(rows.some(line => /^Verifier\s+tokens 88/.test(line)), "Verifier 用量单独成行");
+  assert.ok(rows.some(line => /^Grouper\s+tokens 22/.test(line)), "Grouper 用量单独成行");
+  assert.ok(rows.some(line => /^Builder\s+tokens 135/.test(line)), "Builder 用量单独成行");
   const zero = new ModelUsageTotals();
-  zero.add("checker", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
-  assert.ok(formatModelUsageSummary(zero.summary()).some(line => line.startsWith("Checker")), "Checker 用量有独立行");
+  zero.add("verifier", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
+  assert.ok(formatModelUsageSummary(zero.summary()).some(line => line.startsWith("Verifier")), "Verifier 用量有独立行");
   const live = totals.summary({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 });
   assert.equal(live.builder.total, 147);
   assert.equal(live.total, 257);
   assert.equal(live.unpricedTokens, 110);
   const liveBoth = totals.summary({ input: 10, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0 },
     { input: 5, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0 });
-  assert.equal(liveBoth.checker.total, 94);
+  assert.equal(liveBoth.verifier.total, 94);
   assert.equal(liveBoth.total, 263);
   assert.deepEqual(totals.summary(), settled, "显示实时快照不会重复累计用量");
 });
 
 test("Unpriced usage stays unknown and a known zero price is distinct from an unknown price", () => {
   const totals = new ModelUsageTotals();
-  totals.add("checker", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
+  totals.add("verifier", { input: 10, output: 2, cacheRead: 0, cacheWrite: 0 });
   assert.match(formatUsageSummary(totals.summary()), /费用未知$/);
   assert.equal(totals.summary().cost, undefined);
   const free = new UsageTotals();

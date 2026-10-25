@@ -136,7 +136,7 @@ export function selectEvolutionScope(catalog: RequirementCatalog, historicalIds:
   return scope;
 }
 
-/** Scheduling view only. Builder and Checker still receive the original current contracts. */
+/** Scheduling view only. Builder and Verifier still receive the original current contracts. */
 export function evolutionImplementationCatalog(
   catalog: RequirementCatalog, inheritedIds: ReadonlySet<string>,
 ): RequirementCatalog {

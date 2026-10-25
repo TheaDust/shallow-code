@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
+import { agentEnv, agentEnvName, isAgentRole, type AgentRole } from "./agent-config.js";
 import { DEFAULT_CONTEXT_WINDOW } from "./builder/pi-model-config.js";
 
 export interface GatewayConfig {
@@ -9,29 +10,30 @@ export interface GatewayConfig {
   model: string;
 }
 
-export interface CheckerConfig {
+export interface VerifierConfig {
   mode: "active";
   concurrency: number;
   semanticReview?: boolean;
   replay?: boolean;
 }
 
-export function parseCheckerConfig(env: Record<string, string | undefined>): CheckerConfig {
-  const mode = env.SHALLOW_CHECKER_MODE?.trim() || "active";
+export function parseVerifierConfig(env: Record<string, string | undefined>): VerifierConfig {
+  const mode = agentEnv(env, "verifier", "MODE") ?? "active";
   if (mode !== "active") {
-    throw new Error("SHALLOW_CHECKER_MODE only supports active; start a new Checker run to replace legacy/observe");
+    throw new Error(`${agentEnvName("verifier", "MODE")} only supports active; start a new Verifier run to replace legacy/observe`);
   }
-  const concurrency = Number(env.SHALLOW_CHECKER_CONCURRENCY?.trim() || "2");
+  const concurrency = Number(agentEnv(env, "verifier", "CONCURRENCY") ?? "2");
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 2) {
-    throw new Error("SHALLOW_CHECKER_CONCURRENCY must be 1 or 2");
+    throw new Error(`${agentEnvName("verifier", "CONCURRENCY")} must be 1 or 2`);
   }
-  const flag = (name: string): boolean => {
-    const raw = env[name]?.trim();
+  const flag = (suffix: string): boolean => {
+    const name = agentEnvName("verifier", suffix);
+    const raw = agentEnv(env, "verifier", suffix);
     if (!raw || /^(0|false|no|off)$/i.test(raw)) return false;
     if (/^(1|true|yes|on)$/i.test(raw)) return true;
     throw new Error(`${name} must be 1/true/yes/on or 0/false/no/off`);
   };
-  return { mode, concurrency, semanticReview: flag("SHALLOW_CHECKER_SEMANTIC_REVIEW"), replay: flag("SHALLOW_CHECKER_REPLAY") };
+  return { mode, concurrency, semanticReview: flag("SEMANTIC_REVIEW"), replay: flag("REPLAY") };
 }
 
 export const MIN_BUILDER_CONTEXT_WINDOW = 131_072;
@@ -55,17 +57,17 @@ export function parseBuilderContextWindow(
 
 /**
  * 读取一份网关配置。公共值来自 OPENAI_API_KEY / OPENAI_BASE_URL / MODEL；
- * 传入 component（如 "SHALLOW_BUILDER"、"SHALLOW_CHECKER"、"SHALLOW_PLANNER"）时，
- * `<component>_API_KEY` / `<component>_BASE_URL` / `<component>_MODEL`
- * 可分别覆盖对应字段，未覆盖的字段回退公共值。
+ * 传入 Grouper / Builder / Verifier 角色时，各自可用
+ * `SHALLOW_GROUPER_*` / `SHALLOW_BUILDER_*` / `SHALLOW_VERIFIER_*`
+ * 分别覆盖 API key、地址和模型，未覆盖的字段回退公共值。
  */
 export function readGatewayConfig(
   env: Record<string, string | undefined>,
-  component?: string,
+  agent?: AgentRole | string,
 ): GatewayConfig {
-  const apiKey = gatewayEnv(env, component, "API_KEY", "OPENAI_API_KEY");
-  const baseUrl = gatewayEnv(env, component, "BASE_URL", "OPENAI_BASE_URL").replace(/\/+$/, "");
-  const model = gatewayEnv(env, component, "MODEL", "MODEL");
+  const apiKey = gatewayEnv(env, agent, "API_KEY", "OPENAI_API_KEY");
+  const baseUrl = gatewayEnv(env, agent, "BASE_URL", "OPENAI_BASE_URL").replace(/\/+$/, "");
+  const model = gatewayEnv(env, agent, "MODEL", "MODEL");
   return { apiKey, baseUrl, model };
 }
 
@@ -142,29 +144,31 @@ export function parseEvolutionAuditInherited(env: Record<string, string | undefi
 
 export function deriveModelTimeouts(totalBudgetMs: number): {
   builderTimeoutMs: number;
-  checkerTimeoutMs: number;
+  verifierTimeoutMs: number;
 } {
   if (totalBudgetMs <= 0) {
     return {
       builderTimeoutMs: 5_400_000,
-      checkerTimeoutMs: 720_000,
+      verifierTimeoutMs: 720_000,
     };
   }
   return {
     builderTimeoutMs: Math.max(30_000, Math.min(5_400_000, totalBudgetMs * 0.4)),
-    checkerTimeoutMs: Math.max(10_000, Math.min(720_000, totalBudgetMs * 0.1)),
+    verifierTimeoutMs: Math.max(10_000, Math.min(720_000, totalBudgetMs * 0.1)),
   };
 }
 
-/** 组件变量优先，公共变量兜底；两者都没有时给出包含两者名称的错误。 */
+/** 角色变量优先，公共变量兜底；两者都没有时给出包含两者名称的错误。 */
 function gatewayEnv(
   env: Record<string, string | undefined>,
-  component: string | undefined,
+  agent: AgentRole | string | undefined,
   name: "API_KEY" | "BASE_URL" | "MODEL",
   fallbackName: string,
 ): string {
-  const scopedName = component ? `${component}_${name}` : undefined;
-  const scoped = scopedName ? env[scopedName]?.trim() : undefined;
+  const scopedName = agent === undefined ? undefined
+    : isAgentRole(agent) ? agentEnvName(agent, name) : `${agent}_${name}`;
+  const scoped = agent === undefined ? undefined
+    : isAgentRole(agent) ? agentEnv(env, agent, name) : env[scopedName!]?.trim();
   if (scoped) return scoped;
   const fallback = env[fallbackName]?.trim();
   if (fallback) return fallback;

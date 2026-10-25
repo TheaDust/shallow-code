@@ -323,11 +323,11 @@ rect.c-bg-rect { fill: var(--bg); }
         <path data-edge-from="pipeline" data-edge-to="coordinator" data-edge-key="1" data-edge-id="pipeline-coordinator" data-composition-points="370,99;410,99" d="M 370 99 L 410 99" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="coordinator" data-edge-to="state" data-edge-key="2" data-edge-id="coordinator-state" data-composition-points="580,99;650,99" d="M 580 99 L 650 99" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
         <path data-edge-from="pipeline" data-edge-to="builder" data-edge-key="3" data-edge-id="pipeline-builder" data-composition-points="290,128;290,204;290,204;290,280" d="M 290 128 L 290 204 L 290 204 L 290 280" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="coordinator" data-edge-to="checker" data-edge-key="4" data-edge-id="coordinator-checker" data-composition-points="495,128;495,204;495,204;495,280" d="M 495 128 L 495 204 L 495 204 L 495 280" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="coordinator" data-edge-to="verifier" data-edge-key="4" data-edge-id="coordinator-verifier" data-composition-points="495,128;495,204;495,204;495,280" d="M 495 128 L 495 204 L 495 204 L 495 280" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="builder" data-edge-to="app_adapter" data-edge-key="5" data-edge-id="builder-app" data-composition-points="290,344;290,392;290,392;290,440" d="M 290 344 L 290 392 L 290 392 L 290 440" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
-        <path data-edge-from="checker" data-edge-to="checker_adapter" data-edge-key="6" data-edge-id="checker-adapter" data-composition-points="495,344;495,392;495,392;495,440" d="M 495 344 L 495 392 L 495 392 L 495 440" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="verifier" data-edge-to="verifier_adapter" data-edge-key="6" data-edge-id="verifier-adapter" data-composition-points="495,344;495,392;495,392;495,440" d="M 495 344 L 495 392 L 495 392 L 495 440" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="app_adapter" data-edge-to="target" data-edge-key="7" data-edge-id="app-target" data-composition-points="290,504;290,550;740,550;740,504;740,504" d="M 290 504 L 290 542 Q 290 550 298 550 L 732 550 Q 740 550 740 542 L 740 504 L 740 504" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="checker_adapter" data-edge-to="target" data-edge-key="8" data-edge-id="checker-target" data-composition-points="580,472;650,472" d="M 580 472 L 650 472" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="verifier_adapter" data-edge-to="target" data-edge-key="8" data-edge-id="verifier-target" data-composition-points="580,472;650,472" d="M 580 472 L 650 472" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
 
         <!-- Components -->
         <g id="node-cli" data-node-id="cli" data-node-label="CLI / TUI" tabindex="0" role="button" aria-label="聚焦CLI / TUI，控制面" aria-pressed="false" data-node-kind="frontend" data-node-context="控制面">
@@ -353,14 +353,14 @@ rect.c-bg-rect { fill: var(--bg); }
           <text data-node-label="" x="290" y="103" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Pipeline Controller</text>
         </g>
 
-        <g id="node-coordinator" data-node-id="coordinator" data-node-label="Checker Coordinator" tabindex="0" role="button" aria-label="聚焦Checker Coordinator，控制面" aria-pressed="false" data-node-kind="backend" data-node-context="控制面">
-          <title>Checker Coordinator · 控制面</title>
+        <g id="node-coordinator" data-node-id="coordinator" data-node-label="Verifier Coordinator" tabindex="0" role="button" aria-label="聚焦Verifier Coordinator，控制面" aria-pressed="false" data-node-kind="backend" data-node-context="控制面">
+          <title>Verifier Coordinator · 控制面</title>
           <rect x="410" y="70" width="170" height="58" rx="6" class="c-mask"/>
           <rect x="410" y="70" width="170" height="58" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(416 76) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="495" y="103" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Checker Coordinator</text>
+          <text data-node-label="" x="495" y="103" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Verifier Coordinator</text>
         </g>
 
         <g id="node-state" data-node-id="state" data-node-label="运行状态" tabindex="0" role="button" aria-label="聚焦运行状态，运行状态" aria-pressed="false" data-node-kind="database" data-node-context="运行状态">
@@ -384,14 +384,14 @@ rect.c-bg-rect { fill: var(--bg); }
           <text data-node-label="" x="290" y="316" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Pi Builder Worker</text>
         </g>
 
-        <g id="node-checker" data-node-id="checker" data-node-label="Checker Agent" tabindex="0" role="button" aria-label="聚焦Checker Agent，执行面" aria-pressed="false" data-node-kind="backend" data-node-context="执行面">
-          <title>Checker Agent · 执行面</title>
+        <g id="node-verifier" data-node-id="verifier" data-node-label="Verifier Agent" tabindex="0" role="button" aria-label="聚焦Verifier Agent，执行面" aria-pressed="false" data-node-kind="backend" data-node-context="执行面">
+          <title>Verifier Agent · 执行面</title>
           <rect x="410" y="280" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="410" y="280" width="170" height="64" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(416 286) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" x="495" y="316" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Checker Agent</text>
+          <text data-node-label="" x="495" y="316" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Verifier Agent</text>
         </g>
 
         <g id="node-app_adapter" data-node-id="app_adapter" data-node-label="Web App Adapter" tabindex="0" role="button" aria-label="聚焦Web App Adapter，Web 适配器" aria-pressed="false" data-node-kind="messagebus" data-node-context="Web 适配器">
@@ -407,15 +407,15 @@ rect.c-bg-rect { fill: var(--bg); }
           <text data-node-label="" x="290" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Web App Adapter</text>
         </g>
 
-        <g id="node-checker_adapter" data-node-id="checker_adapter" data-node-label="Web Checker Adapter" tabindex="0" role="button" aria-label="聚焦Web Checker Adapter，Web 适配器" aria-pressed="false" data-node-kind="security" data-node-context="Web 适配器">
-          <title>Web Checker Adapter · Web 适配器</title>
+        <g id="node-verifier_adapter" data-node-id="verifier_adapter" data-node-label="Web Verifier Adapter" tabindex="0" role="button" aria-label="聚焦Web Verifier Adapter，Web 适配器" aria-pressed="false" data-node-kind="security" data-node-context="Web 适配器">
+          <title>Web Verifier Adapter · Web 适配器</title>
           <rect x="410" y="440" width="170" height="64" rx="6" class="c-mask"/>
           <rect x="410" y="440" width="170" height="64" rx="6" class="c-security" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(416 446) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" x="495" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Web Checker Adapter</text>
+          <text data-node-label="" x="495" y="476" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Web Verifier Adapter</text>
         </g>
 
         <g id="node-target" data-node-id="target" data-node-label="目标 Web 应用" tabindex="0" role="button" aria-label="聚焦目标 Web 应用，架构组件" aria-pressed="false" data-node-kind="external" data-node-context="架构组件">

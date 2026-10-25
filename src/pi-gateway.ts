@@ -2,7 +2,7 @@ import { SettingsManager, type AgentSession } from "@earendil-works/pi-coding-ag
 import { acquireSseResilience } from "./builder/sse-resilience.js";
 import { GatewayRequestError, observeGatewayFailures, providerGatewayFailure } from "./gateway-failure.js";
 
-/** One Pi retry policy for Builder, Checker and Planner; the caller owns its total deadline. */
+/** One Pi retry policy for Builder, Verifier and Grouper; the caller owns its total deadline. */
 export function piGatewaySettings(timeoutMs: number): SettingsManager {
   return SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
     provider: { maxRetries: 0, timeoutMs: Math.max(1, Math.min(2_147_483_647, timeoutMs)) } },

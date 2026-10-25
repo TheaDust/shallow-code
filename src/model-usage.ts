@@ -1,5 +1,7 @@
 import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 
+import { AGENT_LABELS, AGENT_ROLES, agentEnv, agentEnvName, isAgentRole, type AgentRole } from "./agent-config.js";
+
 /**
  * 模型单价与用量统计。
  *
@@ -32,10 +34,9 @@ export interface UsageSummary extends TokenUsage {
 }
 
 export interface ModelUsageSummary extends UsageSummary {
+  grouper: UsageSummary;
   builder: UsageSummary;
-  checker: UsageSummary;
-  /** 控制器规划（如功能分组）；独立于 Builder 实现与 Checker 验收。 */
-  planner: UsageSummary;
+  verifier: UsageSummary;
 }
 
 const COST_FIELDS = [
@@ -46,16 +47,16 @@ const COST_FIELDS = [
 ] as const;
 
 /**
- * 解析单价：组件环境变量优先、`MODEL_COST_*` 兜底，未覆盖的字段回退内置目录。
+ * 解析单价：角色环境变量优先、`MODEL_COST_*` 兜底，未覆盖的字段回退内置目录。
  * 三者都没有时返回 null（只统计 token）。
  */
 export function resolveModelRates(
   baseUrl: string,
   model: string,
-  options: { component?: string; env?: Record<string, string | undefined> } = {},
+  options: { agent?: AgentRole; component?: string; env?: Record<string, string | undefined> } = {},
 ): ModelRates | null {
   const env = options.env ?? process.env;
-  const override = envRates(env, options.component);
+  const override = envRates(env, options.agent, options.component);
   const catalog = catalogRates(baseUrl, model);
   if (!override && !catalog) return null;
   const rates = {
@@ -117,30 +118,30 @@ export class UsageTotals {
 
 /** 按实际调用来源分组；总计由各分组汇总，避免独立累计产生偏差。 */
 export class ModelUsageTotals {
+  private readonly grouper = new UsageTotals();
   private readonly builder = new UsageTotals();
-  private readonly checker = new UsageTotals();
-  private readonly planner = new UsageTotals();
+  private readonly verifier = new UsageTotals();
 
-  add(source: "builder" | "checker" | "planner", usage: TokenUsage): void {
+  add(source: AgentRole, usage: TokenUsage): void {
     this[source].add(usage);
   }
 
-  /** 展示时可合入当前 Builder/Checker 快照；不改变已经结算的用量。 */
-  summary(builderProgress?: TokenUsage, checkerProgress?: TokenUsage): ModelUsageSummary {
+  /** 展示时可合入当前 Grouper/Builder/Verifier 快照；不改变已经结算的用量。 */
+  summary(builderProgress?: TokenUsage, verifierProgress?: TokenUsage): ModelUsageSummary {
     const builder = new UsageTotals();
     builder.add(this.builder.summary());
     if (builderProgress) builder.add(builderProgress);
     const builderSummary = builder.summary();
-    const checker = new UsageTotals();
-    checker.add(this.checker.summary());
-    if (checkerProgress) checker.add(checkerProgress);
-    const checkerSummary = checker.summary();
-    const planner = this.planner.summary();
+    const verifier = new UsageTotals();
+    verifier.add(this.verifier.summary());
+    if (verifierProgress) verifier.add(verifierProgress);
+    const verifierSummary = verifier.summary();
+    const grouper = this.grouper.summary();
     const total = new UsageTotals();
     total.add(builderSummary);
-    total.add(checkerSummary);
-    total.add(planner);
-    return { ...total.summary(), builder: builderSummary, checker: checkerSummary, planner };
+    total.add(verifierSummary);
+    total.add(grouper);
+    return { ...total.summary(), builder: builderSummary, verifier: verifierSummary, grouper };
   }
 }
 
@@ -172,10 +173,9 @@ export function formatUsageSummary(usage: UsageSummary): string {
   return `tokens ${formatTokenCount(usage.total)}（${parts.join(" / ")}）${cost}`;
 }
 
-export function formatModelUsageSummary(usage: ModelUsageSummary, options: { includePlanner?: boolean } = {}): string[] {
-  const rows: Array<[string, UsageSummary]> = [["总计", usage], ["Builder", usage.builder], ["Checker", usage.checker]];
-  // 终端空间有限时可省略规划明细；总计始终来自全部分组。
-  if (options.includePlanner !== false) rows.push(["Planner", usage.planner]);
+export function formatModelUsageSummary(usage: ModelUsageSummary): string[] {
+  const rows: Array<[string, UsageSummary]> = [["总计", usage],
+    ...AGENT_ROLES.map(role => [AGENT_LABELS[role], usage[role]] as [string, UsageSummary])];
   return rows.map(([label, summary]) => `${label}  ${formatUsageSummary(summary)}`);
 }
 
@@ -202,13 +202,16 @@ export function parseOpenAIUsage(raw: unknown): UsageSummary | undefined {
 
 function envRates(
   env: Record<string, string | undefined>,
+  agent: AgentRole | undefined,
   component: string | undefined,
 ): Partial<ModelRates> | null {
   let present = false;
   const rates: Partial<ModelRates> = {};
   for (const [field, suffix] of COST_FIELDS) {
-    const scopedName = component ? `${component}_COST_${suffix}` : undefined;
-    const scoped = scopedName ? env[scopedName]?.trim() : undefined;
+    const scopedName = agent ? agentEnvName(agent, `COST_${suffix}`)
+      : component ? `${component}_COST_${suffix}` : undefined;
+    const scoped = agent ? agentEnv(env, agent, `COST_${suffix}`)
+      : component ? env[`${component}_COST_${suffix}`]?.trim() : undefined;
     const common = env[`MODEL_COST_${suffix}`]?.trim();
     const raw = scoped || common;
     if (!raw) continue;

@@ -9,18 +9,18 @@
   "components": [
     { "id": "cli", "type": "frontend", "label": "CLI / TUI", "pos": [40, 70], "size": [130, 58] },
     { "id": "pipeline", "type": "backend", "label": "Pipeline Controller", "pos": [210, 70], "size": [160, 58] },
-    { "id": "coordinator", "type": "backend", "label": "Checker Coordinator", "pos": [410, 70], "size": [170, 58] },
+    { "id": "coordinator", "type": "backend", "label": "Verifier Coordinator", "pos": [410, 70], "size": [170, 58] },
     { "id": "state", "type": "database", "label": "运行状态", "pos": [650, 70], "size": [180, 58] },
     { "id": "builder", "type": "backend", "label": "Pi Builder Worker", "pos": [210, 280], "size": [160, 64] },
-    { "id": "checker", "type": "backend", "label": "Checker Agent", "pos": [410, 280], "size": [170, 64] },
+    { "id": "verifier", "type": "backend", "label": "Verifier Agent", "pos": [410, 280], "size": [170, 64] },
     { "id": "app_adapter", "type": "messagebus", "label": "Web App Adapter", "pos": [210, 440], "size": [160, 64] },
-    { "id": "checker_adapter", "type": "security", "label": "Web Checker Adapter", "pos": [410, 440], "size": [170, 64] },
+    { "id": "verifier_adapter", "type": "security", "label": "Web Verifier Adapter", "pos": [410, 440], "size": [170, 64] },
     { "id": "target", "type": "external", "label": "目标 Web 应用", "pos": [650, 440], "size": [180, 64] }
   ],
   "boundaries": [
     { "kind": "region", "label": "控制面", "wraps": ["cli", "pipeline", "coordinator"] },
-    { "kind": "region", "label": "执行面", "wraps": ["builder", "checker"] },
-    { "kind": "region", "label": "Web 适配器", "wraps": ["app_adapter", "checker_adapter"] },
+    { "kind": "region", "label": "执行面", "wraps": ["builder", "verifier"] },
+    { "kind": "region", "label": "Web 适配器", "wraps": ["app_adapter", "verifier_adapter"] },
     { "kind": "region", "label": "运行状态", "wraps": ["state"] }
   ],
   "connections": [
@@ -28,11 +28,11 @@
     { "id": "pipeline-coordinator", "from": "pipeline", "to": "coordinator", "variant": "emphasis" },
     { "id": "coordinator-state", "from": "coordinator", "to": "state", "variant": "dashed" },
     { "id": "pipeline-builder", "from": "pipeline", "to": "builder", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
-    { "id": "coordinator-checker", "from": "coordinator", "to": "checker", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
+    { "id": "coordinator-verifier", "from": "coordinator", "to": "verifier", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
     { "id": "builder-app", "from": "builder", "to": "app_adapter", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
-    { "id": "checker-adapter", "from": "checker", "to": "checker_adapter", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
+    { "id": "verifier-adapter", "from": "verifier", "to": "verifier_adapter", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "orthogonal-v" },
     { "id": "app-target", "from": "app_adapter", "to": "target", "variant": "emphasis", "fromSide": "bottom", "toSide": "bottom", "via": [[290, 550], [740, 550], [740, 504]] },
-    { "id": "checker-target", "from": "checker_adapter", "to": "target", "variant": "emphasis" }
+    { "id": "verifier-target", "from": "verifier_adapter", "to": "target", "variant": "emphasis" }
   ],
   "cards": [
     {
