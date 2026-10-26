@@ -34,6 +34,11 @@ export function requirementTextChars(requirement: AtomicRequirement): number {
   return requirement.text.length + requirement.scenarios.reduce((total, scenario) => total + scenario.length, 0);
 }
 
+/** First-level folders define modules; ROOT-direct atomics share their ROOT module. */
+export function requirementModuleId(requirement: AtomicRequirement): string {
+  return requirement.folderPath[1] ?? requirement.folderPath[0] ?? requirement.id;
+}
+
 interface SchedulableRequirement {
   requirement: AtomicRequirement;
   moduleId: string;
@@ -47,7 +52,7 @@ export function featureGroupPackets(
 ): FeatureGrouping {
   const items: SchedulableRequirement[] = catalog.requirements.map(requirement => ({
     requirement,
-    moduleId: requirement.folderPath[1] ?? requirement.id,
+    moduleId: requirementModuleId(requirement),
     parentId: requirement.folderPath[requirement.folderPath.length - 1] ?? requirement.id,
     textChars: requirementTextChars(requirement),
   }));
@@ -84,9 +89,9 @@ export function featureGroupPackets(
         return score;
       };
       const tier = (candidate: SchedulableRequirement): number =>
-        candidate.parentId === seed.parentId ? 0 : candidate.moduleId === seed.moduleId ? 1 : 2;
+        candidate.parentId === seed.parentId ? 0 : 1;
       const candidates = items
-        .filter(item => schedulable(item) && tier(item) < 2)
+        .filter(item => schedulable(item) && item.moduleId === seed.moduleId)
         .sort((left, right) =>
           tier(left) - tier(right)
           || affinity(right) - affinity(left)
@@ -135,9 +140,9 @@ export function featureGroupingFromIds(
       if (!requirement) throw new Error(`Unknown feature group requirement: ${id}`);
       return requirement;
     });
-    const modules = new Set(requirements.map(requirement => requirement.folderPath[1] ?? requirement.id));
+    const modules = new Set(requirements.map(requirementModuleId));
     if (modules.size > 1) throw new Error(`Feature group ${index + 1} crosses ROOT modules: `
-      + requirements.map(requirement => `${requirement.id}=${requirement.folderPath[1] ?? requirement.id}`).join(", "));
+      + requirements.map(requirement => `${requirement.id}=${requirementModuleId(requirement)}`).join(", "));
     const scenarios = requirements.reduce((total, requirement) => total + requirement.scenarios.length, 0);
     const chars = requirements.reduce((total, requirement) => total + requirementTextChars(requirement), 0);
     if (requirements.length > thresholds.maxRequirements || (requirements.length > 1 &&

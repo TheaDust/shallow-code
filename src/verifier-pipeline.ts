@@ -14,7 +14,7 @@ import { ModelUsageTotals } from "./model-usage.js";
 import type { PipelineDeps, PipelineOptions, RunSummary } from "./pipeline.js";
 import { RunBudget, type PipelinePhase } from "./run-budget.js";
 import { RunStateStore } from "./run-state.js";
-import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket } from "./scheduler.js";
+import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket, requirementModuleId } from "./scheduler.js";
 import type { AtomicRequirement, RequirementCatalog, RequirementStatus, RunEvent, RunScenarioResult,
   ScenarioCoverageCounts, WorkPacket } from "./types.js";
 import type { ArtifactStore } from "./verifier/artifacts.js";
@@ -608,7 +608,7 @@ function jobDetail(job: CheckJob, sha: string) {
   return { jobId: job.jobId, snapshotId: job.snapshot.id, checkedSourceSha: sha, moduleEpoch: job.moduleEpoch,
     attempt: job.attempt, mode: job.mode, requirementIds: job.requirementIds };
 }
-function moduleId(requirement: AtomicRequirement | undefined): string { return requirement?.folderPath[1] ?? requirement?.id ?? "<application>"; }
+function moduleId(requirement: AtomicRequirement | undefined): string { return requirement ? requirementModuleId(requirement) : "<application>"; }
 function dependencyClosure(requirements: AtomicRequirement[], byId: Map<string, AtomicRequirement>): Set<string> {
   const ids = new Set<string>(); const pending = requirements.flatMap(item => item.dependencyIds);
   while (pending.length) { const id = pending.pop()!; if (ids.has(id)) continue; ids.add(id); pending.push(...(byId.get(id)?.dependencyIds ?? [])); }

@@ -94,6 +94,28 @@ test("Pi Grouper preserves original inputs and output, exposes only its two nati
   });
 });
 
+test("Pi Grouper receives ROOT-direct atomics as one module and finishes a validated group", async () => {
+  const input = catalog(), proposal = groups([["MOVE", "ACCESS"]]);
+  for (const requirement of input.requirements) requirement.folderPath = ["ROOT"];
+  let calls = 0;
+  await withGrouper((payload, res) => {
+    if (++calls === 1) {
+      const source = JSON.parse(text(payload.messages.find(message => message.role === "user")!));
+      assert.deepEqual(source.modules, [{ moduleId: "ROOT", requirementIds: ["MOVE", "ACCESS"] }]);
+      assert.deepEqual(source.requirements.map((item: { moduleId: string }) => item.moduleId), ["ROOT", "ROOT"]);
+      assert.deepEqual(source.referenceGroups, [["MOVE", "ACCESS"]]);
+      send(res, [call("validate_grouping", { grouping: proposal })]);
+    } else {
+      assert.equal(observation(payload).valid, true);
+      assert.equal(observation(payload).groups[0].moduleId, "ROOT");
+      send(res, [call("finish", proposal)]);
+    }
+  }, async grouper => {
+    assert.deepEqual(await grouper.group(input, { timeoutMs: 10_000 }), proposal);
+    assert.equal(calls, 2);
+  });
+});
+
 test("Pi Grouper repairs invalid grouping and regroups coupled state without declared dependency edges", async () => {
   const input = catalog(), merged = groups([["MOVE", "ACCESS"]]);
   const actions = [call("validate_grouping", { grouping: groups([["MOVE"], ["MOVE"]]) }),

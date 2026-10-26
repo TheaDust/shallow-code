@@ -103,6 +103,20 @@ test("Grouping tool reports structural boundaries without labeling dependency ed
   assert.deepEqual(catalog, before);
 });
 
+test("ROOT module validation and merge diagnostics agree for direct atomics and folder modules", () => {
+  const catalog = smallCatalog([
+    { id: "A" }, { id: "B", dependencies: ["A"] }, { id: "C", module: "N" },
+  ]);
+  catalog.requirements[0].folderPath = ["ROOT"];
+  catalog.requirements[1].folderPath = ["ROOT"];
+  const result = validateGrouping(catalog, groups([["A"], ["B"], ["C"]]));
+  assert.deepEqual(result.groups.map(group => group.moduleId), ["ROOT", "ROOT", "N"]);
+  assert.deepEqual(result.mergeableAdjacentGroups, [{ groups: [1, 2], requirementIds: ["A", "B"] }]);
+  assert.deepEqual(parseFeatureGrouping(groups([["A", "B"], ["C"]]), catalog).packets[0].requirementIds, ["A", "B"]);
+  assert.throws(() => parseFeatureGrouping(groups([["B", "A"], ["C"]]), catalog), /must precede/);
+  assert.throws(() => parseFeatureGrouping(groups([["A", "B", "C"]]), catalog), /crosses ROOT modules/);
+});
+
 test("Tool merge facts respect all original capacity limits, including oversized single atomics", () => {
   for (const limit of ["requirements", "scenarios", "text"]) {
     const catalog = smallCatalog((limit === "requirements" ? ["A", "B", "C", "D", "E"] : ["A", "B"]).map(id => ({ id })));

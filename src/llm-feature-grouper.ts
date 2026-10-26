@@ -12,7 +12,7 @@ import { createPiGateway, piGatewaySettings } from "./pi-gateway.js";
 import { GatewayRecovery } from "./gateway-recovery.js";
 import { opencodeSessionHeaders } from "./gateway-headers.js";
 import { loadPrompt } from "./prompt-assets.js";
-import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets, requirementTextChars } from "./scheduler.js";
+import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets, requirementModuleId, requirementTextChars } from "./scheduler.js";
 import { requirementScenarioFacts } from "./requirement-analysis.js";
 import type { GatewayConfig } from "./runtime-config.js";
 import type { ModelRates } from "./model-usage.js";
@@ -148,7 +148,7 @@ function groupingKey(proposal: unknown): string {
 function groupingPrompt(catalog: RequirementCatalog, options: FeatureGroupingOptions): string {
   const ancestors = new Map(catalog.requirements.flatMap(requirement => requirement.ancestors).map(ancestor => [ancestor.id, ancestor]));
   const requirements = catalog.requirements.map(requirement => ({
-    id: requirement.id, name: requirement.name, moduleId: requirement.folderPath[1] ?? requirement.id,
+    id: requirement.id, name: requirement.name, moduleId: requirementModuleId(requirement),
     folderPath: requirement.folderPath, dependencyIds: requirement.dependencyIds,
     externalDependencyIds: requirement.externalDependencyIds ?? [], text: requirement.text,
     scenarioCount: requirement.scenarios.length, scenarioFacts: requirementScenarioFacts(requirement), textChars: requirementTextChars(requirement),

@@ -73,6 +73,35 @@ test("Verifier configuration declares migration mode and bounded concurrency", (
   assert.throws(() => parseVerifierConfig({ SHALLOW_VERIFIER_CONCURRENCY: "3" }));
 });
 
+test("ROOT-direct requirements reach grouping, implementation and one shared module boundary", async () => {
+  for (const replay of [false, true]) await withModulePipeline(async f => {
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    input.type = "ROOT";
+    input.children = input.children.flatMap((folder: { children: unknown[] }) => folder.children);
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    const jobs: CheckJob[] = [];
+    await attach(f, async job => { jobs.push(job); });
+    f.options.verifier!.replay = replay;
+    let calls = 0;
+    f.deps.grouper = { async group() {
+      calls++;
+      return { groups: [["A", "B"], ["C"]].map(requirementIds => ({ requirementIds, purpose: "Counter operations" })) };
+    } };
+    const result = await f.run();
+    assert.equal(calls, 1);
+    assert.equal(result.status, "delivered");
+    assert.deepEqual(result.implementedRequirementIds, ["A", "B", "C"]);
+    assert.deepEqual(result.verifiedRequirementIds, ["A", "B", "C"]);
+    assert.deepEqual(f.builder.requests.filter(request => request.mode === "implement").map(request => request.packet.requirementIds),
+      [["A", "B"], ["C"]]);
+    assert(jobs.some(job => job.requirementIds.length > 0));
+    assert(jobs.filter(job => job.requirementIds.length > 0).every(job => job.moduleId === "ROOT"));
+    const boundaries = (await f.events()).flatMap(event =>
+      event.type === "module_check_finished" && event.detail && event.detail.moduleId !== "<final>" ? [event.detail.moduleId] : []);
+    assert.deepEqual(boundaries, ["ROOT"]);
+  });
+});
+
 test("An exhausted grouper falls back once without restarting its private planning session", async () => {
   await withModulePipeline(async f => {
     await attach(f);

@@ -1,5 +1,5 @@
 import { parseFeatureGrouping } from "./feature-grouper.js";
-import { DEFAULT_FEATURE_GROUP_THRESHOLDS, requirementTextChars } from "./scheduler.js";
+import { DEFAULT_FEATURE_GROUP_THRESHOLDS, requirementModuleId, requirementTextChars } from "./scheduler.js";
 import type { RequirementCatalog } from "./types.js";
 
 /** Structural facts for the grouper; dependency edges do not establish semantic coupling. */
@@ -9,7 +9,7 @@ export function validateGrouping(catalog: RequirementCatalog, proposal: unknown)
     packet.requirementIds.map(id => [id, index + 1] as const)));
   const groups = grouping.packets.map((packet, index) => ({
     group: index + 1,
-    moduleId: packet.requirements[0].folderPath[1] ?? packet.requirements[0].id,
+    moduleId: requirementModuleId(packet.requirements[0]),
     requirementIds: packet.requirementIds,
     scenarioCount: packet.requirements.reduce((sum, item) => sum + item.scenarios.length, 0),
     textChars: packet.requirements.reduce((sum, item) => sum + requirementTextChars(item), 0),

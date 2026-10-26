@@ -14,6 +14,27 @@ test("Feature groups keep a dependency chain together under the thresholds", () 
   assert.deepEqual(featureGroupPackets(catalog).packets, packets);
 });
 
+test("ROOT-direct atomics share a module while preserving scenario capacity and dependencies", () => {
+  const catalog = makeCatalog([
+    requirement("ADJUST", 0, { folder: ["ROOT"], scenarios: Array(8).fill("Adjust scenario") }),
+    requirement("RESET", 1, { folder: ["ROOT"], dependencies: ["ADJUST"], scenarios: Array(3).fill("Reset scenario") }),
+    requirement("LAYOUT", 2, { folder: ["ROOT"], scenarios: Array(3).fill("Layout scenario") }),
+  ]);
+  assert.deepEqual(featureGroupPackets(catalog).packets.map(packet => packet.requirementIds),
+    [["ADJUST", "RESET"], ["LAYOUT"]]);
+});
+
+test("ROOT-direct atomics remain separate from first-level folder modules", () => {
+  const catalog = makeCatalog([
+    requirement("A", 0, { folder: ["ROOT"] }),
+    requirement("B", 1, { folder: ["ROOT", "M"], dependencies: ["A"] }),
+    requirement("C", 2, { folder: ["ROOT"], dependencies: ["B"] }),
+    requirement("D", 3, { folder: ["ROOT", "N"] }),
+  ]);
+  assert.deepEqual(featureGroupPackets(catalog).packets.map(packet => packet.requirementIds),
+    [["A"], ["B"], ["C"], ["D"]]);
+});
+
 test("Feature groups order by dependencies, independent of verification status", () => {
   const catalog = makeCatalog([requirement("CHILD", 0, { dependencies: ["BASE"] }), requirement("BASE", 1)], { BASE: "inconclusive" });
   assert.deepEqual(featureGroupPackets(catalog).packets.map(item => item.requirementIds), [["BASE"], ["CHILD"]]);
