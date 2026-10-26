@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" lang="zh-CN" aria-labelledby="title description">
+  <title id="title">实现与验收的流水线</title>
+  <desc id="description">需求解析和功能分组之后，Builder 在同一模块中逐个实现功能组。控制器每完成一组即封存独立快照并提交后台 Verifier，Builder 继续下一组。模块边界等待检查汇合并检查当前版本运行就绪，默认汇总各组原快照证据。全部模块结束后检查最终交付合同并输出应用、补丁与报告。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#56616b"/></marker>
+    <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#43816a"/></marker>
+    <marker id="arrow-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#b5664e"/></marker>
+  </defs>
+  <style>
+    text { font-family: Arial, 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif; fill: #242c33; }
+    .title { font-size: 27px; font-weight: 700; }
+    .kicker { font-size: 13px; letter-spacing: 1.6px; fill: #6b7580; }
+    .node-title { font-size: 20px; font-weight: 700; }
+    .body { font-size: 17px; }
+    .small { font-size: 15.5px; fill: #4f5962; }
+    .label { font-size: 15px; fill: #4f5962; }
+    .section { font-size: 17px; font-weight: 700; }
+    .mono { font-family: Consolas, 'Liberation Mono', monospace; font-size: 15.5px; }
+    .edge { fill: none; stroke: #56616b; stroke-width: 1.4; stroke-linejoin: round; stroke-linecap: square; marker-end: url(#arrow); }
+    .optional { stroke-dasharray: 5 4; }
+    .green { fill: #326c54; }
+    .red { fill: #a6533d; }
+  </style>
+  <rect x="0.5" y="0.5" width="1199" height="899" fill="#ffffff" stroke="#dce1e5"/>
+
+<text x="32" y="43" class="title" text-anchor="start">实现与验收的流水线</text>
+<text x="1168" y="41" class="kicker" text-anchor="end">01 / WORKFLOW</text>
+<line x1="32" y1="64" x2="1168" y2="64" stroke="#aeb6bd" stroke-width="1"/>
+<rect x="32" y="85" width="12" height="12" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
+<text x="53" y="97" class="small" text-anchor="start">模型工作</text>
+<rect x="218" y="85" width="12" height="12" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
+<text x="239" y="97" class="small" text-anchor="start">程序步骤</text>
+<rect x="404" y="85" width="12" height="12" fill="#f8f2df" stroke="#a18a48" stroke-width="1.2"/>
+<text x="425" y="97" class="small" text-anchor="start">应用与产物</text>
+<rect x="610" y="85" width="12" height="12" fill="#e8f2ec" stroke="#43816a" stroke-width="1.2"/>
+<text x="631" y="97" class="small" text-anchor="start">检查点 / 交付</text>
+<rect x="834" y="85" width="12" height="12" fill="#f8eae5" stroke="#b5664e" stroke-width="1.2"/>
+<text x="855" y="97" class="small" text-anchor="start">失败 / 恢复</text>
+<line x1="1034" y1="91" x2="1072" y2="91" stroke="#56616b" stroke-width="1" stroke-dasharray="5 4"/>
+<text x="1081" y="97" class="small" text-anchor="start">可选路径</text>
+<g id="parse" data-node="true"><rect x="32" y="126" width="276" height="80" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
+<text x="50" y="156" class="node-title" text-anchor="start">解析需求</text>
+<text x="50" y="184" class="body" text-anchor="start">需求树 · 场景 · 依赖</text>
+</g>
+<g id="group" data-node="true"><rect x="364" y="126" width="330" height="80" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
+<text x="382" y="156" class="node-title" text-anchor="start">Grouper 功能分组</text>
+<text x="382" y="184" class="body" text-anchor="start">校验覆盖、依赖与场景前置</text>
+</g>
+<g id="module-start" data-node="true"><rect x="756" y="126" width="412" height="80" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
+<text x="774" y="156" class="node-title" text-anchor="start">进入模块</text>
+<text x="774" y="184" class="body" text-anchor="start">固定本轮需求、输入基线与分组</text>
+</g>
+<path d="M 308 166 H 364" class="edge"/>
+<path d="M 694 166 H 756" class="edge"/>
+<path d="M 962 206 V 242" class="edge"/>
+<rect x="32" y="242" width="1136" height="432" fill="#fcfcfb" stroke="#9aa4ad" stroke-width="1.1" stroke-dasharray="5 4"/>
+<text x="50" y="268" class="section" text-anchor="start">每个模块 · 逐组实现，封存后后台验收（图示两个功能组）</text>
+<line x1="50" y1="376" x2="836" y2="376" stroke="#d8dde1" stroke-width="1"/>
+<line x1="50" y1="494" x2="836" y2="494" stroke="#d8dde1" stroke-width="1"/>
+<text x="50" y="326" class="section" text-anchor="start">Builder</text>
+<text x="50" y="446" class="section" text-anchor="start">控制器</text>
+<text x="50" y="566" class="section" text-anchor="start">Verifier</text>
+<g id="build-a" data-node="true"><rect x="198" y="286" width="216" height="68" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
+<text x="216" y="316" class="node-title" text-anchor="start">功能组 A</text>
+<text x="216" y="344" class="small" text-anchor="start">实现与自测</text>
+</g>
+<g id="build-b" data-node="true"><rect x="506" y="286" width="216" height="68" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
+<text x="524" y="316" class="node-title" text-anchor="start">功能组 B</text>
+<text x="524" y="344" class="small" text-anchor="start">实现与自测</text>
+</g>
+<path d="M 414 320 H 506" class="edge"/>
+<text x="460" y="305" class="label" text-anchor="middle">立即继续</text>
+<path d="M 722 320 H 1000 V 400" class="edge"/>
+<text x="856" y="305" class="label" text-anchor="middle">本模块实现结束</text>
+<path d="M 306 354 V 400" class="edge"/>
+<path d="M 614 354 V 400" class="edge"/>
+<text x="322" y="384" class="label" text-anchor="start">组完成</text>
+<text x="630" y="384" class="label" text-anchor="start">组完成</text>
+<g id="seal-a" data-node="true"><rect x="198" y="400" width="216" height="68" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
+<text x="216" y="430" class="node-title" text-anchor="start">封存 S1</text>
+<text x="216" y="458" class="small" text-anchor="start">绑定快照与检查任务</text>
+</g>
+<g id="seal-b" data-node="true"><rect x="506" y="400" width="216" height="68" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
+<text x="524" y="430" class="node-title" text-anchor="start">封存 S2</text>
+<text x="524" y="458" class="small" text-anchor="start">绑定快照与检查任务</text>
+</g>
+<path d="M 306 468 V 520" class="edge"/>
+<path d="M 614 468 V 520" class="edge"/>
+<text x="322" y="502" class="label" text-anchor="start">后台</text>
+<text x="630" y="502" class="label" text-anchor="start">后台</text>
+<g id="verify-a" data-node="true"><rect x="198" y="520" width="216" height="66" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
+<text x="216" y="550" class="node-title" text-anchor="start">检查 S1</text>
+<text x="216" y="578" class="small" text-anchor="start">独立环境</text>
+</g>
+<g id="verify-b" data-node="true"><rect x="506" y="520" width="216" height="66" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
+<text x="524" y="550" class="node-title" text-anchor="start">检查 S2</text>
+<text x="524" y="578" class="small" text-anchor="start">独立环境</text>
+</g>
+<g id="module-boundary" data-node="true"><rect x="864" y="400" width="272" height="186" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
+<text x="882" y="430" class="node-title" text-anchor="start">模块收口</text>
+<text x="882" y="458" class="body" text-anchor="start">等待组级检查汇合</text>
+<text x="882" y="484" class="body" text-anchor="start">检查当前版本运行就绪</text>
+<text x="882" y="510" class="body" text-anchor="start">汇总原快照结果与证据</text>
+<text x="882" y="536" class="small" text-anchor="start">保存可运行检查点</text>
+</g>
+<path d="M 306 586 V 648 H 1056 V 586" class="edge"/>
+<text x="438" y="640" class="label" text-anchor="start">S1 结果与证据</text>
+<path d="M 614 586 V 622 H 956 V 586" class="edge"/>
+<text x="748" y="614" class="label" text-anchor="start">S2 结果与证据</text>
+<path d="M 1112 586 V 738" class="edge" style="stroke: #43816a; marker-end: url(#arrow-green)"/>
+<text x="1094" y="704" class="label" text-anchor="end">全部模块完成</text>
+<line x1="32" y1="738" x2="32" y2="821" stroke="#b5664e" stroke-width="2"/>
+<text x="48" y="758" class="section" text-anchor="start">检查点与有界修复</text>
+<text x="48" y="786" class="small" text-anchor="start">模块修复 ≤2 轮；交付修复 ≤3 轮</text>
+<text x="48" y="812" class="small" text-anchor="start">未接受的改动恢复修复前基线</text>
+<line x1="452" y1="738" x2="452" y2="821" stroke="#527ba4" stroke-width="2"/>
+<text x="468" y="758" class="section" text-anchor="start">历史程序重放 · 可选</text>
+<text x="468" y="786" class="small" text-anchor="start">在模块 / 修复 / 最终阶段重验</text>
+<text x="468" y="812" class="small" text-anchor="start">默认汇总各功能组原快照证据</text>
+<g id="delivery" data-node="true"><rect x="864" y="738" width="272" height="110" rx="2" fill="#e8f2ec" stroke="#43816a" stroke-width="1.2"/>
+<text x="882" y="768" class="node-title" text-anchor="start">最终交付</text>
+<text x="882" y="796" class="small" text-anchor="start">检查构建 / 启动 / 入口等合同</text>
+<text x="882" y="822" class="small" text-anchor="start">应用 · 补丁 · 验收报告</text>
+</g>
+<text x="32" y="887" class="small" text-anchor="start">verified 归属报告标注的检查快照；acceptedSha 保存可运行版本。仅跨快照汇总不等于最终版本全量重验。</text>
+</svg>
