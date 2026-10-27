@@ -41,6 +41,7 @@ const TREE = {
 
 interface GatewayRequest {
   toolNames: string[];
+  toolDescriptions: Record<string, string>;
   lastUserText: string;
   toolResultText: string;
   hasToolResult: boolean;
@@ -55,7 +56,11 @@ function startFakeGateway(pauseAfterUpdate = false): Promise<{ port: number; req
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
       messages?: Array<{ role: string; content: unknown }>;
-      tools?: Array<{ function?: { name?: string }; name?: string }>;
+      tools?: Array<{
+        function?: { name?: string; description?: string };
+        name?: string;
+        description?: string;
+      }>;
     };
     const messages = body.messages ?? [];
     const lastUser = [...messages].reverse().find((message) => message.role === "user");
@@ -68,6 +73,10 @@ function startFakeGateway(pauseAfterUpdate = false): Promise<{ port: number; req
     const userInput = lastUserText.split("【用户输入】\n").at(-1) ?? lastUserText;
     requests.push({
       toolNames: (body.tools ?? []).map((tool) => tool.function?.name ?? tool.name ?? ""),
+      toolDescriptions: Object.fromEntries((body.tools ?? []).map((tool) => [
+        tool.function?.name ?? tool.name ?? "",
+        tool.function?.description ?? tool.description ?? "",
+      ])),
       lastUserText,
       toolResultText: toolMessages.map((message) => JSON.stringify(message.content ?? "")).join("\n"),
       hasToolResult: toolMessages.length > 0,
@@ -287,6 +296,7 @@ test(`${interactive ? "轻量 TUI" : "纯文本 CLI"} 模拟网关端到端：�
   }
   for (const request of gateway.requests) {
     assert.deepEqual([...request.toolNames].sort(), ["ls", "read", "review_requirements", "update_project_intent", "update_requirements"], "工具白名单异常");
+    assert.match(request.toolDescriptions.read ?? "", /500KB/, "read 工具应使用 500KB 读取上限");
     assert.ok(request.hasSystemPrompt, "系统提示词缺失");
   }
   assert.ok(gateway.requests.some((request) => request.hasToolResult), "工具结果未回传给模型");

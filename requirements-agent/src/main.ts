@@ -28,13 +28,14 @@ import {
 } from "./cli.js";
 import { loadGatewayEnv, opencodeSessionHeaders, type GatewayEnv } from "./env.js";
 import { runPiTurn } from "./pi-turn.js";
+import { createDocumentReadTool } from "./read-tool.js";
 import { RequirementsTui } from "./tui.js";
 import { shellArgument, terminalTheme } from "../../src/terminal/theme.js";
 import { formatUsageSummary, type ModelRates } from "../../src/model-usage.js";
 
 const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
-/** Pi 内置 read / ls 工具的名称；通过 createAgentSession 的 tools 白名单启用。 */
+/** 自定义 read 与内置 ls 的工具名；通过 createAgentSession 的 tools 白名单启用。 */
 const READ_TOOL_NAME = "read";
 const LS_TOOL_NAME = "ls";
 
@@ -201,7 +202,13 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
     if (!model) throw new Error(`网关模型未注册：${options.gateway.model}`);
     let requestedOutput: RequirementsOutputMode | undefined;
     const reviewTool = createReviewTool((mode) => { requestedOutput = mode; });
-    const customTools = [options.requirementsTool, options.projectIntentTool, reviewTool] as ToolDefinition[];
+    const documentReadTool = createDocumentReadTool(process.cwd());
+    const customTools = [
+      documentReadTool,
+      options.requirementsTool,
+      options.projectIntentTool,
+      reviewTool,
+    ] as ToolDefinition[];
     const { session, modelFallbackMessage } = await createAgentSession({
       cwd: process.cwd(),
       agentDir,
@@ -210,9 +217,9 @@ async function createPiAgent(options: PiAgentOptions): Promise<PiAgent> {
       settingsManager,
       resourceLoader,
       sessionManager: SessionManager.inMemory(),
-      // tools 白名单只放行内置 read / ls 与需求工具；noTools 是白名单缺省时的兜底。
+      // 白名单放行自定义 read、内置 ls 与需求工具；noTools 禁用其余内置工具。
       noTools: "builtin",
-      tools: [READ_TOOL_NAME, LS_TOOL_NAME, ...customTools.map((tool) => tool.name)],
+      tools: [LS_TOOL_NAME, ...customTools.map((tool) => tool.name)],
       customTools,
     });
     if (modelFallbackMessage) {
