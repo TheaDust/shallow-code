@@ -33,13 +33,26 @@ export interface ChatAgent {
 }
 
 const parameters = Type.Object({
-  requirements: Type.Unknown({
+  requirements: Type.Optional(Type.Unknown({
     description:
-      "完整候选需求树的根节点对象（type 为 ROOT）。每次提交都是基于当前草案的完整替换，未修改的节点原样保留、沿用同一 id。",
-  }),
-  questions: Type.Array(Type.String(), {
-    description: "当前仍未解决、会影响实现或验收的问题，按优先级排列；已解决的不要列出。",
-  }),
+      "只包含新增或修改部分的候选需求树片段；按 id 合并到当前草案。首次提交需提供根节点，" +
+      "整体重写时配合 replace: true 提供完整树。",
+  })),
+  removedNodes: Type.Optional(Type.Array(Type.String(), {
+    description: "要删除的节点 id；省略表示保留。",
+  })),
+  removedScenarios: Type.Optional(Type.Array(Type.Object({
+    node: Type.String({ description: "场景所属的 ATOMIC 节点 id。" }),
+    id: Type.String({ description: "要删除的场景 id。" }),
+  }), {
+    description: "要删除的场景；省略表示保留。",
+  })),
+  questions: Type.Optional(Type.Array(Type.String(), {
+    description: "当前仍未解决、会影响实现或验收的问题，按优先级排列；省略表示保留当前列表。",
+  })),
+  replace: Type.Optional(Type.Boolean({
+    description: "仅在整体重写草案时设为 true；requirements 必须是完整需求树，且不能同时提交删除项。",
+  })),
 });
 
 /** 需求专用工具：模型的唯一需求修改通道。 */
@@ -48,8 +61,15 @@ export function createRequirementsTool(store: DraftStore) {
     name: "update_requirements",
     label: "更新需求草案",
     description:
-      "提交完整候选需求树与当前未决问题，替换当前草案。requirements 是根节点对象：" +
-      "每个节点包含 id、name、type（ROOT/FOLDER/ATOMIC）、description、dependencies、children 与 scenarios；" +
+      "增量更新需求草案与当前未决问题。requirements 只需包含新增或修改的节点/场景，不要重发未修改的内容；" +
+      "按 id 合并到当前草案，未出现的字段、节点与场景保持原样。首次提交需提供完整根节点（可先只带第一批功能）；" +
+      "草案较大时按功能组分成多次调用，每次只提交一批变化；分批提交时先提交被依赖的节点。新增节点/场景必须带齐必填字段；" +
+      "修改已有节点/场景可只带 id 和变化字段。同级顺序与父节点归属不会因合并改变；需要移动或重排时用 replace: true。" +
+      "同一次调用内节点 id 不可重复，同一 ATOMIC 内场景 id 不可重复；同一对象的变化合并后提交。" +
+      "删除节点用 removedNodes，删除场景用 removedScenarios；省略不等于删除。" +
+      "数组字段（dependencies、guidance、visual_reference、data、场景 steps）提供时整体替换，清空传 []。" +
+      "仅整体重写时传 replace: true 并提交完整树。" +
+      "节点结构：每个节点包含 id、name、type（ROOT/FOLDER/ATOMIC）、description、dependencies、children 与 scenarios；" +
       "节点和场景 id 使用 kebab-case；未修改的节点与场景沿用原 id，不要重命名或重新编号；" +
       "scenario 包含 id、name、steps，step 由 keyword（GIVEN/WHEN/THEN/AND/BUT）与 content 组成；" +
       "description 中每一条可验收的规则都必须在某个场景的 THEN 中出现；" +
@@ -58,17 +78,36 @@ export function createRequirementsTool(store: DraftStore) {
       "根节点可包含 data 产品级共享预置（每项含 category 与 items 字符串数组）；" +
       "只在单个场景成立或与其他场景互斥的初始状态写入该场景 GIVEN，不要放进 data。" +
       "用户提供的参考文件路径放在对应节点的 visual_reference 字符串数组中，保留原路径，程序导出时复制并改为相对路径。" +
-      "校验失败会返回具体错误，请在本回合内修正后重新提交。",
-    promptSnippet: "update_requirements: 提交完整候选需求树与未决问题",
+      "校验失败会返回具体错误，请在本回合内修正后继续提交。",
+    promptSnippet: "update_requirements: 增量提交需求草案变更与未决问题",
     parameters,
     async execute(
       _toolCallId: string,
-      params: { requirements: unknown; questions: string[] },
+      params: {
+        requirements?: unknown;
+        removedNodes?: string[];
+        removedScenarios?: { node: string; id: string }[];
+        questions?: string[];
+        replace?: boolean;
+      },
       _signal?: AbortSignal,
       _onUpdate?: unknown,
       _ctx?: unknown,
     ) {
-      const result = store.submit(params.requirements, params.questions);
+      if (params.replace && params.requirements === undefined) {
+        throw new Error("需求草案校验失败：\n- 整体替换需要提供完整需求树。");
+      }
+      if (params.replace && (params.removedNodes?.length || params.removedScenarios?.length)) {
+        throw new Error("需求草案校验失败：\n- 整体替换不能同时指定删除项。");
+      }
+      const result = params.replace
+        ? store.submit(params.requirements, params.questions ?? store.questions)
+        : store.apply({
+            requirements: params.requirements,
+            removedNodes: params.removedNodes,
+            removedScenarios: params.removedScenarios,
+            questions: params.questions,
+          });
       if (!result.ok) {
         throw new Error(`需求草案校验失败：\n- ${result.errors.join("\n- ")}`);
       }

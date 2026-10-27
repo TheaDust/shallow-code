@@ -43,6 +43,11 @@ export type NormalizeResult =
   | { ok: true; tree: RequirementNode }
   | { ok: false; errors: string[] };
 
+export interface ScenarioRef {
+  node: string;
+  id: string;
+}
+
 export type QuestionsResult =
   | { ok: true; questions: string[] }
   | { ok: false; errors: string[] };
@@ -68,6 +73,181 @@ export function normalizeDraft(input: unknown): NormalizeResult {
   validateDependencies(index, errors);
   if (!errors.length) validateAtomicDependencies(tree, index, errors);
   return errors.length ? { ok: false, errors } : { ok: true, tree };
+}
+
+/**
+ * 把只包含变化部分的候选片段按 id 合并到当前草案。
+ * 未出现的字段、子节点与场景保持不变；删除必须显式列出。
+ */
+export function mergeDraft(
+  current: RequirementNode,
+  patchInput: unknown,
+  removedNodes: readonly string[] = [],
+  removedScenarios: readonly ScenarioRef[] = [],
+): NormalizeResult {
+  if (!isRecord(patchInput)) {
+    return { ok: false, errors: ["需求草案片段必须是一个对象。"] };
+  }
+  if (patchInput.id !== undefined &&
+      (typeof patchInput.id !== "string" || patchInput.id.trim() !== current.id)) {
+    return { ok: false, errors: [`根节点 id 不可变更，当前为 ${current.id}。`] };
+  }
+
+  const errors: string[] = [];
+  for (const [label, ids] of [
+    ["节点", collectRawNodeIds(patchInput)],
+    ["场景", collectRawScenarioKeys(patchInput)],
+  ] as const) {
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (seen.has(id)) errors.push(`同一补丁中重复${label} id：${id.replace("\0", "/")}，请合并到同一对象后提交。`);
+      seen.add(id);
+    }
+  }
+  if (errors.length) return { ok: false, errors };
+
+  const merged = mergeRawNode(current, patchInput);
+  const nodeIds = new Set(collectRawNodeIds(merged));
+  const scenarioKeys = new Set(collectRawScenarioKeys(merged));
+  for (const raw of new Set(removedNodes)) {
+    const id = raw.trim();
+    if (!id) {
+      errors.push("removedNodes 不能包含空 id。");
+    } else if (id === current.id) {
+      errors.push("不能删除根节点。");
+    } else if (!nodeIds.has(id)) {
+      errors.push(`要删除的节点不存在：${id}。`);
+    } else {
+      removeRawNode(merged, id);
+    }
+  }
+  for (const ref of new Map(removedScenarios.map((item) => [
+    `${item.node.trim()}\0${item.id.trim()}`,
+    { node: item.node.trim(), id: item.id.trim() },
+  ])).values()) {
+    if (!ref.node || !ref.id) {
+      errors.push("removedScenarios 的 node 与 id 不能为空。");
+    } else if (!scenarioKeys.has(`${ref.node}\0${ref.id}`)) {
+      errors.push(`要删除的场景不存在：${ref.node}/${ref.id}。`);
+    } else {
+      removeRawScenario(merged, ref);
+    }
+  }
+  return errors.length ? { ok: false, errors } : normalizeDraft(merged);
+}
+
+function mergeRawNode(current: RequirementNode, patch: Record<string, unknown>): Record<string, unknown> {
+  const merged = structuredClone(current) as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "children" && Array.isArray(value)) {
+      merged.children = mergeRawCollection(current.children, value, mergeRawNode);
+    } else if (key === "scenarios" && Array.isArray(value)) {
+      merged.scenarios = mergeRawCollection(current.scenarios, value, mergeRawObject);
+    } else {
+      merged[key] = structuredClone(value);
+    }
+  }
+  return merged;
+}
+
+/** children/scenarios 按 id 合并；未提交的项保持原顺序与原内容。 */
+function mergeRawCollection<T extends object>(
+  current: readonly T[],
+  patch: readonly unknown[],
+  merge: (current: T, patch: Record<string, unknown>) => Record<string, unknown>,
+): unknown[] {
+  const merged: unknown[] = structuredClone(current) as unknown[];
+  for (const item of patch) {
+    if (!isRecord(item)) {
+      merged.push(structuredClone(item));
+      continue;
+    }
+    const id = typeof item.id === "string" ? item.id.trim() : "";
+    const index = id
+      ? merged.findIndex((existing) => isRecord(existing) &&
+          typeof existing.id === "string" && existing.id.trim() === id)
+      : -1;
+    if (index >= 0) {
+      merged[index] = merge(merged[index] as T, item);
+    } else {
+      merged.push(structuredClone(item));
+    }
+  }
+  return merged;
+}
+
+function mergeRawObject<T extends object>(
+  current: T,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...(structuredClone(current) as Record<string, unknown>),
+    ...structuredClone(patch),
+  };
+}
+
+function removeRawNode(node: Record<string, unknown>, id: string): boolean {
+  if (!Array.isArray(node.children)) return false;
+  const index = node.children.findIndex((child) => isRecord(child) &&
+    typeof child.id === "string" && child.id.trim() === id);
+  if (index >= 0) {
+    node.children.splice(index, 1);
+    return true;
+  }
+  return node.children.some((child) => isRecord(child) && removeRawNode(child, id));
+}
+
+function removeRawScenario(root: Record<string, unknown>, ref: ScenarioRef): boolean {
+  const node = findRawNode(root, ref.node);
+  if (!node || !Array.isArray(node.scenarios)) return false;
+  const index = node.scenarios.findIndex((scenario) => isRecord(scenario) &&
+    typeof scenario.id === "string" && scenario.id.trim() === ref.id);
+  if (index < 0) return false;
+  node.scenarios.splice(index, 1);
+  return true;
+}
+
+function findRawNode(
+  node: Record<string, unknown>,
+  id: string,
+): Record<string, unknown> | undefined {
+  if (typeof node.id === "string" && node.id.trim() === id) return node;
+  if (!Array.isArray(node.children)) return undefined;
+  for (const child of node.children) {
+    if (!isRecord(child)) continue;
+    const found = findRawNode(child, id);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function collectRawNodeIds(node: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  const visit = (value: Record<string, unknown>): void => {
+    if (typeof value.id === "string") ids.push(value.id.trim());
+    if (!Array.isArray(value.children)) return;
+    for (const child of value.children) if (isRecord(child)) visit(child);
+  };
+  visit(node);
+  return ids;
+}
+
+function collectRawScenarioKeys(root: Record<string, unknown>): string[] {
+  const keys: string[] = [];
+  const visit = (node: Record<string, unknown>): void => {
+    const nodeId = typeof node.id === "string" ? node.id.trim() : "";
+    if (nodeId && Array.isArray(node.scenarios)) {
+      for (const scenario of node.scenarios) {
+        if (isRecord(scenario) && typeof scenario.id === "string") {
+          keys.push(`${nodeId}\0${scenario.id.trim()}`);
+        }
+      }
+    }
+    if (!Array.isArray(node.children)) return;
+    for (const child of node.children) if (isRecord(child)) visit(child);
+  };
+  visit(root);
+  return keys;
 }
 
 /** 未决问题列表：非空字符串数组，空项被丢弃。 */

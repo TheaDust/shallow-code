@@ -2,7 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { normalizeDraft, normalizeQuestions, type RequirementNode } from "./dsl.js";
+import {
+  mergeDraft,
+  normalizeDraft,
+  normalizeQuestions,
+  type RequirementNode,
+  type ScenarioRef,
+} from "./dsl.js";
 
 interface DraftState {
   revision: number;
@@ -13,6 +19,18 @@ interface DraftState {
   projectIntent?: string | null;
 }
 
+export type DraftSubmitResult =
+  | { ok: true; revision: number }
+  | { ok: false; errors: string[] };
+
+/** 增量提交：只带变化部分，删除项显式列出。 */
+export interface DraftPatch {
+  requirements?: unknown;
+  removedNodes?: unknown;
+  removedScenarios?: unknown;
+  questions?: unknown;
+}
+
 export interface DraftStore {
   readonly file: string | null;
   readonly revision: number;
@@ -21,10 +39,9 @@ export interface DraftStore {
   readonly pendingInputs: string[];
   readonly projectIntent: string | null | undefined;
   /** 校验并保存完整候选草案；校验或保存失败不改变已有草案。 */
-  submit(
-    treeInput: unknown,
-    questionsInput: unknown,
-  ): { ok: true; revision: number } | { ok: false; errors: string[] };
+  submit(treeInput: unknown, questionsInput: unknown): DraftSubmitResult;
+  /** 按 id 合并增量草案；校验或保存失败不改变已有草案。 */
+  apply(patch: DraftPatch): DraftSubmitResult;
   setProjectIntent(intent: string | null): void;
   recordInput(text: string): void;
   finishTurn(): void;
@@ -58,6 +75,52 @@ export function createDraftStore(baseDir?: string): DraftStore {
     state = next;
   };
 
+  const submitDraft = (treeInput: unknown, questionsInput: unknown): DraftSubmitResult => {
+    const tree = normalizeDraft(treeInput);
+    const questions = normalizeQuestions(questionsInput);
+    if (!tree.ok || !questions.ok) {
+      return { ok: false, errors: [
+        ...(tree.ok ? [] : tree.errors),
+        ...(questions.ok ? [] : questions.errors),
+      ] };
+    }
+    commit({ ...state, revision: state.revision + 1, tree: tree.tree, questions: questions.questions });
+    return { ok: true, revision: state.revision };
+  };
+
+  const applyPatch = (patch: DraftPatch): DraftSubmitResult => {
+    const removedNodes = normalizeRemovedNodes(patch.removedNodes);
+    if (!removedNodes.ok) return removedNodes;
+    const removedScenarios = normalizeRemovedScenarios(patch.removedScenarios);
+    if (!removedScenarios.ok) return removedScenarios;
+    const hasRemovals = removedNodes.ids.length > 0 || removedScenarios.refs.length > 0;
+
+    if (!state.tree) {
+      if (patch.requirements === undefined) {
+        return { ok: false, errors: ["当前没有草案，请提交完整根节点。"] };
+      }
+      if (hasRemovals) {
+        return { ok: false, errors: ["当前没有草案，不能删除节点或场景。"] };
+      }
+      return submitDraft(patch.requirements, patch.questions ?? []);
+    }
+    if (patch.requirements === undefined && !hasRemovals && patch.questions === undefined) {
+      return { ok: false, errors: ["没有需要提交的变更。"] };
+    }
+
+    const merged = patch.requirements === undefined && !hasRemovals
+      ? { ok: true as const, tree: state.tree }
+      : mergeDraft(state.tree, patch.requirements ?? {}, removedNodes.ids, removedScenarios.refs);
+    if (!merged.ok) return merged;
+    const questions = patch.questions === undefined
+      ? { ok: true as const, questions: state.questions }
+      : normalizeQuestions(patch.questions);
+    if (!questions.ok) return { ok: false, errors: questions.errors };
+
+    commit({ ...state, revision: state.revision + 1, tree: merged.tree, questions: questions.questions });
+    return { ok: true, revision: state.revision };
+  };
+
   return {
     file,
     get revision() { return state.revision; },
@@ -72,18 +135,8 @@ export function createDraftStore(baseDir?: string): DraftStore {
       commit({ ...state, revision: state.revision + 1,
         projectIntent: intent === null ? null : intent.replace(/\r\n/g, "\n").trim() });
     },
-    submit(treeInput, questionsInput) {
-      const tree = normalizeDraft(treeInput);
-      const questions = normalizeQuestions(questionsInput);
-      if (!tree.ok || !questions.ok) {
-        return { ok: false, errors: [
-          ...(tree.ok ? [] : tree.errors),
-          ...(questions.ok ? [] : questions.errors),
-        ] };
-      }
-      commit({ ...state, revision: state.revision + 1, tree: tree.tree, questions: questions.questions });
-      return { ok: true, revision: state.revision };
-    },
+    submit: submitDraft,
+    apply: applyPatch,
     recordInput(text) {
       commit({ ...state, pendingInputs: [...state.pendingInputs, text] });
     },
@@ -93,6 +146,52 @@ export function createDraftStore(baseDir?: string): DraftStore {
     clearSavedDraft() {
       if (file) rmSync(file, { force: true });
     },
+  };
+}
+
+type RemovedNodesResult =
+  | { ok: true; ids: string[] }
+  | { ok: false; errors: string[] };
+
+function normalizeRemovedNodes(value: unknown): RemovedNodesResult {
+  if (value === undefined) return { ok: true, ids: [] };
+  if (!Array.isArray(value)) {
+    return { ok: false, errors: ["removedNodes 必须是字符串数组。"] };
+  }
+  const ids: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !item.trim()) {
+      return { ok: false, errors: ["removedNodes 必须是非空字符串数组。"] };
+    }
+    ids.push(item.trim());
+  }
+  return { ok: true, ids: [...new Set(ids)] };
+}
+
+type RemovedScenariosResult =
+  | { ok: true; refs: ScenarioRef[] }
+  | { ok: false; errors: string[] };
+
+function normalizeRemovedScenarios(value: unknown): RemovedScenariosResult {
+  if (value === undefined) return { ok: true, refs: [] };
+  if (!Array.isArray(value)) {
+    return { ok: false, errors: ["removedScenarios 必须是 {node, id} 数组。"] };
+  }
+  const refs: ScenarioRef[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return { ok: false, errors: ["removedScenarios 必须是 {node, id} 数组。"] };
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.node !== "string" || !record.node.trim() ||
+        typeof record.id !== "string" || !record.id.trim()) {
+      return { ok: false, errors: ["removedScenarios 的 node 与 id 必须是非空字符串。"] };
+    }
+    refs.push({ node: record.node.trim(), id: record.id.trim() });
+  }
+  return {
+    ok: true,
+    refs: [...new Map(refs.map((ref) => [`${ref.node}\0${ref.id}`, ref])).values()],
   };
 }
 

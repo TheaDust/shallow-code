@@ -589,6 +589,95 @@ test("update_requirements 拒绝非法草案并保留旧草案", async () => {
   assert.equal(store.tree?.id, "task-app");
 });
 
+test("update_requirements 增量提交保留未提交内容并支持分批构建", async () => {
+  const store = createDraftStore();
+  const tool = createRequirementsTool(store);
+  await tool.execute("call-1", { requirements: validTree(), questions: ["是否支持删除？"] });
+  const first = structuredClone(store.tree);
+
+  await tool.execute("call-2", {
+    requirements: {
+      id: "task-app",
+      children: [{ id: "create-task", description: "标题选填。" }],
+    },
+  });
+  assert.equal(store.revision, 2);
+  assert.equal(store.tree?.children[0].description, "标题选填。");
+  assert.deepEqual(store.tree?.children[0].scenarios, first?.children[0].scenarios);
+  assert.deepEqual(store.questions, ["是否支持删除？"], "省略 questions 时保留原问题");
+
+  await tool.execute("call-3", {
+    requirements: {
+      id: "task-app",
+      children: [{
+        id: "delete-task",
+        name: "删除任务",
+        type: "ATOMIC",
+        description: "删除后列表不再显示任务。",
+        scenarios: [{
+          id: "delete-task-success",
+          name: "删除任务",
+          steps: [
+            { keyword: "GIVEN", content: "列表中有“准备会议”任务。" },
+            { keyword: "WHEN", content: "用户删除该任务。" },
+            { keyword: "THEN", content: "列表中不再显示该任务。" },
+          ],
+        }],
+      }],
+    },
+    questions: [],
+  });
+  assert.equal(store.tree?.children.length, 2);
+  assert.deepEqual(store.questions, []);
+
+  await tool.execute("call-4", { removedNodes: ["delete-task"] });
+  assert.equal(store.tree?.children.length, 1);
+  assert.equal(store.revision, 4);
+
+  await assert.rejects(
+    () => tool.execute("call-5", {
+      requirements: {
+        id: "task-app",
+        children: [{ id: "create-task", dependencies: ["nope"] }],
+      },
+    }),
+    /依赖 nope 不存在/,
+  );
+  assert.equal(store.revision, 4);
+  assert.equal(store.tree?.children[0].description, "标题选填。");
+});
+
+test("update_requirements replace 整体重写并拒绝与删除项混用", async () => {
+  const store = createDraftStore();
+  const tool = createRequirementsTool(store);
+  await tool.execute("call-1", { requirements: validTree(), questions: ["是否支持删除？"] });
+  const replacement = validTree();
+  replacement.description = "整体重写。";
+  replacement.children = [];
+
+  await tool.execute("call-2", { requirements: replacement, replace: true });
+  assert.equal(store.revision, 2);
+  assert.equal(store.tree?.description, "整体重写。");
+  assert.equal(store.tree?.children.length, 0);
+  assert.deepEqual(store.questions, ["是否支持删除？"], "省略 questions 时保留原问题");
+
+  await assert.rejects(
+    () => tool.execute("call-3", {
+      requirements: validTree(),
+      replace: true,
+      removedNodes: ["create-task"],
+    }),
+    /整体替换不能同时指定删除项/,
+  );
+  assert.equal(store.revision, 2);
+
+  await assert.rejects(
+    () => tool.execute("call-4", { replace: true }),
+    /整体替换需要提供完整需求树/,
+  );
+  assert.equal(store.revision, 2);
+});
+
 test("代理回合失败时展示错误并继续对话", async (t) => {
   const store = createDraftStore();
   const base = await tempBase();

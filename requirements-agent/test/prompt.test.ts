@@ -28,6 +28,10 @@ test("requirements prompt carries the downstream acceptance contract", async () 
     "共享预置",
     "不要放进 `data`",
     "场景 `id`",
+    "按 `id` 合并",
+    "分成多次调用",
+    "removedNodes",
+    "不可重复",
     "固定种子",
     "改变角色",
   ]) {
@@ -44,6 +48,9 @@ test("requirements tool description mirrors the acceptance contract", () => {
     "产品级共享预置",
     "GIVEN",
     "不要重命名",
+    "增量更新",
+    "removedNodes",
+    "不可重复",
   ]) {
     assert.ok(description.includes(anchor), `missing ${anchor}`);
   }

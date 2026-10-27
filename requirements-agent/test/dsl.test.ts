@@ -4,6 +4,7 @@ import { parse } from "yaml";
 
 import {
   diffRequirements,
+  mergeDraft,
   normalizeDraft,
   normalizeQuestions,
   serializeRequirementsYaml,
@@ -61,6 +62,126 @@ test("normalizeDraft 接受完整草案并保留内容与顺序", () => {
     "THEN",
     "AND",
   ]);
+});
+
+test("mergeDraft 只覆盖提交的变化字段，未提交的节点、场景与步骤保持原样", () => {
+  const current = expectOk(normalizeDraft(validTree()));
+  const merged = mergeDraft(current, {
+    id: "task-app",
+    children: [{
+      id: "create-task",
+      description: "标题选填。",
+      scenarios: [{ id: "create-task-success", name: "创建后立即显示任务" }],
+    }],
+  });
+  const tree = expectOk(merged);
+  assert.equal(tree.children[0].description, "标题选填。");
+  assert.equal(tree.children[0].scenarios[0].name, "创建后立即显示任务");
+  assert.deepEqual(tree.children[0].scenarios[0].steps, current.children[0].scenarios[0].steps);
+  assert.equal(tree.children.length, 1);
+});
+
+test("mergeDraft 追加新节点与场景，并只删除显式列出的项", () => {
+  const current = expectOk(normalizeDraft(validTree()));
+  const withChild = expectOk(mergeDraft(current, {
+    id: "task-app",
+    children: [{
+      id: "delete-task",
+      name: "删除任务",
+      type: "ATOMIC",
+      description: "删除后列表不再显示任务。",
+      scenarios: [{
+        id: "delete-task-success",
+        name: "删除任务",
+        steps: [
+          { keyword: "GIVEN", content: "列表中有“准备会议”任务。" },
+          { keyword: "WHEN", content: "用户删除该任务。" },
+          { keyword: "THEN", content: "列表中不再显示该任务。" },
+        ],
+      }],
+    }],
+  }));
+  assert.deepEqual(withChild.children.map((node) => node.id), ["create-task", "delete-task"]);
+
+  const withScenario = expectOk(mergeDraft(withChild, {
+    id: "task-app",
+    children: [{
+      id: "create-task",
+      scenarios: [{
+        id: "create-task-empty-title",
+        name: "标题为空时提示",
+        steps: [
+          { keyword: "GIVEN", content: "列表为空。" },
+          { keyword: "WHEN", content: "用户不填写标题直接提交。" },
+          { keyword: "THEN", content: "显示“标题不能为空”。" },
+        ],
+      }],
+    }],
+  }));
+  assert.deepEqual(withScenario.children[0].scenarios.map((scenario) => scenario.id),
+    ["create-task-success", "create-task-empty-title"]);
+
+  const removedScenario = expectOk(mergeDraft(withScenario, {}, [],
+    [{ node: "create-task", id: "create-task-empty-title" }]));
+  assert.deepEqual(removedScenario.children[0].scenarios.map((scenario) => scenario.id),
+    ["create-task-success"]);
+
+  const removedNode = expectOk(mergeDraft(removedScenario, {}, ["delete-task"]));
+  assert.deepEqual(removedNode.children.map((node) => node.id), ["create-task"]);
+});
+
+test("mergeDraft 拒绝变更根 id，并区分数组替换与删除", () => {
+  const current = expectOk(normalizeDraft(validTree()));
+  const mismatch = mergeDraft(current, { id: "other" });
+  assert.equal(mismatch.ok, false);
+  if (mismatch.ok) return;
+  assert.match(mismatch.errors.join("\n"), /根节点 id 不可变更/);
+
+  const guided = expectOk(mergeDraft(current, { id: "task-app", guidance: ["整体使用浅色主题。"] }));
+  assert.deepEqual(guided.guidance, ["整体使用浅色主题。"]);
+  const cleared = expectOk(mergeDraft(guided, { id: "task-app", guidance: [] }));
+  assert.equal(cleared.guidance, undefined);
+
+  const missing = mergeDraft(current, {}, ["missing"]);
+  assert.equal(missing.ok, false);
+  if (missing.ok) return;
+  assert.match(missing.errors.join("\n"), /要删除的节点不存在：missing/);
+});
+
+test("mergeDraft 拒绝同一补丁内重复的新增、已有或嵌套节点 id", () => {
+  const current = expectOk(normalizeDraft(validTree()));
+  for (const children of [
+    [
+      { id: "new-folder", name: "新功能组", type: "FOLDER", description: "新功能。" },
+      { id: " new-folder ", children: [{ id: "new-task", name: "任务", type: "ATOMIC", description: "任务。" }] },
+    ],
+    [{ id: "create-task", description: "修改一。" }, { id: "create-task", description: "修改二。" }],
+    [{ id: "new-folder", children: [{ id: "create-task" }] }, { id: "create-task" }],
+  ]) {
+    const result = mergeDraft(current, { children });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.errors.join("\n"), /同一补丁中重复节点 id/);
+  }
+  assert.equal(current.children[0].description, "标题必填。");
+});
+
+test("mergeDraft 拒绝同一 ATOMIC 的重复场景 id，允许不同 ATOMIC 使用相同场景 id", () => {
+  const current = expectOk(normalizeDraft(validTree()));
+  for (const id of ["create-task-success", "new-scenario"]) {
+    const result = mergeDraft(current, {
+      children: [{ id: "create-task", scenarios: [{ id, name: "修改一" }, { id: ` ${id} `, name: "修改二" }] }],
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.errors.join("\n"), /同一补丁中重复场景 id：create-task\//);
+  }
+  const other = structuredClone(current.children[0]);
+  other.id = "other-task";
+  const merged = expectOk(mergeDraft(current, {
+    children: [{ id: "create-task", scenarios: [{ id: "create-task-success", name: "修改场景" }] }, other],
+  }));
+  assert.equal(merged.children[0].scenarios[0].id, merged.children[1].scenarios[0].id);
 });
 
 test("normalizeDraft 规格化：修剪空白、小写关键字转为大写、缺省数组补空", () => {

@@ -72,6 +72,26 @@ test("非法提交不覆盖已保存的草稿", async (t) => {
   assert.equal(await readFile(store.file!, "utf8"), previous);
 });
 
+test("增量补丁重复 id 时返回校验错误，保留磁盘草稿并允许修正后重试", async (t) => {
+  const base = await directory(t);
+  const store = createDraftStore(base);
+  store.submit(tree(), ["是否支持删除？"]);
+  const previous = await readFile(store.file!, "utf8");
+  const tool = createRequirementsTool(store);
+  const folder = { id: "new-folder", name: "新功能组", type: "FOLDER", description: "新功能。" };
+  await assert.rejects(tool.execute("invalid", {
+    requirements: { children: [folder, { id: "new-folder", children: [] }] },
+    questions: [],
+  }), /需求草案校验失败：[\s\S]*重复节点 id：new-folder/);
+  assert.equal(store.revision, 1);
+  assert.deepEqual(store.questions, ["是否支持删除？"]);
+  assert.equal(await readFile(store.file!, "utf8"), previous);
+  assert.deepEqual(createDraftStore(base).tree, store.tree);
+  await tool.execute("corrected", { requirements: { children: [folder] }, questions: [] });
+  assert.equal(store.revision, 2);
+  assert.deepEqual(store.tree?.children.map((node) => node.id), ["create-task", "new-folder"]);
+});
+
 test("替换文件失败时不授予新版本，也不截断旧草稿", async (t) => {
   const store = createDraftStore(await directory(t));
   store.submit(tree(), []);
