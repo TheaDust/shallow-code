@@ -1,0 +1,2361 @@
+id: algorithm-lab
+name: 交互式算法实验室
+type: ROOT
+dependencies: []
+description: 纯前端单页应用，简体中文。含四个实验室：排序实验室、网格寻路实验室、动态规划实验室、数据结构实验室，以及运行记录与帮助页。前三个实验室用同一套轨迹模型（预计算轨迹、控制条、步骤 0..N、状态行与检查器、完成横幅、排序与寻路的对比模式与全部算法总览）；数据结构实验室是直接操作型页面，无轨迹、控制条、完成横幅、对比模式与全部算法总览，操作立即执行，只进页内操作日志、不写运行记录。术语：步骤＝一次原子动作；写入＝不经过交换的赋值操作；对比模式的胜负只用比较次数与步骤数判定，交换次数只展示、不参与胜负；路径长度＝边的数量，经过格子＝路径长度＋1；LCS＝最长公共子序列，多解时只展示固定回溯规则得到的一个；运行记录最多 50 条；所有指标为非负整数。
+guidance:
+  - 整体视觉风格简洁、克制，以信息可读为先，不做花哨动效；关键变化要有即时视觉反馈。
+  - 界面文案语气直白、面向学习者，不用营销化措辞；正式文案使用简体中文全角标点。
+  - 播放、单步、拖动滑块都要感觉即时，不出现明显卡顿或跳帧。
+children:
+  - id: app-shell
+    name: 应用框架与导航
+    type: FOLDER
+    dependencies: []
+    description: 顶栏、hash 路由、主题、速度、快捷键、持久化、响应式与无障碍等全站外壳能力。
+    children:
+      - id: app-routing
+        name: 路由与顶栏导航
+        type: ATOMIC
+        dependencies: []
+        description: 'hash 路由 #/sorting、#/pathfinding、#/dp、#/structures、#/history、#/help；无 hash 或未知 hash 进 #/sorting。前进后退不丢输入。顶栏产品名“算法实验室”，导航文案依次“排序实验室”“网格寻路实验室”“动态规划”“数据结构实验室”“运行记录”“帮助”，当前项带 aria-current="page"；右侧主题按钮浅色时“切换深色模式”、深色时“切换浅色模式”，有可访问名称。document.title 为“页面名 · 算法实验室”。'
+        scenarios:
+          - id: default-and-unknown-hash
+            name: 无 hash 与未知 hash 进入排序实验室
+            steps:
+              - keyword: GIVEN
+                content: 首次打开应用，地址栏无 hash
+              - keyword: WHEN
+                content: 页面加载完成
+              - keyword: THEN
+                content: "显示排序实验室（标题“排序实验室”），hash 变为 #/sorting"
+              - keyword: AND
+                content: 导航项“排序实验室”带 aria-current="page"，文档标题为“排序实验室 · 算法实验室”
+              - keyword: BUT
+                content: "手改 hash 为 #/unknown 后仍停留排序实验室，文档标题不变"
+          - id: nav-and-history
+            name: 顶栏导航与浏览器前进后退
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室已输入“3, 1, 2”并点击“应用数据”
+              - keyword: WHEN
+                content: 依次点击顶栏“网格寻路实验室”“动态规划”
+              - keyword: THEN
+                content: 进入动态规划实验室，文档标题为“动态规划 · 算法实验室”
+              - keyword: AND
+                content: 导航项“动态规划”带 aria-current="page"，其余项不带
+              - keyword: AND
+                content: 后退一次回到网格寻路实验室，配置区仍显示“12 × 18 · 墙 51 格”
+              - keyword: AND
+                content: 再后退回到排序实验室，手动输入框仍为“3, 1, 2”
+      - id: theme-toggle
+        name: 主题切换
+        type: ATOMIC
+        dependencies: []
+        description: 首次进入为浅色，不跟随系统；切换后持久化；根元素用 data-theme="light" / "dark"；所有页面、弹窗、表格、图表跟随主题；按钮文案随主题变化并有可访问名称。改主题不重置步骤、不影响轨迹与结构数据。
+        scenarios:
+          - id: toggle-and-persist
+            name: 切换深色并持久化
+            steps:
+              - keyword: GIVEN
+                content: 首次打开应用，当前为浅色主题
+              - keyword: WHEN
+                content: 查看顶栏右侧主题按钮
+              - keyword: THEN
+                content: 按钮文字为“切换深色模式”
+              - keyword: AND
+                content: 点击后根元素 data-theme="dark"，按钮文字变为“切换浅色模式”
+              - keyword: AND
+                content: 刷新后仍为深色，按钮仍为“切换浅色模式”
+          - id: theme-follows-pages
+            name: 深色主题在所有页面与弹窗生效
+            steps:
+              - keyword: GIVEN
+                content: 已切到深色主题，运行记录中有 2 条记录
+              - keyword: WHEN
+                content: 进入“运行记录”并点击其中一条记录的“删除”
+              - keyword: THEN
+                content: 记录列表为深色主题配色（浅色文字、深色底）
+              - keyword: AND
+                content: 弹出的“删除这条记录？”弹窗同样为深色主题配色
+      - id: speed-setting
+        name: 速度档位
+        type: ATOMIC
+        dependencies: []
+        description: 全局五档：1 很慢 800ms、2 慢 600ms、3 正常 400ms（默认）、4 快 200ms、5 很快 100ms；滑块显示档位名与毫秒数；修改立即影响后续播放，不重置当前步骤、不打断播放；持久化。数据结构实验室不使用速度。
+        scenarios:
+          - id: speed-slider-values
+            name: 五档名称与毫秒数
+            steps:
+              - keyword: GIVEN
+                content: 打开排序实验室，速度滑块为默认档位
+              - keyword: WHEN
+                content: 查看速度滑块旁文字
+              - keyword: THEN
+                content: 显示“3 正常 400ms”
+              - keyword: AND
+                content: 拖到最左端显示“1 很慢 800ms”，拖到最右端显示“5 很快 100ms”
+          - id: speed-change-keeps-step
+            name: 改速度不重置步骤
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室默认数据，已点击“下一步”3 次，显示“步骤 3 / 26”且未播放
+              - keyword: WHEN
+                content: 把速度从“3 正常 400ms”改为“4 快 200ms”
+              - keyword: THEN
+                content: 控制条仍显示“步骤 3 / 26”
+              - keyword: AND
+                content: 刷新后速度仍为“4 快 200ms”
+          - id: speed-change-during-play
+            name: 播放中改速度不打断播放
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室默认数据，速度“5 很快 100ms”，步骤 0
+              - keyword: WHEN
+                content: 点击“播放”，播放中把速度改为“1 很慢 800ms”
+              - keyword: THEN
+                content: 播放按钮仍显示“暂停”
+              - keyword: AND
+                content: 5 秒内步骤号继续增大，不停在修改速度时的步骤
+      - id: keyboard-shortcuts
+        name: 键盘快捷键
+        type: ATOMIC
+        dependencies: []
+        description: 焦点不在输入框、文本域、下拉框、按钮、链接或可编辑区域时生效（弹窗打开时不生效，Esc 关闭除外）：Space 播放/暂停、→ 下一步、← 上一步、R 重置、T 切换主题；帮助页用表格列出。焦点在按钮上保留原生空格行为。数据结构实验室无播放控制，Space 与 → / ← 在该页不触发播放或单步；T 全局生效。
+        scenarios:
+          - id: shortcuts-work-on-stage
+            name: 空白区域快捷键生效
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0，焦点在页面空白处
+              - keyword: WHEN
+                content: 按键盘 →
+              - keyword: THEN
+                content: 状态行显示“第 1 / 6 步：比较第 1 个和第 2 个元素（3 与 1）”
+              - keyword: AND
+                content: 按 ← 后恢复“步骤 0 / 6”；按 Space 后按钮文字变“暂停”，再按 Space 恢复“播放”
+              - keyword: AND
+                content: 按 R 后显示“步骤 0 / 6”且输入框仍为“3, 1, 2”
+              - keyword: AND
+                content: 按 T 后主题由浅色切换为深色
+          - id: shortcuts-ignored-in-input
+            name: 输入控件聚焦时快捷键不生效
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室输入“3, 1, 2”并应用，步骤 0
+              - keyword: WHEN
+                content: 焦点放到“数据（3–50 个整数）”输入框内并按 →
+              - keyword: THEN
+                content: 步骤仍为“步骤 0 / 6”，输入框内容仍为“3, 1, 2”
+          - id: shortcuts-blocked-by-modal
+            name: 弹窗打开时快捷键不生效
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条记录，已点击该记录的“删除”打开“删除这条记录？”弹窗
+              - keyword: WHEN
+                content: 按 R 与 →
+              - keyword: THEN
+                content: 弹窗仍显示标题“删除这条记录？”，页面未跳转、排序实验室步骤号未变化
+              - keyword: AND
+                content: 按 Esc 后弹窗关闭，焦点回到触发它的“删除”按钮
+          - id: structures-page-has-no-playback
+            name: 数据结构页面的快捷键行为
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉堆页签，数组为“1, 3, 8, 5”，焦点在页面空白处
+              - keyword: WHEN
+                content: 依次按 Space、→、←
+              - keyword: THEN
+                content: 页面上不出现播放按钮、步骤号或进度滑杆
+              - keyword: AND
+                content: 二叉堆数组仍为“1, 3, 8, 5”，操作日志条数不变
+              - keyword: AND
+                content: 按 T 后主题正常切换
+      - id: workspace-persistence
+        name: 偏好与工作区持久化
+        type: ATOMIC
+        dependencies: []
+        description: 刷新后恢复主题、速度、hash 页面、各实验室最近一次有效输入、算法、对比模式、枢轴策略，以及数据结构实验室当前页签、三种结构各自的结构数据与页内操作日志（最多 20 条）与撤销栈；不恢复播放状态、完成横幅与临时错误，三个算法实验室回到步骤 0 并重新生成轨迹、指标归零，数据结构实验室保留结构与日志。工作区数据损坏、缺失或版本不兼容时回默认且保持可用，不抛未捕获异常。
+        scenarios:
+          - id: refresh-restores-inputs
+            name: 刷新后恢复输入并回到步骤 0
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室输入“3, 1, 2”并应用，算法“快速排序”，枢轴“首元素”，已点击“跳到结尾”
+              - keyword: WHEN
+                content: 刷新页面
+              - keyword: THEN
+                content: 仍停留在排序实验室，文字镜像为“当前数组：3, 1, 2”
+              - keyword: AND
+                content: 算法为“快速排序”，枢轴选择为“首元素”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 5”，完成横幅不显示，指标归零
+          - id: refresh-restores-structures
+            name: 刷新后恢复数据结构页签、结构与日志
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室在“二叉堆”页签依次插入 5、3、8
+              - keyword: WHEN
+                content: 刷新页面
+              - keyword: THEN
+                content: 仍在数据结构实验室，“二叉堆”页签为选中态，数组为“3, 5, 8”
+              - keyword: AND
+                content: 操作日志仍为 3 条，最上一条为“已插入 8”
+              - keyword: AND
+                content: 点击“撤销”后数组恢复为“3, 5”
+          - id: corrupt-workspace-falls-back
+            name: 工作区数据损坏时回默认
+            steps:
+              - keyword: GIVEN
+                content: 本地存储中排序实验室工作区数据被替换为“not-json”
+              - keyword: WHEN
+                content: "打开 #/sorting"
+              - keyword: THEN
+                content: 输入框内容为默认“5, 2, 9, 1, 5, 6”，控制条显示“步骤 0 / 26”
+              - keyword: AND
+                content: 页面无未捕获错误提示，可继续应用数据并播放
+      - id: responsive-a11y
+        name: 响应式布局与无障碍
+        type: ATOMIC
+        dependencies: []
+        description: 1280×800 下无需横向滚动即可看到配置、舞台、检查器与控制条（数据结构页控制条位置为操作日志区）；375×667 下页面本身不横向滚动，导航可换行或滚动，控制条可吸底但不遮挡内容，网格、dp 表格与树图允许卡片内部横向滚动。控件有可读标签，图标按钮有 aria-label；行内错误用 role="alert"；焦点可见；颜色不是唯一信息载体；图表用 SVG/DOM 绘制，页面中不出现 canvas 元素。状态行容器带 aria-live：自动播放时其 aria-live 为 off，不逐步播报；暂停、单步、跳转、完成时恢复 polite 并播报当前步骤。
+        guidance:
+          - 尊重 prefers-reduced-motion（系统的减少动态效果偏好）。
+        scenarios:
+          - id: desktop-three-columns
+            name: 1280×800 三栏可见
+            steps:
+              - keyword: GIVEN
+                content: 视口为 1280×800，打开排序实验室
+              - keyword: WHEN
+                content: 观察页面
+              - keyword: THEN
+                content: 配置区、舞台、检查器、控制条同时可见
+              - keyword: AND
+                content: 页面不出现横向滚动条
+          - id: mobile-single-column
+            name: 375×667 单栏与内部滚动
+            steps:
+              - keyword: GIVEN
+                content: 视口为 375×667，网格寻路实验室，预设“三层迷宫”
+              - keyword: WHEN
+                content: 滚动页面到网格区域
+              - keyword: THEN
+                content: 页面本身不出现横向滚动条
+              - keyword: AND
+                content: 网格卡片内部可横向滚动以查看第 18 列，控制条吸底显示且不遮挡路径坐标区域
+          - id: inline-error-alert
+            name: 行内错误可被辅助技术播报
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，配置区在“手动输入”页签
+              - keyword: WHEN
+                content: 输入“1, 2”并点击“应用数据”
+              - keyword: THEN
+                content: 输入框下方显示“请输入 3 到 50 个整数”
+              - keyword: AND
+                content: 承载该错误的元素带 role="alert"
+          - id: structures-mobile-scroll
+            name: 数据结构页窄屏不横向溢出
+            steps:
+              - keyword: GIVEN
+                content: 视口为 375×667，数据结构实验室，二叉搜索树页签已插入 5、3、8、1、4
+              - keyword: WHEN
+                content: 滚动页面到舞台与操作日志区域
+              - keyword: THEN
+                content: 页面本身不出现横向滚动条
+              - keyword: AND
+                content: 树图在卡片内部滚动或缩放，节点与边不被裁切
+          - id: charts-not-canvas
+            name: 图表由 SVG 或 DOM 绘制
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室输入“3, -2, 0, 5, -1, 4”并应用
+              - keyword: WHEN
+                content: 依次查看排序柱状图、网格寻路实验室的网格与动态规划实验室的 dp 表格
+              - keyword: THEN
+                content: 页面中不存在 canvas 元素
+              - keyword: AND
+                content: 柱状图、网格与 dp 表格都由 SVG 或 DOM 元素构成，可选中节点并读到文字
+          - id: live-region-during-play
+            name: 自动播放不逐步播报
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室默认数据，速度“5 很快 100ms”，步骤 0
+              - keyword: WHEN
+                content: 点击“播放”，播放约 1 秒后（未到结尾）查看状态行容器
+              - keyword: THEN
+                content: 播放中状态行容器的 aria-live 属性为 off
+              - keyword: AND
+                content: 点击“暂停”后状态行容器的 aria-live 属性变为 polite，且文本包含暂停时的步骤描述
+  - id: execution-model
+    name: 通用执行与对比模型
+    type: FOLDER
+    dependencies:
+      - app-shell
+    description: 三个算法实验室共用的轨迹、步骤、控制条、状态行、完成与对比规则。数据结构实验室是直接操作型页面，不使用轨迹、控制条、状态行、完成横幅与对比模式，只复用页面骨架、主题、无障碍与工作区持久化约定。
+    children:
+      - id: trace-precompute
+        name: 轨迹预计算与步骤映射
+        type: ATOMIC
+        dependencies: []
+        description: 应用有效数据、切换算法、切换对比模式或修改影响轨迹的参数时，立即在本地算出完整轨迹，不边播放边计算；确定性，不依赖时间、网络、动画帧或点击速度。轨迹长度 N，步骤 0 到 N，0 为初始状态、N 为最终状态；应用后即知总步数并显示“步骤 0 / N”。单步、播放、拖滑杆、跳到结尾映射同一份状态；播放到结尾与单步到结尾结果与指标完全一致。指标为非负整数。数据结构实验室不使用轨迹与步骤。
+        scenarios:
+          - id: precompute-shows-total-steps
+            name: 应用后立即显示总步数
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入框为“3, 1, 2”，算法“冒泡排序”
+              - keyword: WHEN
+                content: 点击“应用数据”且不播放
+              - keyword: THEN
+                content: 控制条显示“步骤 0 / 6”
+              - keyword: AND
+                content: 状态行显示“准备就绪（共 6 步）”
+          - id: step-and-jump-identical
+            name: 单步走完与跳到结尾结果一致
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 连续点击“下一步”6 次
+              - keyword: THEN
+                content: 指标为比较次数 4、交换次数 2、写入次数 0，文字镜像为“当前数组：1, 2, 3”
+              - keyword: AND
+                content: 重置后点击“跳到结尾”，指标与文字镜像与逐步走完完全相同
+          - id: slider-maps-to-same-state
+            name: 滑杆映射到同一步骤状态
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 把进度滑杆拖到刻度 1 并松手
+              - keyword: THEN
+                content: 状态行显示“第 1 / 6 步：比较第 1 个和第 2 个元素（3 与 1）”
+              - keyword: AND
+                content: 文字镜像为“当前数组：3, 1, 2”，控制条显示“步骤 1 / 6”
+      - id: playback-controls
+        name: 控制条播放控制
+        type: ATOMIC
+        dependencies:
+          - trace-precompute
+        description: 初始：上一步禁用，下一步、播放、重置、跳到结尾可用。下一步暂停并 +1，到 N 后禁用；上一步暂停并 -1，到 0 后禁用。播放从当前步骤立即走一步，之后按当前速度逐步，按钮变“暂停”，暂停停在当前步骤、不留半个操作；到 N 时按钮为“重新播放”，点击回 0 并播放。跳到结尾到 N 且指标与逐步一致。重置回 0，清完成状态与“已记录”标记，保留数据、算法、参数与轨迹。进度滑杆 0..N，拖动时暂停并实时显示对应步骤，松手保持；控制条旁始终显示“步骤 k / N”。数据结构实验室不提供控制条。
+        scenarios:
+          - id: initial-control-state
+            name: 初始控制条状态
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，默认数据，步骤 0
+              - keyword: WHEN
+                content: 查看控制条
+              - keyword: THEN
+                content: “上一步”为禁用状态，“下一步”“播放”“重置”“跳到结尾”均可用
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 26”
+          - id: step-bounds
+            name: 单步到两端后的禁用
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 连续点击“下一步”直到第 6 步
+              - keyword: THEN
+                content: 显示“步骤 6 / 6”且“下一步”禁用
+              - keyword: AND
+                content: 连续点击“上一步”到第 0 步后“上一步”禁用
+          - id: play-pause-replay
+            name: 播放、暂停与重新播放
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，速度“5 很快 100ms”，步骤 0
+              - keyword: WHEN
+                content: 点击“播放”
+              - keyword: THEN
+                content: 按钮文字变为“暂停”，步骤号立即变为 1
+              - keyword: AND
+                content: 点击“暂停”后按钮恢复“播放”，步骤号不再增长
+              - keyword: AND
+                content: 点击“跳到结尾”后按钮变“重新播放”，再点击后步骤回 0 且按钮变“暂停”
+          - id: reset-keeps-data
+            name: 重置保留数据与参数
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“插入排序”，已跳到结尾并显示完成横幅
+              - keyword: WHEN
+                content: 点击“重置”
+              - keyword: THEN
+                content: 显示“步骤 0 / 7”，完成横幅消失
+              - keyword: AND
+                content: 输入框仍为“3, 1, 2”，算法仍为“插入排序”
+      - id: status-and-inspector
+        name: 状态行与检查器
+        type: ATOMIC
+        dependencies:
+          - trace-precompute
+        description: 步骤 0 状态行显示“准备就绪（共 N 步）”；步骤 k 显示“第 k / N 步：<当前操作描述>”；到达 N 保留最后一步描述并额外出现完成横幅。检查器含当前步骤说明、累计指标、内部变量；无值显示“—”，不留空或 undefined；数值等宽字体，标签与数值成对。数据结构实验室不用状态行与完成横幅，但沿用无值显示“—”与等宽字体。
+        scenarios:
+          - id: status-line-format
+            name: 状态行步骤格式
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次
+              - keyword: THEN
+                content: 状态行显示“第 1 / 6 步：比较第 1 个和第 2 个元素（3 与 1）”，下标从 1 开始
+              - keyword: AND
+                content: 到第 6 步后状态行仍显示第 6 步操作描述，不只显示“已完成”
+          - id: inspector-empty-values
+            name: 检查器空值显示
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串 A=ABCBDAB、B=BDCABA，步骤 0
+              - keyword: WHEN
+                content: 查看检查器
+              - keyword: THEN
+                content: “已填单元格”显示“0 / 42”
+              - keyword: AND
+                content: “LCS 长度”与“LCS”都显示“—”，检查器不出现空白项或“undefined”
+      - id: input-change-reset
+        name: 数据与参数变化后的重置
+        type: ATOMIC
+        dependencies:
+          - trace-precompute
+        description: 改数据、算法、对比模式或枢轴策略：清完成状态，重新生成轨迹，回步骤 0，历史记录不删除；切换对比模式再切回也重新生成并回 0，保留仍可用的算法选择。改速度或主题不重置步骤。对比模式两算法不能相同，相同时显示错误提示（示例“两个算法不能相同”）并禁用执行控制、舞台显示空状态，直到改成不同算法。
+        scenarios:
+          - id: algorithm-change-resets
+            name: 换算法回到步骤 0
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，已跳到结尾并显示完成横幅
+              - keyword: WHEN
+                content: 把算法下拉改为“插入排序”
+              - keyword: THEN
+                content: 控制条显示“步骤 0 / 7”，完成横幅消失
+              - keyword: AND
+                content: 文字镜像为“当前数组：3, 1, 2”
+          - id: same-algorithm-blocked
+            name: 对比模式两侧算法相同时阻断执行
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室已切到“对比模式”，算法 A“冒泡排序”、算法 B“快速排序”
+              - keyword: WHEN
+                content: 把算法 B 也改为“冒泡排序”
+              - keyword: THEN
+                content: 配置区显示错误提示“两个算法不能相同”
+              - keyword: AND
+                content: “下一步”与“播放”为禁用状态，舞台显示空状态、不显示柱状图
+              - keyword: AND
+                content: 把算法 B 改回“快速排序”后错误消失，控制条恢复可用
+          - id: mode-switch-resets-and-keeps-selection
+            name: 模式切换重新生成轨迹
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，单算法模式，算法“归并排序”，已到第 5 步
+              - keyword: WHEN
+                content: 点击“对比模式”，再点击“单算法”
+              - keyword: THEN
+                content: 控制条显示“步骤 0 / 8”
+              - keyword: AND
+                content: 算法下拉仍为“归并排序”，三项指标归零
+      - id: completion-and-record
+        name: 完成横幅与自动记录
+        type: ATOMIC
+        dependencies:
+          - playback-controls
+        description: 单算法到 N、对比模式到 max(两个长度)、dp 填满内部单元格即完成；寻路“未找到路径”也算完成并照常记录。每次完成自动写一条运行记录且只写一次，横幅含“已保存到运行记录”标记；完成后改主题或速度、来回单步、再次跳到结尾都不重复写；只有重置后重新完成或改数据/算法/参数后完成才算新运行。“计算全部算法”不播放、不写记录。数据结构实验室是开放式操作，没有完成态，不产生运行记录，操作只进页内操作日志。
+        scenarios:
+          - id: auto-record-once
+            name: 完成时自动写入一条记录
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，排序实验室输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 完成横幅显示“排序完成”与“结果已按升序排列”
+              - keyword: AND
+                content: 横幅显示“已保存到运行记录”标记
+              - keyword: AND
+                content: 进入“运行记录”后“全部”筛选下有 1 条记录，结果摘要为“排序完成 · 比较 4 次”
+          - id: no-duplicate-record
+            name: 重复完成不重复写入
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条来自“3, 1, 2”冒泡排序的记录，当前仍在第 6 步
+              - keyword: WHEN
+                content: 点击“上一步”回到第 2 步，再点击“跳到结尾”，然后切换主题并再次点击“跳到结尾”
+              - keyword: THEN
+                content: 进入“运行记录”后列表仍只有 1 条记录，页面顶部数量为 1
+          - id: reset-then-complete-writes-again
+            name: 重置后重新完成算新记录
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条来自“3, 1, 2”冒泡排序的记录，排序实验室显示完成横幅
+              - keyword: WHEN
+                content: 点击“重置”，再点击“跳到结尾”
+              - keyword: THEN
+                content: 进入“运行记录”后列表有 2 条记录
+              - keyword: AND
+                content: 两条记录的模块均为“排序”，算法均为“冒泡排序”
+          - id: no-path-counts-as-complete
+            name: 寻路未找到路径也算完成并记录
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，寻路实验室预设“无解迷宫”，起点第 1 行第 1 列、终点第 12 行第 18 列，算法“广度优先搜索（BFS）”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 完成横幅显示“未找到路径”
+              - keyword: AND
+                content: 运行记录列表有 1 条记录，结果摘要为“未找到路径”
+          - id: structures-operations-not-recorded
+            name: 数据结构操作只进页内日志不写运行记录
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，数据结构实验室在“二叉堆”页签，空堆
+              - keyword: WHEN
+                content: 依次插入 5、3
+              - keyword: THEN
+                content: 二叉堆数组显示“3, 5”，操作日志有 2 条，最上一条为“已插入 3”
+              - keyword: AND
+                content: 进入“运行记录”后仍显示“暂无运行记录”
+              - keyword: AND
+                content: 筛选按钮中不出现“数据结构”
+      - id: compare-mode
+        name: 对比模式执行
+        type: ATOMIC
+        dependencies:
+          - playback-controls
+        description: 两个算法使用相同输入、相同参数口径与相同速度，各自生成完整轨迹。全局步骤 k 从 0 到 max(N_A, N_B)；第 k 步每个面板显示自己的第 min(k, N_i) 步，已结束一侧停在最终状态并显示“已完成”，另一侧继续；控制条四类操作都作用于全局步骤。每个面板顶部显示算法名、自己的“步骤 x / N”、当前操作摘要与关键指标；可隐藏完整内部变量面板但至少显示一个关键变量摘要。只有全局步骤到 max 后才显示胜者横幅，文案含算法名与关键指标（示例“快速排序胜出（比较次数 2，步骤 4）”），平局显示“平局”。排序对比按比较次数少者胜，相同再比步骤数，仍相同平局，交换次数只展示、不参与胜负；寻路胜者规则见寻路章节。数据结构实验室不提供对比模式。
+        scenarios:
+          - id: global-step-across-panels
+            name: 全局步骤驱动两个面板
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室输入“3, 1, 2”并应用，切到“对比模式”，算法 A“冒泡排序”、算法 B“快速排序”，枢轴“末元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”5 次
+              - keyword: THEN
+                content: 控制条显示“步骤 5 / 6”
+              - keyword: AND
+                content: 算法 B 面板显示“已完成”与“步骤 4 / 4”，算法 A 面板显示“步骤 5 / 6”
+              - keyword: AND
+                content: 算法 A 面板顶部显示算法名“冒泡排序”，算法 B 面板顶部显示“快速排序”
+              - keyword: AND
+                content: 此时不显示胜者横幅
+          - id: winner-banner-sorting
+            name: 排序对比胜者横幅
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室对比模式，输入“3, 1, 2”，算法 A“冒泡排序”、算法 B“快速排序”，枢轴“末元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 控制条显示“步骤 6 / 6”，横幅显示“快速排序胜出（比较次数 2，步骤 4）”
+              - keyword: AND
+                content: 两个面板最终数组都显示“1, 2, 3”
+          - id: tie-banner
+            name: 平局横幅
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室切到“对比模式”，预设“空白网格”，起点第 1 行第 1 列、终点第 12 行第 18 列，算法 A“深度优先搜索（DFS）”、算法 B“A* 算法”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“平局”
+              - keyword: AND
+                content: 两个面板都显示路径长度 28 步、访问节点 29
+      - id: all-algorithms-overview
+        name: 全部算法总览
+        type: ATOMIC
+        dependencies:
+          - compare-mode
+        description: 对比模式舞台下方有“全部算法总览”区域与按钮“计算全部算法”，未计算显示“尚未计算”。点击后用当前输入一次算出全部算法最终指标，不播放、不写记录。排序表列为算法、比较次数、交换次数、写入次数、步骤数；寻路表列为算法、结果、路径长度、访问节点。排序排序规则：比较次数少者在前，相同则步骤数少者在前，仍相同并列；寻路：找到路径者在前，都找到时路径长度短者在前，长度相同访问节点少者在前，仍相同并列，都未找到时全部并列在最后。最优（可多行）显示“最优”徽标。输入、参数或网格变化后总览清空。排序总览额外显示“全部算法结果一致：<最终数组>”。寻路全部未找到时四行都“未找到路径”并显示“所有算法均未找到路径”，不显示“最优”。数据结构实验室不提供全部算法总览。
+        scenarios:
+          - id: sorting-overview-table
+            name: 排序全部算法总览
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室对比模式，输入“3, 1, 2”，枢轴“末元素”，尚未计算总览
+              - keyword: WHEN
+                content: 查看总览区域
+              - keyword: THEN
+                content: 显示“尚未计算”
+              - keyword: AND
+                content: 点击“计算全部算法”后表格出现 5 行，列头为“算法”“比较次数”“交换次数”“写入次数”“步骤数”
+              - keyword: AND
+                content: 第一行为“快速排序”且带“最优”徽标
+              - keyword: AND
+                content: “冒泡排序”行比较次数 4、交换次数 2、写入次数 0、步骤数 6
+              - keyword: AND
+                content: 显示“全部算法结果一致：1, 2, 3”
+          - id: pathfinding-overview-tie
+            name: 寻路总览并列最优
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室对比模式，预设“空白网格”，起点第 1 行第 1 列、终点第 12 行第 18 列
+              - keyword: WHEN
+                content: 点击“计算全部算法”
+              - keyword: THEN
+                content: 表格出现 4 行，列头为“算法”“结果”“路径长度”“访问节点”
+              - keyword: AND
+                content: “广度优先搜索（BFS）”行结果为“找到路径”、路径长度 28、访问节点 216
+              - keyword: AND
+                content: “深度优先搜索（DFS）”与“A* 算法”两行都带“最优”徽标，路径长度 28、访问节点 29
+          - id: overview-cleared-on-input-change
+            name: 输入变化后总览清空
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室对比模式已对“3, 1, 2”点击“计算全部算法”并显示 5 行结果
+              - keyword: WHEN
+                content: 在手动输入框改为“5, 4, 3”并点击“应用数据”
+              - keyword: THEN
+                content: 总览区域重新显示“尚未计算”
+              - keyword: AND
+                content: 页面未跳转、未播放
+          - id: all-not-found-overview
+            name: 全部未找到路径时的总览
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室对比模式，预设“无解迷宫”，起点第 1 行第 1 列、终点第 12 行第 18 列
+              - keyword: WHEN
+                content: 点击“计算全部算法”
+              - keyword: THEN
+                content: 表格 4 行“结果”列都显示“未找到路径”
+              - keyword: AND
+                content: 每行“访问节点”为 96，“路径长度”显示“—”
+              - keyword: AND
+                content: 不出现“最优”徽标，并显示“所有算法均未找到路径”
+          - id: overview-does-not-record
+            name: 计算全部算法不写记录
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，排序实验室对比模式，输入“3, 1, 2”
+              - keyword: WHEN
+                content: 点击“计算全部算法”
+              - keyword: THEN
+                content: 总览表格显示 5 行结果，步骤号仍为 0
+              - keyword: AND
+                content: 进入“运行记录”后仍显示“暂无运行记录”
+  - id: sorting-lab
+    name: 排序实验室
+    type: FOLDER
+    dependencies:
+      - app-shell
+      - execution-model
+    description: 整数数组的五种排序算法逐步演示：数据构造（手动输入、可复现随机生成、预设）、算法与枢轴参数、轨迹口径与参考结果、可视化与边界。目标固定升序（非递减），不提供降序；稳定性只在帮助页说明。
+    children:
+      - id: sorting-default-and-mode
+        name: 默认入口与模式切换
+        type: ATOMIC
+        dependencies: []
+        description: 标题“排序实验室”，说明一句话（示例“构造一组整数，逐步观察比较、交换和写入。”）。默认数据 5, 2, 9, 1, 5, 6、默认算法“冒泡排序”、单算法模式、步骤 0。排序对象为整数数组，允许重复、负数与 0；目标固定升序。模式按钮“单算法”“对比模式”。
+        scenarios:
+          - id: default-first-entry
+            name: 首次进入的默认状态
+            steps:
+              - keyword: GIVEN
+                content: "首次打开应用，进入 #/sorting"
+              - keyword: WHEN
+                content: 查看配置区与舞台
+              - keyword: THEN
+                content: 标题为“排序实验室”，手动输入框标签“数据（3–50 个整数）”内容为“5, 2, 9, 1, 5, 6”
+              - keyword: AND
+                content: 算法下拉为“冒泡排序”，模式为“单算法”
+              - keyword: AND
+                content: 文字镜像为“当前数组：5, 2, 9, 1, 5, 6”，控制条显示“步骤 0 / 26”
+              - keyword: BUT
+                content: 页面不提供降序选项
+      - id: sorting-manual-input
+        name: 手动输入数据
+        type: ATOMIC
+        dependencies:
+          - sorting-default-and-mode
+        description: 配置区三页签“手动输入 / 随机生成 / 预设”，切页签不改变数据，只有点应用类按钮才改数据。输入框默认填当前数据，逗号加空格分隔；允许英文逗号、中文逗号、空格、换行分隔，允许数字前负号，不允许小数、字母、科学计数法、正号；连续或末尾分隔符产生的空项忽略且不报错。有效：3 到 50 个整数，每个 -99 到 99。点击“应用数据”或输入框内 Enter 应用；成功后更新数据、同步输入框与摘要、清轨迹回步骤 0、关闭旧错误；失败时数据、轨迹、舞台不变，错误显示在输入框下方，旧数据仍可用。错误优先级：数量“请输入 3 到 50 个整数”；非整数“只能输入整数，并用逗号或空格分隔”；超范围“每个数值必须在 -99 到 99 之间”。摘要格式“共 N 个元素 · 最小值 X · 最大值 Y · 已按升序排列 / 未排序”。不用原生 alert。
+        scenarios:
+          - id: apply-mixed-separators
+            name: 混合分隔符应用成功
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前默认数据，步骤 0
+              - keyword: WHEN
+                content: 在“数据（3–50 个整数）”输入“3，1 2”并点击“应用数据”
+              - keyword: THEN
+                content: 文字镜像变为“当前数组：3, 1, 2”
+              - keyword: AND
+                content: 摘要显示“共 3 个元素 · 最小值 1 · 最大值 3 · 未排序”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 6”
+          - id: enter-key-applies
+            name: Enter 等同点击应用
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入框内容为“1 2 3”
+              - keyword: WHEN
+                content: 在输入框内按 Enter
+              - keyword: THEN
+                content: 摘要显示“共 3 个元素 · 最小值 1 · 最大值 3 · 已按升序排列”
+              - keyword: AND
+                content: 输入框下方不显示错误
+          - id: invalid-count-keeps-old-data
+            name: 数量不合法时旧数据不变
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前数据“5, 2, 9, 1, 5, 6”，步骤 0
+              - keyword: WHEN
+                content: 输入“1, 2”并点击“应用数据”
+              - keyword: THEN
+                content: 输入框下方显示“请输入 3 到 50 个整数”
+              - keyword: AND
+                content: 文字镜像仍为“当前数组：5, 2, 9, 1, 5, 6”
+              - keyword: AND
+                content: “下一步”仍可用，点击后步骤正常推进
+          - id: invalid-non-integer
+            name: 非整数报错
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前数据“5, 2, 9, 1, 5, 6”
+              - keyword: WHEN
+                content: 输入“1, +2, 3”并点击“应用数据”
+              - keyword: THEN
+                content: 输入框下方显示“只能输入整数，并用逗号或空格分隔”，文字镜像不变
+          - id: invalid-out-of-range
+            name: 超范围报错
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前数据“5, 2, 9, 1, 5, 6”
+              - keyword: WHEN
+                content: 输入“1, 2, 100”并点击“应用数据”
+              - keyword: THEN
+                content: 输入框下方显示“每个数值必须在 -99 到 99 之间”，文字镜像不变
+          - id: error-priority
+            name: 多个问题并存时的错误优先级
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前数据“5, 2, 9, 1, 5, 6”
+              - keyword: WHEN
+                content: 输入“1.5, 2”并点击“应用数据”
+              - keyword: THEN
+                content: 输入框下方显示“请输入 3 到 50 个整数”
+              - keyword: AND
+                content: 不显示“只能输入整数，并用逗号或空格分隔”或“每个数值必须在 -99 到 99 之间”
+          - id: trailing-separators-ignored
+            name: 空项与末尾分隔符忽略
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前默认数据，步骤 0
+              - keyword: WHEN
+                content: 在“数据（3–50 个整数）”输入“3,,1 ,2,”并点击“应用数据”
+              - keyword: THEN
+                content: 文字镜像为“当前数组：3, 1, 2”
+              - keyword: AND
+                content: 摘要显示“共 3 个元素 · 最小值 1 · 最大值 3 · 未排序”
+              - keyword: AND
+                content: 输入框下方不显示错误
+      - id: sorting-random
+        name: 可复现随机生成
+        type: ATOMIC
+        dependencies:
+          - sorting-manual-input
+        description: “随机生成”页签字段：数量（3–50，默认 12）、最小值（-99 到 99，默认 -20）、最大值（-99 到 99，默认 20）、种子（1–999999，默认 2026）。点击“生成”立即生成并应用，不需再点“应用数据”，并同步到手动输入框；最小值可等于最大值。逐字段错误：“数量必须是 3 到 50 的整数”“最小值必须是 -99 到 99 的整数”“最大值必须是 -99 到 99 的整数”“最小值不能大于最大值”“种子必须是 1 到 999999 的整数”。随机数用 mulberry32（state=seed；next 中 state=(state+0x6D2B79F5)|0；t=state；t=Math.imul(t^(t>>>15), t|1)；t=(t^(t+Math.imul(t^(t>>>7),61|t)))|0；返回 ((t^(t>>>14))>>>0)/4294967296），value = min + floor(next() * (max - min + 1))。参考：种子 42、数量 8、最小 0、最大 99 得 60, 44, 85, 66, 17, 52, 27, 62；重复生成与刷新后必须一致。
+        scenarios:
+          - id: reference-seed-42
+            name: 种子 42 的参考序列
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，配置区切到“随机生成”页签
+              - keyword: WHEN
+                content: 设置数量 8、最小值 0、最大值 99、种子 42 并点击“生成”
+              - keyword: THEN
+                content: 文字镜像为“当前数组：60, 44, 85, 66, 17, 52, 27, 62”
+              - keyword: AND
+                content: 手动输入框同步为该数组，控制条回到“步骤 0”且未自动播放
+          - id: regenerate-deterministic
+            name: 重复与刷新后生成结果一致
+            steps:
+              - keyword: GIVEN
+                content: 已用数量 8、最小 0、最大 99、种子 42 生成参考序列
+              - keyword: WHEN
+                content: 再次点击“生成”，然后刷新页面并再次点击“生成”
+              - keyword: THEN
+                content: 两次结果都仍为“60, 44, 85, 66, 17, 52, 27, 62”
+          - id: random-field-errors
+            name: 随机生成字段校验
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，随机生成页签，当前数据“5, 2, 9, 1, 5, 6”
+              - keyword: WHEN
+                content: 把数量改为 2 并点击“生成”
+              - keyword: THEN
+                content: 数量字段下方显示“数量必须是 3 到 50 的整数”，文字镜像不变
+              - keyword: AND
+                content: 把最小值改为 30、最大值改为 20 并生成后显示“最小值不能大于最大值”
+              - keyword: AND
+                content: 把种子改为 0 并生成后显示“种子必须是 1 到 999999 的整数”
+          - id: min-equals-max
+            name: 最小值等于最大值
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，配置区切到“随机生成”页签
+              - keyword: WHEN
+                content: 设置数量 5、最小值 7、最大值 7、种子 2026 并点击“生成”
+              - keyword: THEN
+                content: 文字镜像为“当前数组：7, 7, 7, 7, 7”
+              - keyword: AND
+                content: 摘要显示“共 5 个元素 · 最小值 7 · 最大值 7 · 已按升序排列”
+              - keyword: AND
+                content: 输入框下方不显示错误
+      - id: sorting-presets
+        name: 预设数据
+        type: ATOMIC
+        dependencies:
+          - sorting-manual-input
+        description: 预设固定长度 12，点击立即应用并同步到手动输入框，清轨迹回步骤 0，不自动播放：“近乎有序”1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 11；“逆序”12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1；“大量重复”1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3。切页签不改变数据。
+        scenarios:
+          - id: preset-reverse-applies
+            name: 应用逆序预设
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，默认数据，已点击“下一步”3 次
+              - keyword: WHEN
+                content: 切到“预设”页签并点击“逆序”
+              - keyword: THEN
+                content: 文字镜像为“当前数组：12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1”
+              - keyword: AND
+                content: 控制条显示“步骤 0”且播放按钮文字为“播放”，手动输入框同步为该数组
+          - id: tab-switch-keeps-data
+            name: 切换页签不改变数据
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，当前数据“5, 2, 9, 1, 5, 6”
+              - keyword: WHEN
+                content: 依次点击“随机生成”页签与“预设”页签
+              - keyword: THEN
+                content: 文字镜像仍为“当前数组：5, 2, 9, 1, 5, 6”
+              - keyword: AND
+                content: 摘要仍为“共 6 个元素 · 最小值 1 · 最大值 9 · 未排序”
+              - keyword: AND
+                content: 点击“大量重复”后文字镜像变为“当前数组：1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3”
+      - id: sorting-algorithm-select
+        name: 算法与枢轴策略
+        type: ATOMIC
+        dependencies:
+          - sorting-default-and-mode
+        description: 单算法模式一个算法下拉，默认“冒泡排序”；对比模式算法 A、B 两个下拉，默认 A“冒泡排序”、B“快速排序”，A/B 不能相同。选项为冒泡排序、插入排序、选择排序、归并排序、快速排序。选中“快速排序”时显示“枢轴选择”下拉，选项“首元素”“末元素”“中间元素”，默认“末元素”；对比模式最多显示一个枢轴选择。枢轴策略只影响快速排序，切到其他算法时隐藏但保留上次选择。改算法或枢轴重新生成轨迹并回步骤 0。
+        scenarios:
+          - id: pivot-default-and-switch
+            name: 枢轴下拉的默认值与切换
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，单算法模式
+              - keyword: WHEN
+                content: 把算法改为“快速排序”
+              - keyword: THEN
+                content: 出现“枢轴选择”下拉框，默认选中“末元素”，选项含“首元素”“末元素”“中间元素”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 4”
+          - id: pivot-hidden-but-retained
+            name: 切走算法后隐藏并保留枢轴选择
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，算法“快速排序”，枢轴选择改为“首元素”
+              - keyword: WHEN
+                content: 把算法改为“冒泡排序”
+              - keyword: THEN
+                content: “枢轴选择”下拉框不再显示
+              - keyword: AND
+                content: 改回“快速排序”后“枢轴选择”显示“首元素”
+          - id: compare-mode-defaults
+            name: 对比模式默认算法与单一枢轴选择
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，单算法模式，默认数据
+              - keyword: WHEN
+                content: 点击“对比模式”
+              - keyword: THEN
+                content: 算法 A 为“冒泡排序”，算法 B 为“快速排序”
+              - keyword: AND
+                content: 页面只有一个“枢轴选择”下拉框，控制条显示“步骤 0 / 26”
+      - id: sorting-bubble
+        name: 冒泡排序轨迹
+        type: ATOMIC
+        dependencies:
+          - sorting-algorithm-select
+        description: 最多 n-1 轮；每轮从左到右比较相邻 a[j] 与 a[j+1]，j 从 0 到 n-2，不缩小范围，不特殊跳过已排好的尾部。每次比较产生一个比较步骤；左边大于右边再产生一个交换步骤，交换步骤的数组状态是交换后的状态，比较步骤不改变数组。某轮无任何交换时提前结束。内部变量显示轮次、比较位置、本轮是否交换。状态行 1 开始下标，如“比较第 1 个和第 2 个元素（3 与 1）”“交换第 1 个和第 2 个元素（3 与 1）”。
+        scenarios:
+          - id: bubble-reference-312
+            name: 输入 3,1,2 的参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 4，交换次数为 2，写入次数为 0
+              - keyword: AND
+                content: 控制条显示“步骤 6 / 6”，文字镜像为“当前数组：1, 2, 3”
+          - id: bubble-first-two-steps
+            name: 前两步的比较与交换
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”两次
+              - keyword: THEN
+                content: 第 1 步状态行为“第 1 / 6 步：比较第 1 个和第 2 个元素（3 与 1）”，文字镜像仍为“当前数组：3, 1, 2”
+              - keyword: AND
+                content: 第 2 步状态行为“第 2 / 6 步：交换第 1 个和第 2 个元素（3 与 1）”，文字镜像为“当前数组：1, 3, 2”
+          - id: bubble-early-stop
+            name: 已升序时第一轮后提前结束
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“1, 2, 3”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 2，交换次数为 0，写入次数为 0
+              - keyword: AND
+                content: 控制条显示“步骤 2 / 2”
+      - id: sorting-insertion
+        name: 插入排序轨迹
+        type: ATOMIC
+        dependencies:
+          - sorting-algorithm-select
+        description: 从 i=1 起把 a[i] 作为关键字 key 前向扫描：每次拿 a[j] 与 key 比较产生一个比较步骤；a[j] 大于 key 时把 a[j] 写到 a[j+1] 产生一个写入步骤并 j 减一；a[j] 小于等于 key 则停止。本轮至少移动过一次时把 key 写入最终空位再产生一个写入步骤；一次移动都没有则不产生额外写入。内部变量显示当前 i、关键字、比较位置；入位状态行如“把关键字 2 放入第 2 个位置”。
+        scenarios:
+          - id: insertion-reference-312
+            name: 输入 3,1,2 的参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“插入排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 3，交换次数为 0，写入次数为 4
+              - keyword: AND
+                content: 控制条显示“步骤 7 / 7”，文字镜像为“当前数组：1, 2, 3”
+              - keyword: AND
+                content: 状态行包含“把关键字 2 放入第 2 个位置”
+          - id: insertion-sorted-no-writes
+            name: 已升序时只比较不写入
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“1, 2, 3”并应用，算法“插入排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 2，写入次数为 0，控制条显示“步骤 2 / 2”
+      - id: sorting-selection
+        name: 选择排序轨迹
+        type: ATOMIC
+        dependencies:
+          - sorting-algorithm-select
+        description: i 从 0 到 n-2，维护当前最小位置 min；每次拿 a[j]（j 从 i+1 到 n-1）与 a[min] 比较产生一个比较步骤，a[j] 小于 a[min] 时更新 min（不单独成步）。扫描结束若 min 不等于 i，交换 a[i] 与 a[min] 产生一个交换步骤；min 等于 i 时不产生交换步骤；标记已排序不算步骤。内部变量显示当前 i、当前最小位置；状态行如“比较第 3 个元素与当前最小值（2 与 3）”。
+        scenarios:
+          - id: selection-reference-312
+            name: 输入 3,1,2 的参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“选择排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 3，交换次数为 2，写入次数为 0
+              - keyword: AND
+                content: 控制条显示“步骤 5 / 5”，文字镜像为“当前数组：1, 2, 3”
+          - id: selection-status-format
+            name: 选择排序状态行文案
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“选择排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”3 次
+              - keyword: THEN
+                content: 第 3 步状态行为“第 3 / 5 步：比较第 3 个元素与当前最小值（2 与 3）”
+              - keyword: AND
+                content: 状态行使用 1 开始下标，不出现 0 基下标
+          - id: selection-sorted-no-swap
+            name: 已升序时不产生交换
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“1, 2, 3”并应用，算法“选择排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 3，交换次数为 0，控制条显示“步骤 3 / 3”
+      - id: sorting-merge
+        name: 归并排序轨迹
+        type: ATOMIC
+        dependencies:
+          - sorting-algorithm-select
+        description: 自顶向下二分，mid = floor((lo + hi) / 2)，先左后右再合并。合并时比较左右两段当前元素产生一个比较步骤，相等优先取左边（稳定）；每写回一个元素产生一个写入步骤；一侧取完后剩余元素依次写回，每步都是写入且不再产生比较。辅助数组读入不计入，只统计写回主数组的写入。内部变量显示合并区间、左右指针、临时缓冲区；状态行如“合并区间 [2, 3]：比较 1 与 2”。
+        scenarios:
+          - id: merge-reference-312
+            name: 输入 3,1,2 的参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“归并排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 3，交换次数为 0，写入次数为 5
+              - keyword: AND
+                content: 控制条显示“步骤 8 / 8”，文字镜像为“当前数组：1, 2, 3”
+          - id: merge-status-and-vars
+            name: 归并状态行与内部变量
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“归并排序”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”2 次并查看状态行与检查器
+              - keyword: THEN
+                content: 状态行以“第 2 / 8 步：”开头并包含“合并区间”与“比较”
+              - keyword: AND
+                content: 检查器显示“合并区间”“左指针”“右指针”“临时缓冲区”四个标签
+      - id: sorting-quick
+        name: 快速排序轨迹与枢轴策略
+        type: ATOMIC
+        dependencies:
+          - sorting-algorithm-select
+        description: Lomuto 划分，目标升序。“末元素”枢轴为区间最后一个元素，不做预处理交换；“首元素”先把首元素与末元素交换（位置不同才产生交换步骤）再以末元素为枢轴；“中间元素”先取 mid = floor((lo+hi)/2)，先把中间元素与首元素交换（mid 不等于 lo 时产生交换步骤），再按首元素策略与末元素交换（位置不同才产生交换步骤），然后以末元素为枢轴；预处理交换的状态行如“将枢轴 3 移到区间末尾”。划分时 j 从 lo 到 hi-1，每次比较 a[j] <= pivot 产生一个比较步骤；成立时 i 加一，i 不等于 j 则交换 a[i] 与 a[j] 产生一个交换步骤；扫描结束 i+1 不等于 hi 时交换 a[i+1] 与 a[hi] 产生一个交换步骤，枢轴已在最终位置则不产生交换；递归左右区间，长度 0 或 1 不产生步骤。相等元素走小于等于分支，允许不稳定。内部变量显示枢轴值、枢轴原位置、扫描位置、分界位置、枢轴最终位置。
+        scenarios:
+          - id: quick-last-pivot-reference
+            name: 末元素枢轴参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“快速排序”，枢轴选择“末元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 2，交换次数为 2，写入次数为 0
+              - keyword: AND
+                content: 控制条显示“步骤 4 / 4”，文字镜像为“当前数组：1, 2, 3”
+          - id: quick-first-pivot-reference
+            name: 首元素枢轴参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“快速排序”，枢轴选择“首元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次
+              - keyword: THEN
+                content: 第 1 步状态行显示“将枢轴 3 移到区间末尾”，文字镜像为“当前数组：2, 1, 3”
+              - keyword: AND
+                content: 点击“跳到结尾”后比较次数为 3、交换次数为 2、控制条显示“步骤 5 / 5”
+          - id: quick-middle-pivot-reference
+            name: 中间元素枢轴参考指标
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“快速排序”，枢轴选择“中间元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 比较次数为 3，交换次数为 4，写入次数为 0
+              - keyword: AND
+                content: 控制条显示“步骤 7 / 7”，文字镜像为“当前数组：1, 2, 3”
+      - id: sorting-visualization
+        name: 排序可视化与展示
+        type: ATOMIC
+        dependencies:
+          - sorting-bubble
+        description: 舞台主视图是柱状图：正数向上、负数向下，有零基线；元素数不超过 20 时柱上显示数值，超过 20 隐藏数值但文字镜像始终完整；每根柱有可访问名称（如“第 3 个元素：-7”）。比较高亮两个位置、交换高亮两个位置、写入高亮一个位置、划分中的枢轴带角标；图例颜色加文字。文字镜像格式“当前数组：5, 2, 9, 1, 5, 6”，每步更新，对比模式每面板各一份。指标为比较、交换、写入、步骤。完成横幅显示“排序完成”并给出“结果已按升序排列”或“结果未按升序排列”。对比模式两面板上下排列，各有算法名、步骤、指标、当前操作摘要与文字镜像。
+        scenarios:
+          - id: bars-with-negatives
+            name: 含负数的柱状图与可访问名称
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, -2, 0, 5, -1, 4”并应用，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 查看舞台
+              - keyword: THEN
+                content: 第 1 根柱向上、第 2 根柱向下、第 3 根柱与零基线齐平
+              - keyword: AND
+                content: 每根柱上显示数值，第 2 根柱可访问名称为“第 2 个元素：-2”
+          - id: legend-has-text
+            name: 图例同时包含颜色与文字
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，默认数据
+              - keyword: WHEN
+                content: 查看舞台图例
+              - keyword: THEN
+                content: 图例包含文字“比较”“交换”“写入”“枢轴”
+              - keyword: AND
+                content: 每个图例项同时有色块与文字，不只显示色块
+          - id: mirror-and-metrics
+            name: 文字镜像与指标初值
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，默认数据，算法“冒泡排序”，步骤 0
+              - keyword: WHEN
+                content: 查看舞台与检查器
+              - keyword: THEN
+                content: 文字镜像为“当前数组：5, 2, 9, 1, 5, 6”，比较/交换/写入次数均为 0
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 26”
+          - id: int-vars-and-banner
+            name: 内部变量与完成横幅
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，算法“快速排序”，枢轴“末元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次并查看检查器
+              - keyword: THEN
+                content: 检查器显示“枢轴值”“枢轴原位置”“扫描位置”“分界位置”“枢轴最终位置”标签，“枢轴值”为 2
+              - keyword: AND
+                content: 点击“跳到结尾”后横幅显示“排序完成”与“结果已按升序排列”
+      - id: sorting-boundaries
+        name: 排序边界情况
+        type: ATOMIC
+        dependencies:
+          - sorting-visualization
+          - sorting-quick
+        description: 已升序数据：冒泡第一轮无交换后提前结束，插入只比较不写入，选择每次 min 等于 i 不交换，归并与快速仍正常完成。全部相等数据：快速排序必须终止，不无限递归或越界，结果保持原数组。负数、0、重复值：柱状图、文字镜像与结果都正确，结果始终非递减。50 个元素：柱上数值可隐藏但文字镜像完整。默认数据 5, 2, 9, 1, 5, 6 的最终数组为 1, 2, 5, 5, 6, 9，所有算法一致。
+        scenarios:
+          - id: all-equal-quick-terminates
+            name: 全部相等数据下快速排序终止
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“4, 4, 4, 4”并应用，算法“快速排序”，枢轴“末元素”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“排序完成”，文字镜像为“当前数组：4, 4, 4, 4”
+              - keyword: AND
+                content: 切换枢轴为“首元素”后再次跳到结尾，同样显示“排序完成”且数组不变
+          - id: default-data-all-algorithms
+            name: 默认数据五种算法结果一致
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，默认数据，单算法模式
+              - keyword: WHEN
+                content: 依次对冒泡排序、插入排序、选择排序、归并排序、快速排序点击“跳到结尾”
+              - keyword: THEN
+                content: 五种算法文字镜像最终都是“当前数组：1, 2, 5, 5, 6, 9”
+              - keyword: AND
+                content: 每种算法横幅都显示“结果已按升序排列”
+          - id: fifty-elements
+            name: 50 个元素时的展示
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，随机生成页签，数量 50、最小值 -99、最大值 99、种子 7，步骤 0
+              - keyword: WHEN
+                content: 点击“生成”并点击“跳到结尾”
+              - keyword: THEN
+                content: 柱状图不显示柱上数值
+              - keyword: AND
+                content: 文字镜像完整列出全部 50 个已排序数值，横幅显示“结果已按升序排列”
+  - id: pathfinding-lab
+    name: 网格寻路实验室
+    type: FOLDER
+    dependencies:
+      - app-shell
+      - execution-model
+    description: 固定 12 行 × 18 列四方向网格上的寻路演示：编辑墙与起终点、三个预设、四种算法口径与参考数值、可视化与边界。界面坐标用 1 开始的“第 r 行第 c 列”，每步代价为 1，墙不可通过，起点与终点不能重合。
+    children:
+      - id: grid-default
+        name: 默认入口与网格口径
+        type: ATOMIC
+        dependencies: []
+        description: 标题“网格寻路实验室”，说明一句话（示例“在一块网格上画墙、设起点和终点，观察不同搜索策略的访问顺序和路径质量。”）。网格固定 12 行 × 18 列；默认预设“三层迷宫”、起点第 1 行第 1 列、终点第 12 行第 18 列、算法“广度优先搜索（BFS）”、单算法模式、步骤 0。移动只允许上下左右，不允许对角线，每步代价 1。配置区摘要“12 × 18 · 墙 N 格”，并显示“起点：第 r 行第 c 列”“终点：第 r 行第 c 列”。网格容器 role="grid"，每格是可聚焦 button，可访问名称含坐标、类型与状态。
+        scenarios:
+          - id: default-first-entry
+            name: 首次进入的默认状态
+            steps:
+              - keyword: GIVEN
+                content: "首次打开应用，进入 #/pathfinding"
+              - keyword: WHEN
+                content: 查看配置区与网格
+              - keyword: THEN
+                content: 标题为“网格寻路实验室”，摘要显示“12 × 18 · 墙 51 格”
+              - keyword: AND
+                content: 显示“起点：第 1 行第 1 列”与“终点：第 12 行第 18 列”
+              - keyword: AND
+                content: 算法下拉为“广度优先搜索（BFS）”，模式为“单算法”，控制条显示“步骤 0 / 165”
+          - id: grid-accessibility-names
+            name: 格子可访问名称
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，步骤 0
+              - keyword: WHEN
+                content: 查看网格容器与格子的可访问属性
+              - keyword: THEN
+                content: 网格容器带 role="grid"，每格是可聚焦 button
+              - keyword: AND
+                content: 第 1 行第 1 列名为“第 1 行第 1 列，起点”，第 12 行第 18 列名为“第 12 行第 18 列，终点”
+              - keyword: AND
+                content: 第 3 行第 5 列名为“第 3 行第 5 列，墙”
+      - id: grid-editing
+        name: 网格编辑
+        type: ATOMIC
+        dependencies:
+          - grid-default
+        description: 工具按钮“画墙”“擦除”“设起点”“设终点”，默认“画墙”，当前工具有按下态。画墙把空地变墙，擦除把墙变空地；起点终点不能被画墙或擦除，点到时不改变任何格子，工具区下方常驻提示“起点和终点不能设为墙壁”。设起点/设终点点空地直接设置，点墙先清除该墙再设置，点到另一端点时显示行内错误“起点和终点不能重合”且不改变任何格子。拖动绘制时按下到抬起经过的格子都应用当前工具，跳过起点与终点。修改任何格子后立即清空当前轨迹并回步骤 0，历史记录不删除。“清空墙壁”删除全部墙、保留起点终点并清空轨迹。
+        scenarios:
+          - id: default-tool-and-hint
+            name: 默认工具与常驻提示
+            steps:
+              - keyword: GIVEN
+                content: 打开网格寻路实验室
+              - keyword: WHEN
+                content: 查看工具区
+              - keyword: THEN
+                content: “画墙”按钮为按下态，其余工具按钮不是按下态
+              - keyword: AND
+                content: 工具区下方常驻提示“起点和终点不能设为墙壁”
+          - id: draw-and-erase-wall
+            name: 画墙与擦除更新摘要
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，应用预设“空白网格”，步骤 0
+              - keyword: WHEN
+                content: 用“画墙”点击第 2 行第 2 列，切换“擦除”再点击同一格
+              - keyword: THEN
+                content: 画墙后摘要显示“12 × 18 · 墙 1 格”，该格名称为“第 2 行第 2 列，墙”
+              - keyword: AND
+                content: 擦除后摘要显示“12 × 18 · 墙 0 格”，该格名称不再包含“墙”
+          - id: endpoints-not-editable-by-wall-tool
+            name: 画墙与擦除不改变端点
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，起点第 1 行第 1 列、终点第 12 行第 18 列
+              - keyword: WHEN
+                content: 用“画墙”点击起点格，再用“画墙”点击终点格
+              - keyword: THEN
+                content: 摘要仍显示“12 × 18 · 墙 0 格”
+              - keyword: AND
+                content: 起点与终点名称不变，网格上不显示错误提示
+          - id: set-start-clears-wall
+            name: 在墙上设起点时先清除墙
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，空白网格，第 2 行第 2 列已画成墙，摘要“12 × 18 · 墙 1 格”
+              - keyword: WHEN
+                content: 切换“设起点”并点击第 2 行第 2 列
+              - keyword: THEN
+                content: 摘要显示“12 × 18 · 墙 0 格”，并显示“起点：第 2 行第 2 列”
+              - keyword: AND
+                content: 控制条回到“步骤 0”
+          - id: overlap-endpoint-error
+            name: 起终点重合时不改变网格
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，起点第 1 行第 1 列、终点第 12 行第 18 列
+              - keyword: WHEN
+                content: 切换“设终点”并点击起点格第 1 行第 1 列
+              - keyword: THEN
+                content: 网格区域显示行内错误“起点和终点不能重合”
+              - keyword: AND
+                content: 仍显示“起点：第 1 行第 1 列”与“终点：第 12 行第 18 列”，摘要仍为“12 × 18 · 墙 0 格”
+          - id: drag-draws-multiple-cells
+            name: 拖动绘制连续格子
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，工具为“画墙”
+              - keyword: WHEN
+                content: 在第 2 行第 2 列按下并拖动经过第 2 行第 3 列、第 2 行第 4 列后抬起
+              - keyword: THEN
+                content: 摘要显示“12 × 18 · 墙 3 格”
+              - keyword: AND
+                content: 拖动过程中页面不出现明显卡顿，页面不横向滚动
+          - id: clear-walls-keeps-endpoints
+            name: 清空墙壁保留起终点
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，已点击“跳到结尾”
+              - keyword: WHEN
+                content: 点击“清空墙壁”
+              - keyword: THEN
+                content: 摘要显示“12 × 18 · 墙 0 格”，仍显示“起点：第 1 行第 1 列”与“终点：第 12 行第 18 列”
+              - keyword: AND
+                content: 控制条回到“步骤 0”，网格上不保留上次路径高亮
+      - id: pathfinding-presets
+        name: 寻路预设
+        type: ATOMIC
+        dependencies:
+          - grid-editing
+        description: 三个预设按钮，点击立即应用、清空轨迹、回步骤 0，并把起点/终点恢复为第 1 行第 1 列与第 12 行第 18 列：“三层迷宫”（默认，第 3、6、9 行整行为墙但缺口列分别为第 4、14、7 列，墙 51 格）、“空白网格”（无墙，墙 0 格）、“无解迷宫”（第 9 列整列为墙，其余为空，墙 12 格，起点在左、终点在右必然无解）。
+        scenarios:
+          - id: three-layer-preset
+            name: 应用三层迷宫
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，已把起点改为第 2 行第 2 列，网格为空白网格
+              - keyword: WHEN
+                content: 点击预设“三层迷宫”
+              - keyword: THEN
+                content: 摘要显示“12 × 18 · 墙 51 格”，并显示“起点：第 1 行第 1 列”与“终点：第 12 行第 18 列”
+              - keyword: AND
+                content: 第 3 行第 4 列不是墙，第 3 行第 5 列是墙
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 165”
+          - id: empty-and-no-solution-presets
+            name: 空白网格与无解迷宫
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”
+              - keyword: WHEN
+                content: 点击预设“空白网格”，然后点击预设“无解迷宫”
+              - keyword: THEN
+                content: 点“空白网格”后摘要显示“12 × 18 · 墙 0 格”
+              - keyword: AND
+                content: 点“无解迷宫”后摘要显示“12 × 18 · 墙 12 格”
+              - keyword: AND
+                content: 第 1 行第 9 列名称为“第 1 行第 9 列，墙”，第 1 行第 8 列不是墙
+      - id: pathfinding-algorithm-select
+        name: 寻路算法选择
+        type: ATOMIC
+        dependencies:
+          - grid-default
+        description: 单算法模式一个算法下拉，默认“广度优先搜索（BFS）”；对比模式算法 A、B 两个下拉，默认 A“广度优先搜索（BFS）”、B“A* 算法”，A/B 不能相同。可选 BFS、DFS、Dijkstra、A*（下拉文案示例：“深度优先搜索（DFS）”“Dijkstra 算法”）。没有额外算法参数，速度用全局设置；对比模式两算法共用同一网格、同一起点与终点。
+        scenarios:
+          - id: algorithm-options
+            name: 算法下拉选项
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，单算法模式，默认三层迷宫
+              - keyword: WHEN
+                content: 展开算法下拉框
+              - keyword: THEN
+                content: 当前选中项为“广度优先搜索（BFS）”
+              - keyword: AND
+                content: 选项包含“深度优先搜索（DFS）”“Dijkstra 算法”“A* 算法”
+          - id: compare-mode-shared-grid
+            name: 对比模式共用同一网格
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，并用“画墙”在第 5 行第 5 列加一格，摘要“12 × 18 · 墙 52 格”
+              - keyword: WHEN
+                content: 点击“对比模式”
+              - keyword: THEN
+                content: 算法 A 为“广度优先搜索（BFS）”，算法 B 为“A* 算法”
+              - keyword: AND
+                content: 两个面板摘要都显示“12 × 18 · 墙 52 格”，都显示“起点：第 1 行第 1 列”与“终点：第 12 行第 18 列”
+      - id: pathfinding-trajectory
+        name: 寻路轨迹口径与参考结果
+        type: ATOMIC
+        dependencies:
+          - pathfinding-algorithm-select
+          - pathfinding-presets
+        description: 邻居顺序固定上、右、下、左，越界与墙跳过；一步＝从待访问集合取出一个节点并确认访问，邻居发现与入队在同一步完成；访问节点数含起点与终点；路径长度是边数，经过格子＝路径长度+1；找到终点即停止并回溯父指针；找不到路径时待访问集合耗尽即完成，状态“未找到路径”，不显示路径高亮，路径长度与经过格子显示“—”。BFS 用队列，起点入队时标记已发现、出队时标记已访问并计数，出队即终点则完成，按上右下左把未发现非墙邻居入队并记父节点。DFS 用栈，起点入栈时标记已发现、出栈时标记已访问并计数，按左、下、右、上压入以保证弹出顺序为上右下左，已发现节点不重复入栈。Dijkstra 用优先队列按距离升序、距离相同按入队顺序，弹出已确定节点跳过且不计数，边权 1，只有更短距离才更新父节点与入队。A* 优先级 f=g+h，h 为曼哈顿距离，f 小者优先、f 相同 h 小者优先、仍相同按入队顺序，弹出已确定节点跳过，只有更小 g 才更新，内部状态显示 g、h、f。参考：三层迷宫 BFS 访问 165 路径 42；DFS 访问 103 路径 44；Dijkstra 访问 165 路径 42；A* 访问 112 路径 42；空白网格 BFS 访问 216 路径 28；DFS 访问 29 路径 28；Dijkstra 访问 216 路径 28；A* 访问 29 路径 28；无解迷宫四种算法均访问 96 且未找到路径。
+        scenarios:
+          - id: three-layer-bfs
+            name: 三层迷宫 BFS 参考数值
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，起点第 1 行第 1 列、终点第 12 行第 18 列，算法“广度优先搜索（BFS）”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“已找到路径”与“路径长度 42 步 · 经过 43 个格子”
+              - keyword: AND
+                content: 指标“访问节点”为 165，控制条显示“步骤 165 / 165”
+          - id: three-layer-dfs
+            name: 三层迷宫 DFS 参考数值
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，起点第 1 行第 1 列、终点第 12 行第 18 列
+              - keyword: WHEN
+                content: 算法选“深度优先搜索（DFS）”并点击“跳到结尾”
+              - keyword: THEN
+                content: 指标“访问节点”为 103
+              - keyword: AND
+                content: 横幅显示“已找到路径”与“路径长度 44 步 · 经过 45 个格子”
+          - id: three-layer-dijkstra-and-astar
+            name: 三层迷宫 Dijkstra 与 A* 参考数值
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，起点第 1 行第 1 列、终点第 12 行第 18 列
+              - keyword: WHEN
+                content: 算法选“Dijkstra 算法”并点击“跳到结尾”
+              - keyword: THEN
+                content: 指标“访问节点”为 165，路径长度 42 步
+              - keyword: AND
+                content: 算法改为“A* 算法”并跳到结尾后，访问节点为 112、路径长度 42 步
+          - id: blank-grid-bfs
+            name: 空白网格 BFS 参考数值
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，起点第 1 行第 1 列、终点第 12 行第 18 列，算法“广度优先搜索（BFS）”
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 指标“访问节点”为 216，路径长度 28 步
+              - keyword: AND
+                content: 横幅显示“已找到路径”
+          - id: no-solution-bfs
+            name: 无解迷宫未找到路径
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，寻路实验室，预设“无解迷宫”，起点第 1 行第 1 列、终点第 12 行第 18 列，算法“广度优先搜索（BFS）”，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“未找到路径”，指标“访问节点”为 96
+              - keyword: AND
+                content: “路径长度（步）”与“经过格子”都显示“—”，网格上不出现路径高亮
+          - id: step-status-line
+            name: 寻路状态行与追加信息
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，算法“广度优先搜索（BFS）”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次
+              - keyword: THEN
+                content: 状态行显示“第 1 / 165 步：访问 第 1 行第 1 列”，指标“访问节点”为 1
+              - keyword: AND
+                content: 把算法改为“A* 算法”并点“下一步”一次后，状态行在“访问 第 1 行第 1 列”后包含 g、h、f 三个数值
+      - id: pathfinding-display
+        name: 寻路可视化与展示
+        type: ATOMIC
+        dependencies:
+          - pathfinding-trajectory
+        description: 指标为访问节点、待访问节点、路径长度（步）、经过格子；步骤 0 为访问 0、待访问 1（起点）、路径“—”、经过“—”；待访问只数唯一未确定节点，过期或重复条目不计。图例含“起点”“终点”“墙”“待访问”“已访问”“当前”“路径”，颜色加文字。找到路径后横幅显示“已找到路径”与“路径长度 L 步 · 经过 L+1 个格子”，路径坐标用可展开区域显示“第 1 行第 1 列 → …”。内部变量：BFS 显示当前节点、当前距离、队列（前 12 项，超出显示“…（共 N 项）”）；DFS 显示当前节点、深度、栈（栈顶在左，前 12 项）；Dijkstra 显示当前节点、距离、优先队列（前 8 项）；A* 显示当前节点、g、h、f、优先队列（前 8 项）。对比模式两个网格上下排列，各显示算法名、步骤 x / N、访问与路径指标、当前节点摘要。
+        scenarios:
+          - id: initial-metrics
+            name: 步骤 0 的指标初值
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，步骤 0
+              - keyword: WHEN
+                content: 查看检查器
+              - keyword: THEN
+                content: 指标“访问节点”为 0，“待访问节点”为 1
+              - keyword: AND
+                content: “路径长度（步）”与“经过格子”都显示“—”
+          - id: legend-and-path-coordinates
+            name: 图例与路径坐标展开
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，算法“广度优先搜索（BFS）”，已点击“跳到结尾”
+              - keyword: WHEN
+                content: 查看图例并展开路径坐标区域
+              - keyword: THEN
+                content: 图例包含文字“起点”“终点”“墙”“待访问”“已访问”“当前”“路径”
+              - keyword: AND
+                content: 路径坐标第一项为“第 1 行第 1 列”，最后一项为“第 12 行第 18 列”
+          - id: internal-variable-panels
+            name: 各算法内部变量面板
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“三层迷宫”，算法“A* 算法”，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次并查看检查器
+              - keyword: THEN
+                content: 检查器显示“当前节点”“g”“h”“f”“优先队列”标签
+              - keyword: AND
+                content: 算法改为“深度优先搜索（DFS）”并返回步骤 1 后，检查器显示“当前节点”“深度”“栈”标签
+      - id: pathfinding-boundaries
+        name: 寻路边界情况
+        type: ATOMIC
+        dependencies:
+          - pathfinding-display
+        description: 起点与终点相邻时路径长度为 1、经过 2 个格子；起点四周都是墙时第一步后待访问集合为空，完成为“未找到路径”、访问节点 1。修改墙、起点或终点后当前轨迹立即失效、不保留旧路径高亮；起终点重合时显示“起点和终点不能重合”且不改变网格。移动端卡片内部滚动时页面不跟着横向滚动，吸底控制条不遮住路径坐标。
+        scenarios:
+          - id: adjacent-endpoints
+            name: 起终点相邻
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，用“设起点”把起点设为第 5 行第 5 列，用“设终点”把终点设为第 5 行第 6 列，算法“广度优先搜索（BFS）”
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“路径长度 1 步 · 经过 2 个格子”
+              - keyword: AND
+                content: 指标“访问节点”为 2
+          - id: start-surrounded-by-walls
+            name: 起点被墙围住
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，起点第 1 行第 1 列，用“画墙”把第 1 行第 2 列与第 2 行第 1 列变成墙，摘要“12 × 18 · 墙 2 格”，算法“广度优先搜索（BFS）”
+              - keyword: WHEN
+                content: 点击“下一步”一次
+              - keyword: THEN
+                content: 指标“待访问节点”为 0，横幅显示“未找到路径”
+              - keyword: AND
+                content: 指标“访问节点”为 1
+          - id: edit-clears-path-highlight
+            name: 修改网格后旧路径失效
+            steps:
+              - keyword: GIVEN
+                content: 寻路实验室，预设“空白网格”，BFS 已点击“跳到结尾”并显示路径高亮与横幅“已找到路径”
+              - keyword: WHEN
+                content: 用“画墙”在第 6 行第 6 列加一格墙
+              - keyword: THEN
+                content: 网格上不再显示路径高亮，横幅消失，控制条回到“步骤 0”
+              - keyword: AND
+                content: 摘要显示“12 × 18 · 墙 1 格”
+  - id: dp-lab
+    name: 动态规划实验室
+    type: FOLDER
+    dependencies:
+      - app-shell
+      - execution-model
+    description: 两个字符串的最长公共子序列（LCS）填表与回溯：输入校验、行优先填表、固定向上优先回溯、展示与参考结果。只有单算法模式，不显示“对比模式”，没有胜者或“全部算法总览”。
+    children:
+      - id: dp-default
+        name: 默认入口
+        type: ATOMIC
+        dependencies: []
+        description: 标题“动态规划实验室”，说明一句话（示例“输入两个字符串，逐步填出最长公共子序列的 dp 表，并查看回溯路径。”）。默认字符串 A=ABCBDAB、B=BDCABA，步骤 0；只有单算法模式，页面不出现“对比模式”；输入只允许大写字母 A–Z，小写自动转大写。
+        scenarios:
+          - id: default-first-entry
+            name: 首次进入的默认状态
+            steps:
+              - keyword: GIVEN
+                content: "首次打开应用，进入 #/dp"
+              - keyword: WHEN
+                content: 查看配置区、表格与检查器
+              - keyword: THEN
+                content: 标题为“动态规划实验室”，输入框“字符串 A”为“ABCBDAB”、“字符串 B”为“BDCABA”
+              - keyword: AND
+                content: 页面上不出现“对比模式”切换与“计算全部算法”按钮
+              - keyword: AND
+                content: 指标“已填单元格”显示“0 / 42”，控制条显示“步骤 0 / 42”
+      - id: dp-input
+        name: 字符串输入与校验
+        type: ATOMIC
+        dependencies:
+          - dp-default
+        description: 两个输入框“字符串 A”“字符串 B”，初始为默认字符串，长度 1–20；点击“应用字符串”或任一输入框内 Enter 应用，“填入示例”恢复默认并立即应用。成功后清空表格、回步骤 0、重新生成轨迹并同步大写形式；失败时表格与指标不变，错误显示在对应输入框下方且旧表格仍可播放、单步。错误文案：空“字符串不能为空”；超长“字符串长度不能超过 20”；非字母“只能输入字母 A-Z”。自动大写不算错误；两个字符串可相同、可含重复字符、长度可为 1。
+        scenarios:
+          - id: lowercase-uppercased
+            name: 小写自动转大写后应用
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”输入“abc”、在“字符串 B”输入“ac”，点击“应用字符串”
+              - keyword: THEN
+                content: “字符串 A”显示“ABC”，“字符串 B”显示“AC”，输入框下方不显示错误
+              - keyword: AND
+                content: 指标“已填单元格”显示“0 / 6”，控制条显示“步骤 0 / 6”
+          - id: enter-key-applies
+            name: Enter 等同点击应用
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”输入“ABC”、“字符串 B”输入“XYZ”，在“字符串 B”内按 Enter
+              - keyword: THEN
+                content: 控制条显示“步骤 0 / 9”，指标“已填单元格”显示“0 / 9”
+          - id: error-empty
+            name: 空字符串报错且表格不变
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串已填满表格（步骤 42 / 42）
+              - keyword: WHEN
+                content: 清空“字符串 A”并点击“应用字符串”
+              - keyword: THEN
+                content: “字符串 A”输入框下方显示“字符串不能为空”
+              - keyword: AND
+                content: 表格仍保留填满的 42 格，控制条仍显示“步骤 42 / 42”且仍可点击“上一步”
+          - id: error-too-long
+            name: 超长字符串报错
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串
+              - keyword: WHEN
+                content: 在“字符串 A”输入 21 个大写字母“ABCDEFGHIJKLMNOPQRSTU”并点击“应用字符串”
+              - keyword: THEN
+                content: “字符串 A”输入框下方显示“字符串长度不能超过 20”
+              - keyword: AND
+                content: 表格未清空，指标“已填单元格”仍显示原来的值
+          - id: error-non-letter
+            name: 非字母字符报错
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串
+              - keyword: WHEN
+                content: 在“字符串 A”输入“AB1”并点击“应用字符串”
+              - keyword: THEN
+                content: “字符串 A”输入框下方显示“只能输入字母 A-Z”
+              - keyword: AND
+                content: 表格未重新生成，控制条仍显示“步骤 0 / 42”
+          - id: fill-example
+            name: 填入示例恢复默认
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，已应用 A=ABC、B=AC，并点击“跳到结尾”
+              - keyword: WHEN
+                content: 点击“填入示例”
+              - keyword: THEN
+                content: “字符串 A”显示“ABCBDAB”，“字符串 B”显示“BDCABA”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 42”，指标“已填单元格”为“0 / 42”
+      - id: dp-filling
+        name: LCS 填表与步骤
+        type: ATOMIC
+        dependencies:
+          - dp-input
+        description: 设 A 长 m、B 长 n，dp 表为 (m+1) × (n+1)；第 0 行与第 0 列预填 0、不占步骤；内部单元格 m×n 个，填写顺序固定行优先（i 从 1 到 m，j 从 1 到 n），每个内部单元格填一次产生一个步骤。A[i-1] 等于 B[j-1] 时 dp[i][j] = dp[i-1][j-1] + 1，否则取 dp[i-1][j] 与 dp[i][j-1] 的较大值。步骤 k 对应第 k 个内部单元格；步骤 0 内部单元格全为空并显示“·”；步骤数 N = m×n，完成时全部内部单元格都有数字。填表过程中不显示最终 LCS，填满后才计算并显示；改字符串后从步骤 0 重来。状态行如“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 1 的较大值 1”，坐标 1 开始并说明字符关系与取值依据。
+        scenarios:
+          - id: table-shape-and-empty-cells
+            name: 表格结构与未填状态
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串 A=ABCBDAB、B=BDCABA，步骤 0
+              - keyword: WHEN
+                content: 查看表格
+              - keyword: THEN
+                content: 表格为 8 行 × 7 列，内部单元格全部显示“·”，第 0 行与第 0 列显示 0
+              - keyword: AND
+                content: 指标“LCS”显示“—”
+          - id: first-step-fills-cell
+            name: 第一步填写第一个内部单元格
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次
+              - keyword: THEN
+                content: 第 1 行第 1 列内部单元格可访问名称为“第 1 行第 1 列，值 0”
+              - keyword: AND
+                content: 指标“已填单元格”显示“1 / 42”，指标“LCS”仍显示“—”
+          - id: step-12-status-line
+            name: 第 12 步的状态行说明
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”12 次
+              - keyword: THEN
+                content: 状态行显示“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 1 的较大值 1”
+              - keyword: AND
+                content: 状态行坐标从 1 开始，指标“已填单元格”显示“12 / 42”
+          - id: no-lcs-before-full
+            name: 填满前不显示 LCS
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 把进度滑杆拖到第 41 步
+              - keyword: THEN
+                content: 指标“LCS”与“LCS 长度”都显示“—”，表格中仍有一个内部单元格显示“·”
+              - keyword: AND
+                content: 指标“已填单元格”显示“41 / 42”
+      - id: dp-backtrace
+        name: 回溯与结果
+        type: ATOMIC
+        dependencies:
+          - dp-filling
+        description: 表格填满后从 (m, n) 回溯：A[i-1] 等于 B[j-1] 且 dp[i][j] 等于 dp[i-1][j-1]+1 时取该字符并让 i、j 各减一；否则 dp[i-1][j] 大于等于 dp[i][j-1] 时向上移动，否则向左移动；直到 i 或 j 为 0。向上优先的平局规则固定，默认字符串下得到 BCBA。回溯路径在表格中用描边或底色标出，匹配单元格加对勾或圆点等非纯颜色标记。完成横幅显示“LCS 计算完成”与“LCS：<字符串>（长度 <n>）”，默认字符串下为“LCS：BCBA（长度 4）”。存在多个等长 LCS 时只展示按上述规则得到的一个。把进度滑回中间时路径高亮与 LCS 隐藏，只显示当前已填部分。
+        scenarios:
+          - id: default-result-bcba
+            name: 默认字符串得到 BCBA
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“LCS 计算完成”与“LCS：BCBA（长度 4）”
+              - keyword: AND
+                content: 指标“已填单元格”显示“42 / 42”，“LCS 长度”为 4，“LCS”为“BCBA”
+              - keyword: AND
+                content: 回溯路径单元格带描边或底色，并有对勾或圆点等非纯颜色标记
+          - id: tie-up-priority
+            name: 平局时向上优先
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”输入“AB”、“字符串 B”输入“BA”并应用，然后点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“LCS：A（长度 1）”
+              - keyword: AND
+                content: 不显示“B”作为结果
+          - id: no-common-characters
+            name: 无公共字符
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”输入“ABC”、“字符串 B”输入“XYZ”并应用，然后点击“跳到结尾”
+              - keyword: THEN
+                content: 指标“已填单元格”显示“9 / 9”，“LCS 长度”为 0
+              - keyword: AND
+                content: 指标“LCS”显示“—”，横幅显示“LCS 计算完成”
+          - id: same-strings
+            name: 两个字符串相同
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”与“字符串 B”都输入“ABC”并应用，然后点击“跳到结尾”
+              - keyword: THEN
+                content: 横幅显示“LCS：ABC（长度 3）”，指标“已填单元格”显示“9 / 9”
+          - id: slider-back-hides-result
+            name: 滑回中间时隐藏路径与 LCS
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，已点击“跳到结尾”并显示“LCS：BCBA（长度 4）”
+              - keyword: WHEN
+                content: 把进度滑杆拖到第 12 步
+              - keyword: THEN
+                content: 指标“LCS”与“LCS 长度”都显示“—”，表格上不再显示回溯路径描边
+              - keyword: AND
+                content: 状态行显示“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 1 的较大值 1”
+      - id: dp-display
+        name: DP 表格展示与边界
+        type: ATOMIC
+        dependencies:
+          - dp-filling
+        description: 行列头：左上角“∅”；列表头是 B 的字符与 1 开始序号（如“1 B”），行表头是 A 的字符与序号（如“1 A”）；第 0 行与第 0 列显示 0，内部未填显示“·”、已填显示整数。当前单元格高亮，回溯路径单元格额外描边；表头在容器内滚动时 sticky，窄屏表格在卡片内部横向滚动。内部变量显示当前单元格、A 字符、B 字符、是否相等、左上值、上方值、左侧值、当前值。20×20 时 400 个内部单元格，表格可横向滚动，轨迹与单步不能明显卡顿；1×1 时 1 个单元格、1 步完成。
+        scenarios:
+          - id: headers
+            name: 行列头与序号
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 查看表格行列头
+              - keyword: THEN
+                content: 左上角单元格文字为“∅”，列表头第一项为“1 B”，行表头第一项为“1 A”
+              - keyword: AND
+                content: 第 0 行与第 0 列可见的预填值均为 0
+          - id: internal-variables
+            name: 填表内部变量
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 点击“下一步”一次并查看检查器
+              - keyword: THEN
+                content: 检查器显示“当前单元格”“A 字符”“B 字符”“是否相等”“左上值”“上方值”“左侧值”“当前值”八个标签
+              - keyword: AND
+                content: 八个标签都有数值或“—”，不出现空白或 undefined
+          - id: one-by-one
+            name: 1×1 边界
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”与“字符串 B”都输入“A”并应用，然后点击“跳到结尾”
+              - keyword: THEN
+                content: 控制条显示“步骤 1 / 1”，横幅显示“LCS：A（长度 1）”
+              - keyword: AND
+                content: 把“字符串 B”改为“B”并跳到结尾后“LCS”显示“—”，指标“已填单元格”为“1 / 1”
+          - id: twenty-by-twenty
+            name: 20×20 表格滚动与性能
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，步骤 0
+              - keyword: WHEN
+                content: 在“字符串 A”与“字符串 B”各输入 20 个大写字母“ABCDEFGHIJKLMNOPQRST”并点击“应用字符串”
+              - keyword: THEN
+                content: 控制条显示“步骤 0 / 400”
+              - keyword: AND
+                content: 表格可在卡片内部横向滚动，页面本身不横向滚动，表头在容器内滚动时保持可见
+  - id: structures-lab
+    name: 数据结构实验室
+    type: FOLDER
+    dependencies:
+      - app-shell
+      - execution-model
+    description: 直接操作型实验室，演示二叉堆（最小堆）、二叉搜索树、并查集。用户直接发起插入、删除、查找、合并，操作立即执行并更新可视化，不使用轨迹、播放/单步、进度条、完成横幅、对比模式与全部算法总览。页内提供三种结构各自独立的操作日志（最多 20 条成功操作）、撤销与重置；日志只属于当前页面，不写入运行记录。三种结构用页签切换，各自保留独立结构与日志。
+    children:
+      - id: structures-shell
+        name: 数据结构实验室入口与结构切换
+        type: ATOMIC
+        dependencies: []
+        description: "hash 为 #/structures 时显示数据结构实验室，标题“数据结构实验室”，说明一句话（示例“直接插入、删除、查找和合并，观察结构如何变化。”）。页签依次“二叉堆”“二叉搜索树”“并查集”，默认“二叉堆”，当前页签刷新后保持。页面是直接操作型：不出现播放、暂停、上一步、下一步、跳到结尾、进度滑杆、“步骤 k / N”与完成横幅，也不出现“对比模式”与“计算全部算法”。页面骨架为配置区（操作输入与按钮）、舞台（结构图）、检查器（结构指标）与操作日志区；document.title 为“数据结构实验室 · 算法实验室”。页面不使用速度设置，顶栏不显示速度滑块。切页签不改变各结构已有数据与日志。"
+        scenarios:
+          - id: default-entry
+            name: 首次进入的默认状态
+            steps:
+              - keyword: GIVEN
+                content: "首次打开应用，进入 #/structures"
+              - keyword: WHEN
+                content: 查看顶栏、页签、舞台与页面控件
+              - keyword: THEN
+                content: 文档标题为“数据结构实验室 · 算法实验室”，导航项“数据结构实验室”带 aria-current="page"
+              - keyword: AND
+                content: “二叉堆”页签为选中态
+              - keyword: AND
+                content: 舞台显示“堆为空”，指标“堆大小”为 0、“堆顶”显示“—”
+              - keyword: AND
+                content: 页面上不出现“播放”“暂停”“上一步”“下一步”“跳到结尾”、进度滑杆、“步骤 0 / N”与“对比模式”按钮
+              - keyword: AND
+                content: 顶栏不显示速度滑块
+          - id: tab-switch-keeps-data
+            name: 切换页签保留各结构状态与日志
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，在“二叉堆”页签依次插入 5、3
+              - keyword: WHEN
+                content: 切到“二叉搜索树”页签，再切回“二叉堆”页签
+              - keyword: THEN
+                content: 二叉堆数组仍为“3, 5”，指标“堆大小”为 2
+              - keyword: AND
+                content: 二叉搜索树页签舞台显示“树为空”，指标“节点数”为 0，操作日志为空
+              - keyword: AND
+                content: 切回二叉堆后操作日志仍为 2 条，最上一条为“已插入 3”
+      - id: heap-operations
+        name: 二叉堆操作
+        type: ATOMIC
+        dependencies:
+          - structures-shell
+        description: 最小堆，用数组表示并画成完全二叉树，界面数组下标从 1 开始，允许重复值。操作：“插入”（数值输入框输入值后点“插入”）、“删除堆顶”、“查找”（数组顺序线性扫描 O(n)，不是二叉搜索）。插入：把值写入数组末尾，反复与该值的父节点比较，小于父节点则交换，直到到根或不小于父节点；成功显示“已插入 <v>”。删除堆顶：记录原堆顶值，把末尾元素移到堆顶，反复与该节点的较小孩子比较，大于该孩子则交换，直到没有孩子或不大于任何孩子；成功显示“已删除堆顶 <v>”。查找按数组顺序从头逐个比较，找到第一个等于目标值的元素即停并高亮该节点，显示“找到值 <v>（位置 <i>，共 <c> 个）”，c 为堆中等于该值的元素总数；未找到显示“未找到值 <v>”。空堆时“删除堆顶”仍可点击，被拒绝并显示“堆为空，无法删除堆顶”，不改变结构、不写日志、不产生撤销记录。插入值必须是 -99 到 99 的整数，否则提示“值必须在 -99 到 99 之间”；节点数已达 50 时提示“节点数量已达上限 50”，不改变结构。堆顶在检查器常显，空堆显示“—”。
+        scenarios:
+          - id: heap-insert-sequence
+            name: 连续插入后的堆结构与提示
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉堆页签，空堆
+              - keyword: WHEN
+                content: 依次在输入框输入 5、3、8、1，每次点击“插入”
+              - keyword: THEN
+                content: 数组显示“1, 3, 8, 5”，指标“堆顶”为 1、“堆大小”为 4
+              - keyword: AND
+                content: 树形图上根节点为 1，左右孩子分别为 3 与 8
+              - keyword: AND
+                content: 操作结果区显示“已插入 1”
+          - id: heap-duplicate-search
+            name: 重复值的查找结果
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，已依次插入 5、3、5（数组“3, 5, 5”）
+              - keyword: WHEN
+                content: 在输入框输入 5 并点击“查找”
+              - keyword: THEN
+                content: 操作结果区显示“找到值 5（位置 2，共 2 个）”，舞台高亮数组第 2 个位置的节点
+              - keyword: AND
+                content: 把输入改为 99 并查找后显示“未找到值 99”
+          - id: heap-delete-root
+            name: 删除堆顶后重新下沉
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，已依次插入 5、3、8、1（数组“1, 3, 8, 5”）
+              - keyword: WHEN
+                content: 点击“删除堆顶”
+              - keyword: THEN
+                content: 数组显示“3, 5, 8”，指标“堆顶”为 3、“堆大小”为 3
+              - keyword: AND
+                content: 操作结果区显示“已删除堆顶 1”
+          - id: heap-empty-delete-action
+            name: 空堆时删除堆顶被拒绝
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，已插入 7 后点击“删除堆顶”使堆变空
+              - keyword: WHEN
+                content: 再次点击“删除堆顶”
+              - keyword: THEN
+                content: 操作结果区显示“堆为空，无法删除堆顶”
+              - keyword: AND
+                content: 舞台仍显示“堆为空”，指标“堆大小”为 0，操作日志条数不变
+          - id: heap-value-and-limit
+            name: 值域与节点上限校验
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，当前数组“1, 3, 8, 5”
+              - keyword: WHEN
+                content: 在输入框输入 100 并点击“插入”
+              - keyword: THEN
+                content: 输入框下方显示“值必须在 -99 到 99 之间”，数组仍为“1, 3, 8, 5”
+              - keyword: AND
+                content: 连续插入不同值使堆大小达到 50 后再插入一个新值，显示“节点数量已达上限 50”，指标“堆大小”仍为 50
+      - id: bst-operations
+        name: 二叉搜索树操作
+        type: ATOMIC
+        dependencies:
+          - structures-shell
+        description: 普通二叉搜索树（左小右大），不做旋转、AVL 或红黑树平衡；禁止重复值；值 -99 到 99，最多 50 个节点。插入：输入值后点“插入”，值已存在时行内提示“该值已存在”且结构不变。删除：输入值后点“删除”，成功显示“已删除 <v>”；被删除节点有两个孩子时用中序后继的值替换该节点再删除后继，显示“已删除 <v>（中序后继 <s>）”，后继最多只有右孩子，用右孩子替换它；值不存在时显示“未找到值 <v>”且结构不变。查找：输入值后点“查找”，找到时高亮从根到该节点的路径并显示“找到值 <v>（深度 <d>）”，未找到显示“未找到值 <v>”。非法值提示“值必须在 -99 到 99 之间”，节点已达上限提示“节点数量已达上限 50”。空树时舞台显示“树为空”，指标“节点数”为 0。
+        scenarios:
+          - id: bst-insert-structure
+            name: 连续插入后的树结构
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉搜索树页签，空树
+              - keyword: WHEN
+                content: 依次插入 5、3、8、1、4
+              - keyword: THEN
+                content: 舞台显示 5 为根节点，3 是 5 的左孩子，8 是 5 的右孩子
+              - keyword: AND
+                content: 1 与 4 分别是 3 的左孩子与右孩子，指标“节点数”为 5
+              - keyword: AND
+                content: 操作结果区显示“已插入 4”
+          - id: bst-duplicate-rejected
+            name: 重复值插入被拒绝
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，已插入 5、3
+              - keyword: WHEN
+                content: 在输入框输入 3 并点击“插入”
+              - keyword: THEN
+                content: 输入框下方显示行内提示“该值已存在”
+              - keyword: AND
+                content: 指标“节点数”仍为 2，舞台结构不变，操作日志条数不变
+          - id: bst-search-depth
+            name: 查找命中并高亮路径
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，已插入 5、3、8、1、4
+              - keyword: WHEN
+                content: 在输入框输入 4 并点击“查找”
+              - keyword: THEN
+                content: 操作结果区显示“找到值 4（深度 3）”，舞台高亮 5 → 3 → 4 的路径
+              - keyword: AND
+                content: 把输入改为 99 并查找后显示“未找到值 99”
+          - id: bst-delete-two-children
+            name: 删除有两个孩子的节点
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，已插入 5、3、8、1、4
+              - keyword: WHEN
+                content: 在输入框输入 3 并点击“删除”
+              - keyword: THEN
+                content: 操作结果区显示“已删除 3（中序后继 4）”
+              - keyword: AND
+                content: 原节点 3 的位置由 4 替代，且 4 的左孩子为 1
+              - keyword: AND
+                content: 指标“节点数”为 4
+          - id: bst-delete-leaf
+            name: 删除叶子节点
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，已插入 5、3、8、1、4
+              - keyword: WHEN
+                content: 在输入框输入 1 并点击“删除”
+              - keyword: THEN
+                content: 操作结果区显示“已删除 1”
+              - keyword: AND
+                content: 3 的左孩子为空，指标“节点数”为 4
+      - id: union-find-operations
+        name: 并查集操作
+        type: ATOMIC
+        dependencies:
+          - structures-shell
+        description: 元素固定 1 到 12（不受 -99 到 99 值域限制），初始为 12 个互相独立的集合，每个元素是自己的代表。操作：“合并”（两个元素输入框各输入一个元素后点“合并”）与“查找”（输入一个元素后点“查找”）。查找沿父指针向上直到根，返回代表元素并显示“元素 <a> 属于以 <root> 为根的集合（大小 <s>）”，并对路径做路径压缩。合并先分别找代表（合并内部不做路径压缩，保证已在同一集合时结构完全不变）：代表不同时按 size 合并，size 小的根挂到 size 大的根下，size 相同时较小根为父，集合数减一，显示“已合并元素 <a> 和 <b>，新集合大小 <s>”；代表相同时显示“两个元素已在同一集合”，集合数不变、不改变父指针、不写日志。元素不是 1 到 12 的整数时提示“元素必须在 1 到 12 之间”，不改变结构。检查器常显“集合数量”，并显示最近一次查找的代表元素。
+        scenarios:
+          - id: union-and-find
+            name: 按 size 合并后查找代表
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，并查集页签，初始 12 个独立集合
+              - keyword: WHEN
+                content: 依次合并 1 与 2、合并 3 与 4、合并 2 与 3
+              - keyword: THEN
+                content: 合并 2 与 3 后操作结果区显示“已合并元素 2 和 3，新集合大小 4”
+              - keyword: AND
+                content: 指标“集合数量”为 9
+              - keyword: AND
+                content: 查找 2 后显示“元素 2 属于以 1 为根的集合（大小 4）”，查找 4 后显示“元素 4 属于以 1 为根的集合（大小 4）”
+              - keyword: AND
+                content: 父指针表中 1、2、3、4 最终都指向 1
+          - id: union-same-set-keeps-structure
+            name: 合并已在同一集合时结构不变
+            steps:
+              - keyword: GIVEN
+                content: 并查集页签，初始 12 个独立集合，已合并 1 与 2
+              - keyword: WHEN
+                content: 再次合并 1 与 2
+              - keyword: THEN
+                content: 操作结果区显示“两个元素已在同一集合”
+              - keyword: AND
+                content: 指标“集合数量”仍为 11，父指针表内容与操作前完全相同
+          - id: union-invalid-element
+            name: 元素越界被拒绝
+            steps:
+              - keyword: GIVEN
+                content: 并查集页签，初始 12 个独立集合
+              - keyword: WHEN
+                content: 在第一个元素输入框输入 13 并点击“合并”
+              - keyword: THEN
+                content: 显示行内提示“元素必须在 1 到 12 之间”
+              - keyword: AND
+                content: 指标“集合数量”仍为 12，操作日志条数不变
+      - id: structures-visualization
+        name: 操作反馈、高亮与检查器
+        type: ATOMIC
+        dependencies:
+          - structures-shell
+        description: 二叉堆舞台同时显示数组（下标从 1 开始）与完全二叉树，数组与树中同一节点同步高亮；二叉搜索树舞台显示节点与边，左孩子在左、右孩子在右；并查集舞台显示父指针表与集合分组。操作立即执行并直接更新舞台，不需要播放或单步；被比较、被交换、被写入的节点或路径高亮约 300ms 后自动消失；操作结果显示在操作结果区，失败与校验信息显示在对应输入框下方。检查器常显结构指标：堆为“堆大小”“堆顶”，树为“节点数”，并查集为“集合数量”与最近查找的代表元素；无值显示“—”。二叉堆图例含“比较”“交换”“写入”文字项，图例颜色加文字，颜色不是唯一信息载体。
+        scenarios:
+          - id: immediate-execution-and-highlight
+            name: 操作立即生效且高亮自动消失
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉堆页签，数组为“1, 3, 8, 5”
+              - keyword: WHEN
+                content: 在输入框输入 8 并点击“查找”
+              - keyword: THEN
+                content: 无需任何播放或单步操作，操作结果区立即显示“找到值 8（位置 3，共 1 个）”，被找到的节点立即出现高亮
+              - keyword: AND
+                content: 约 1 秒后该高亮已消失，结构不变
+          - id: legend-and-inspector
+            name: 图例与检查器指标
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉堆页签，已插入 5、3、8
+              - keyword: WHEN
+                content: 查看图例与检查器
+              - keyword: THEN
+                content: 图例包含文字“比较”“交换”“写入”
+              - keyword: AND
+                content: 检查器显示“堆大小”为 3 与“堆顶”为 3
+              - keyword: AND
+                content: 切到“并查集”页签后检查器显示“集合数量”为 12
+          - id: empty-states
+            name: 空堆与空树的空状态
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉搜索树页签，空树
+              - keyword: WHEN
+                content: 查看舞台与检查器
+              - keyword: THEN
+                content: 舞台显示文字“树为空”，指标“节点数”为 0
+              - keyword: AND
+                content: 切到“二叉堆”页签后舞台显示“堆为空”，指标“堆顶”显示“—”
+      - id: structures-log-undo-reset
+        name: 页内操作日志、撤销与重置
+        type: ATOMIC
+        dependencies:
+          - structures-shell
+        description: 每种结构有独立的页内操作日志（最多 20 条，按时间倒序、最新在最上，每条显示序号与操作结果文案；序号按当前列表自上而下为 1、2、3…，最新一条为 1，新增、撤销或重置后重新编号），只记录成功的操作，失败输入与拒绝提示不写入。日志只属于当前页面与当前页签，不进入运行记录、不参与运行记录的筛选与清空。“撤销”把结构恢复到上一条成功操作前的快照，并从日志中移除该条记录；撤销栈为空时“撤销”为禁用状态。“重置”打开确认弹窗，标题“重置当前结构？”，正文“当前结构和操作日志将被清空，此操作不可恢复。”，按钮“确认重置”与“取消”；取消不做任何改变；确认后清空当前页签的结构、操作日志与撤销栈，其他页签不受影响。弹窗支持 Esc 与焦点循环，关闭后焦点回到触发按钮。
+        scenarios:
+          - id: log-limit-20
+            name: 操作日志最多 20 条
+            steps:
+              - keyword: GIVEN
+                content: 数据结构实验室，二叉堆页签，空堆
+              - keyword: WHEN
+                content: 依次插入 1 到 21 共 21 个不同值
+              - keyword: THEN
+                content: 操作日志显示 20 条，最上一条为“已插入 21”
+              - keyword: AND
+                content: 最早的一条“已插入 1”不再出现在日志中，指标“堆大小”为 21
+          - id: undo-restores-snapshot
+            name: 撤销恢复上一条操作前的快照
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，空堆，已依次插入 5、3（日志 2 条，最上一条为“已插入 3”）
+              - keyword: WHEN
+                content: 点击“撤销”
+              - keyword: THEN
+                content: 数组恢复为“5”，指标“堆大小”为 1，日志剩 1 条且最上一条为“已插入 5”
+              - keyword: AND
+                content: 再次点击“撤销”后舞台显示“堆为空”，“撤销”变为禁用状态
+          - id: reset-dialog
+            name: 重置弹窗与确认
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签有 3 个元素与 3 条日志；二叉搜索树页签有 2 个节点
+              - keyword: WHEN
+                content: 点击“重置”
+              - keyword: THEN
+                content: 弹窗标题为“重置当前结构？”，正文为“当前结构和操作日志将被清空，此操作不可恢复。”，按钮为“确认重置”与“取消”
+              - keyword: AND
+                content: 点击“取消”后二叉堆数组不变，日志仍为 3 条
+              - keyword: AND
+                content: 再次点击“重置”并点击“确认重置”后舞台显示“堆为空”、日志为空、“撤销”为禁用状态
+              - keyword: AND
+                content: 切到“二叉搜索树”页签时仍有 2 个节点
+          - id: log-is-page-local
+            name: 日志不进入运行记录
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，数据结构实验室，二叉堆页签已插入 5、3
+              - keyword: WHEN
+                content: 进入“运行记录”页面
+              - keyword: THEN
+                content: 页面显示“暂无运行记录”
+              - keyword: AND
+                content: 筛选项只有“全部”“排序”“寻路”“动态规划”，不出现“数据结构”
+              - keyword: AND
+                content: 返回数据结构实验室后操作日志仍为 2 条
+      - id: structures-boundaries
+        name: 数据结构边界情况
+        type: ATOMIC
+        dependencies:
+          - structures-visualization
+        description: 二叉堆：空堆时删除堆顶被拒绝；只有一个元素时删除堆顶后回到空堆；连续插入相同值不无限循环且保持堆序。二叉搜索树：删除根节点、只有一个节点的树、依次插入递增序列形成的退化链都要正常完成；后继只有右孩子时用右孩子替换；插入非法值与节点超限时提示且结构不变。并查集：合并同一个元素（如 1 与 1）按已在同一集合处理；输入越界元素时提示且结构不变；size 相同时较小根为父。
+        scenarios:
+          - id: heap-single-element
+            name: 只有一个元素的堆删除堆顶
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，空堆，已插入 7
+              - keyword: WHEN
+                content: 点击“删除堆顶”
+              - keyword: THEN
+                content: 操作结果区显示“已删除堆顶 7”
+              - keyword: AND
+                content: 舞台显示“堆为空”，指标“堆顶”显示“—”
+          - id: heap-equal-values
+            name: 连续插入相同值
+            steps:
+              - keyword: GIVEN
+                content: 二叉堆页签，空堆
+              - keyword: WHEN
+                content: 连续 5 次插入 4 并每次查看结果提示
+              - keyword: THEN
+                content: 数组显示“4, 4, 4, 4, 4”，指标“堆大小”为 5、堆顶为 4
+              - keyword: AND
+                content: 页面未卡死，操作日志为 5 条
+          - id: bst-degenerate-chain
+            name: 递增序列形成的退化链
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，空树
+              - keyword: WHEN
+                content: 依次插入 1、2、3、4、5
+              - keyword: THEN
+                content: 1 为根节点，2、3、4、5 依次是上一个节点的右孩子
+              - keyword: AND
+                content: 指标“节点数”为 5
+          - id: bst-delete-root
+            name: 删除根节点
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，已插入 5、3、8、1、4
+              - keyword: WHEN
+                content: 在输入框输入 5 并点击“删除”
+              - keyword: THEN
+                content: 操作结果区显示“已删除 5（中序后继 8）”
+              - keyword: AND
+                content: 8 为根节点，3 是 8 的左孩子且其左右孩子为 1 与 4
+              - keyword: AND
+                content: 指标“节点数”为 4
+          - id: bst-delete-missing-and-invalid
+            name: 删除不存在的值与非法值
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签，已插入 5、3、8
+              - keyword: WHEN
+                content: 在输入框输入 99 并点击“删除”
+              - keyword: THEN
+                content: 操作结果区显示“未找到值 99”，指标“节点数”仍为 3
+              - keyword: AND
+                content: 在输入框输入 1.5 并点击“插入”后显示“值必须在 -99 到 99 之间”
+              - keyword: AND
+                content: 指标“节点数”仍为 3，操作日志条数不变
+          - id: bst-limit-50
+            name: 节点数量上限
+            steps:
+              - keyword: GIVEN
+                content: 二叉搜索树页签已插入 50 个不同值的节点
+              - keyword: WHEN
+                content: 再插入一个新值
+              - keyword: THEN
+                content: 显示“节点数量已达上限 50”
+              - keyword: AND
+                content: 指标“节点数”仍为 50
+  - id: history
+    name: 运行记录
+    type: FOLDER
+    dependencies:
+      - execution-model
+    description: 自动记录的浏览、筛选、详情、载入与删除；记录持久化在本地，最多 50 条。数据结构实验室的操作只进页内日志，不进入运行记录。
+    children:
+      - id: record-content
+        name: 记录内容与持久化
+        type: ATOMIC
+        dependencies: []
+        description: 每条记录含：完成时间（本地时间 YYYY-MM-DD HH:mm:ss）、模块（排序/寻路/动态规划）、算法（单算法名，或对比模式的“A vs B”）、输入摘要（排序“N 个整数”并可在详情看完整数组；寻路“12 × 18 网格，N 格墙”并可恢复起点终点与墙布局；动态规划两个字符串）、结果摘要（排序“排序完成 · 比较 N 次”；寻路“找到路径 · N 步”或“未找到路径”；动态规划“LCS 字符串 · 长度 n”；对比“快速排序胜出 · 比较 2 次”“A* 算法胜出 · 路径 42 步”或“平局”）、完整指标、最终状态（排序数组、寻路路径坐标或未找到、动态规划 LCS）；对比记录保存两算法各自指标与胜者。数据持久化到 localStorage，刷新或重开仍在；按完成时间倒序，时间相同按写入顺序倒序；最多 50 条，超出删除最旧；清除站点数据后丢失是预期行为。
+        scenarios:
+          - id: persist-after-reload
+            name: 刷新后记录仍在
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室输入“3, 1, 2”并应用，算法“冒泡排序”，已点击“跳到结尾”
+              - keyword: WHEN
+                content: 刷新页面并进入“运行记录”
+              - keyword: THEN
+                content: 列表中有 1 条记录，模块显示“排序”，算法显示“冒泡排序”
+              - keyword: AND
+                content: 输入摘要显示“3 个整数”，结果摘要显示“排序完成 · 比较 4 次”
+              - keyword: AND
+                content: 完成时间为本地时间格式 YYYY-MM-DD HH:mm:ss
+          - id: compare-record-two-algorithms
+            name: 对比记录保存两个算法指标与胜者
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室对比模式，输入“3, 1, 2”，算法 A“冒泡排序”、算法 B“快速排序”，已点击“跳到结尾”
+              - keyword: WHEN
+                content: 进入“运行记录”并点击该记录的“查看”
+              - keyword: THEN
+                content: 算法列显示“冒泡排序 vs 快速排序”
+              - keyword: AND
+                content: 详情用两列分别显示两个算法的指标，并显示“快速排序胜出 · 比较 2 次”
+          - id: limit-fifty-records
+            name: 最多保留 50 条记录
+            steps:
+              - keyword: GIVEN
+                content: 已通过应用不同数据并跳到结尾生成 50 条运行记录，列表顶部为最新一条
+              - keyword: WHEN
+                content: 再改变数据并完成一次运行
+              - keyword: THEN
+                content: 运行记录列表仍为 50 条
+              - keyword: AND
+                content: 最早的那条记录不再出现在列表中
+          - id: dp-record-fields
+            name: 动态规划记录的摘要与详情
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，动态规划实验室，默认字符串，步骤 0
+              - keyword: WHEN
+                content: 点击“跳到结尾”，然后进入“运行记录”并点击该记录的“查看”
+              - keyword: THEN
+                content: 列表有 1 条记录，模块为“动态规划”，结果摘要为“BCBA · 长度 4”
+              - keyword: AND
+                content: 详情显示输入摘要包含“ABCBDAB”与“BDCABA”
+          - id: records-newest-first
+            name: 记录按完成时间倒序
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空，排序实验室输入“3, 1, 2”并应用，算法“冒泡排序”，已点击“跳到结尾”
+              - keyword: WHEN
+                content: 把手动输入框改为“1 2 3”并应用，再次点击“跳到结尾”，然后进入“运行记录”
+              - keyword: THEN
+                content: 页面顶部数量显示 2，列表有 2 条记录
+              - keyword: AND
+                content: 第一行结果摘要为“排序完成 · 比较 2 次”，第二行为“排序完成 · 比较 4 次”
+      - id: history-list
+        name: 记录列表与筛选
+        type: ATOMIC
+        dependencies:
+          - record-content
+        description: 标题“运行记录”，顶部显示数量或“最近 50 条”。筛选按钮“全部”“排序”“寻路”“动态规划”，默认“全部”，只影响显示；数据结构页内日志不进入这里。列表列为完成时间、模块、算法、输入摘要、结果摘要、操作；操作至少有“查看”与“删除”，可聚焦。空状态主文案“暂无运行记录”，说明“完成一次运行后，记录会自动出现在这里。”，并有“去实验室”按钮进入排序实验室。
+        scenarios:
+          - id: empty-state
+            name: 空状态与去实验室按钮
+            steps:
+              - keyword: GIVEN
+                content: 运行记录为空
+              - keyword: WHEN
+                content: 进入“运行记录”页面
+              - keyword: THEN
+                content: 显示主文案“暂无运行记录”与说明“完成一次运行后，记录会自动出现在这里。”
+              - keyword: AND
+                content: 显示“去实验室”按钮，点击后进入排序实验室
+          - id: filter-by-module
+            name: 按模块筛选
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条排序记录、1 条寻路记录、1 条动态规划记录
+              - keyword: WHEN
+                content: 点击筛选按钮“寻路”
+              - keyword: THEN
+                content: 列表只显示 1 条寻路记录
+              - keyword: AND
+                content: 点击“全部”后列表显示 3 条记录
+              - keyword: AND
+                content: 列头为“完成时间”“模块”“算法”“输入摘要”“结果摘要”“操作”
+      - id: history-detail-load
+        name: 详情、载入与删除
+        type: ATOMIC
+        dependencies:
+          - history-list
+        description: “查看”打开“运行详情”，显示时间、模块、算法、输入摘要、完整指标、最终状态；对比记录用两列显示两个算法与胜者/平局。按钮“载入实验室”“删除”“关闭”。“载入实验室”关闭弹窗并切到对应页面，恢复输入、算法、参数与模式，重新生成轨迹并停在步骤 0，不自动播放、不再次写记录（寻路恢复完整墙布局、起点与终点；排序恢复完整数组与枢轴策略；动态规划恢复两个字符串）。载入后显示非阻塞提示“已载入实验室”，几秒后消失，不用 alert。删除前弹“删除这条记录？”，确认后从列表移除并关闭详情；列表为空时显示空状态。
+        scenarios:
+          - id: detail-and-load-sorting
+            name: 查看排序详情并载入实验室
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条排序记录（输入“3, 1, 2”，算法“冒泡排序”）
+              - keyword: WHEN
+                content: 点击该记录的“查看”
+              - keyword: THEN
+                content: 弹出“运行详情”，显示模块“排序”、算法“冒泡排序”、输入摘要“3 个整数”与比较/交换/写入/步骤四项指标
+              - keyword: AND
+                content: 点击“载入实验室”后弹窗关闭并进入排序实验室，文字镜像为“当前数组：3, 1, 2”，算法为“冒泡排序”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 6”，未自动播放，页面显示提示“已载入实验室”
+              - keyword: AND
+                content: 运行记录列表仍为 1 条，没有写入新记录
+          - id: load-pathfinding-record
+            name: 载入寻路记录恢复网格
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条寻路记录（预设“无解迷宫”，BFS，未找到路径）
+              - keyword: WHEN
+                content: 点击“查看”，查看输入摘要与详情后点击“载入实验室”
+              - keyword: THEN
+                content: 详情显示输入摘要“12 × 18 网格，12 格墙”
+              - keyword: AND
+                content: 进入网格寻路实验室，摘要显示“12 × 18 · 墙 12 格”
+              - keyword: AND
+                content: 显示“起点：第 1 行第 1 列”与“终点：第 12 行第 18 列”
+              - keyword: AND
+                content: 控制条显示“步骤 0”，未自动播放
+          - id: delete-record
+            name: 删除记录并回到空状态
+            steps:
+              - keyword: GIVEN
+                content: 运行记录中有 1 条记录
+              - keyword: WHEN
+                content: 点击该记录的“删除”，在“删除这条记录？”弹窗中确认删除
+              - keyword: THEN
+                content: 该记录从列表移除
+              - keyword: AND
+                content: 页面显示主文案“暂无运行记录”与“去实验室”按钮
+              - keyword: AND
+                content: 刷新后仍为“暂无运行记录”
+  - id: help
+    name: 帮助页
+    type: FOLDER
+    dependencies:
+      - app-shell
+    description: 术语、算法对照、指标口径与不包含范围的静态说明页。
+    children:
+      - id: help-content
+        name: 帮助内容
+        type: ATOMIC
+        dependencies: []
+        description: 标题“帮助”，用分节说明：术语与口径（步骤、比较、交换、写入、访问节点、路径长度与经过格子、LCS、深度与树高）；算法对照（五种排序的时间与空间复杂度、稳定与否、是否原地；四种寻路是否保证最短路径与启发式；数据结构：最小堆是无序的完全二叉树、不能做二分查找，普通二叉搜索树不做平衡，并查集按 size 合并加路径压缩）；指标口径（对比模式按什么判胜负、平局条件）；数据结构（三种结构的操作与页内操作日志、撤销、重置的规则，并说明这些操作不写入运行记录）；数据与记录（运行记录上限 50 条、本地保存、清除站点数据会丢失、页内操作日志上限 20 条）；键盘快捷键表格；不包含范围（无账号与云端同步、无代码编辑器、无加权图、不含 AVL/红黑树/B 树/字典树/图算法）。
+        scenarios:
+          - id: terms-and-metrics
+            name: 术语与指标口径
+            steps:
+              - keyword: GIVEN
+                content: 用户已打开应用
+              - keyword: WHEN
+                content: 点击顶栏“帮助”
+              - keyword: THEN
+                content: 页面标题为“帮助”，包含“术语与口径”“算法对照”“指标口径”“数据结构”“数据与记录”“键盘快捷键”“不包含范围”分节
+              - keyword: AND
+                content: “数据结构”分节说明二叉堆是无序的完全二叉树、不能像二叉搜索树那样二分查找，以及并查集的按 size 合并与路径压缩
+              - keyword: AND
+                content: “数据与记录”分节说明运行记录最多 50 条、页内操作日志最多 20 条且不进运行记录
+          - id: shortcut-table-and-exclusions
+            name: 快捷键表格与不包含范围
+            steps:
+              - keyword: GIVEN
+                content: 用户已打开帮助页
+              - keyword: WHEN
+                content: 查看“键盘快捷键”与“不包含范围”分节
+              - keyword: THEN
+                content: 快捷键表格列出 Space 播放/暂停、→ 下一步、← 上一步、R 重置、T 切换主题
+              - keyword: AND
+                content: “不包含范围”列出无账号与云端同步、无代码编辑器、无加权图、不含 AVL/红黑树/B 树/字典树/图算法
+              - keyword: AND
+                content: 整页不出现任何可编辑控件或运行按钮
+data:
+  - category: 排序实验室预设
+    items:
+      - 默认数据：5, 2, 9, 1, 5, 6（默认算法冒泡排序，共 26 步）
+      - 预设「近乎有序」：1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 11
+      - 预设「逆序」：12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1
+      - 预设「大量重复」：1, 2, 3, 1, 2, 3, 1, 2, 3, 1, 2, 3
+      - 参考输入：3, 1, 2
+  - category: 寻路实验室预设
+    items:
+      - 网格固定 12 行 × 18 列；默认预设「三层迷宫」，起点第 1 行第 1 列、终点第 12 行第 18 列
+      - 预设「空白网格」：无墙，墙 0 格
+      - 预设「无解迷宫」：第 9 列整列为墙，墙 12 格
+      - 三层迷宫墙共 51 格（第 3、6、9 行整行为墙，缺口列分别为 4、14、7）
+  - category: 动态规划预设
+    items:
+      - 默认字符串 A=ABCBDAB（长度 7）、B=BDCABA（长度 6），内部单元格 42 个
+      - 参考结果：LCS=BCBA，长度 4
+  - category: 数据结构实验室预置状态
+    items:
+      - 二叉堆页签：空堆（堆大小 0，堆顶—）
+      - 二叉搜索树页签：空树（节点数 0）
+      - 并查集页签：元素 1–12 各自独立成集合，集合数量 12
+  - category: 全局偏好默认值
+    items:
+      - 主题：浅色
+      - 速度：3 正常 400ms
+      - 运行记录：空

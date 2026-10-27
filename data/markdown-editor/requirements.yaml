@@ -1,0 +1,735 @@
+id: markdown-editor-web
+name: Markdown 编辑网页
+type: ROOT
+dependencies: []
+description: 一个在浏览器中运行的 Markdown 编辑网页：用户可导入本地 Markdown 文件或新建文档，插入图片，在编辑区编写并在预览区查看渲染结果（含代码高亮、数学公式、任务列表），并把当前文档导出为 PDF、HTML 或图片；多文档以文件列表组织；全部文档内容、文档名称与主题设置保存在浏览器本地存储，无需后端服务。
+guidance:
+  - 界面以精致美观为设计目标（设计约定，不作严格验收）。
+children:
+  - id: editor-core
+    name: 编辑与预览
+    type: FOLDER
+    dependencies: []
+    description: 编辑区文本输入、预览区渲染以及编辑/预览视图切换。
+    children:
+      - id: markdown-input
+        name: Markdown 文本编辑
+        type: ATOMIC
+        dependencies: []
+        description: 页面提供 Markdown 文本编辑区（多行文本输入框），用户可直接输入和修改 Markdown 原文：回车换行；光标位于行首时按 Tab 插入两个空格的缩进；Ctrl+Z（macOS 为 Cmd+Z）撤销，Ctrl+Shift+Z（macOS 为 Cmd+Shift+Z）重做。编辑区显示的内容即为用户输入的原文，不会自动插入或改写 Markdown 标记。
+        scenarios:
+          - id: input-text
+            name: 在编辑区输入文本
+            steps:
+              - keyword: GIVEN
+                content: 页面已打开，文件列表中有文档 a.md 且它为当前文档，编辑区为空
+              - keyword: WHEN
+                content: 用户点击编辑区后输入「# 标题」
+              - keyword: THEN
+                content: 编辑区显示「# 标题」
+              - keyword: AND
+                content: 光标位于已输入文字的末尾
+          - id: input-newline
+            name: 回车换行
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区为空且光标位于编辑区
+              - keyword: WHEN
+                content: 用户输入「第一行」并按 Enter 后输入「第二行」
+              - keyword: THEN
+                content: 编辑区第一行显示「第一行」
+              - keyword: AND
+                content: 编辑区第二行显示「第二行」
+          - id: input-indent
+            name: 行首缩进
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区内容为一行「列表项」，光标位于该行行首
+              - keyword: WHEN
+                content: 用户按 Tab 键
+              - keyword: THEN
+                content: 该行显示为行首带两个空格的「列表项」
+          - id: undo-input
+            name: 撤销编辑
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区为空，用户刚在编辑区输入完「# 标题」
+              - keyword: WHEN
+                content: 用户按 Ctrl+Z（macOS 为 Cmd+Z）
+              - keyword: THEN
+                content: 编辑区不再显示「# 标题」，回到输入该内容之前的内容
+          - id: redo-input
+            name: 重做编辑
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，用户刚输入「# 标题」并已用 Ctrl+Z（macOS 为 Cmd+Z）撤销
+              - keyword: WHEN
+                content: 用户按 Ctrl+Shift+Z（macOS 为 Cmd+Shift+Z）
+              - keyword: THEN
+                content: 编辑区重新显示「# 标题」
+      - id: markdown-preview
+        name: 预览渲染
+        type: ATOMIC
+        dependencies:
+          - markdown-input
+        description: 编辑区内容每次变化后，预览区自动同步渲染为 HTML，无需点击渲染按钮或刷新页面。支持的语法包括标题、列表、引用、链接、图片、表格、围栏代码块，并支持代码语法高亮、数学公式与任务列表。
+        scenarios:
+          - id: preview-sync
+            name: 编辑内容同步渲染
+            steps:
+              - keyword: GIVEN
+                content: 页面已打开，当前文档为 a.md 且编辑区与预览区均为空
+              - keyword: WHEN
+                content: 用户在编辑区输入「# 标题」
+              - keyword: THEN
+                content: 预览区显示渲染后的一级标题「标题」
+              - keyword: BUT
+                content: 预览区不显示原文中的「#」符号
+          - id: preview-live-update
+            name: 预览随编辑内容更新
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区内容为「# 标题」，预览区显示一级标题「标题」
+              - keyword: WHEN
+                content: 用户把编辑区内容改为「# 新标题」
+              - keyword: THEN
+                content: 预览区的一级标题文字变为「新标题」
+              - keyword: BUT
+                content: 预览区不再显示标题「标题」
+          - id: preview-syntax
+            name: 常见语法渲染
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 suite.md，编辑区显示其全部内容
+              - keyword: WHEN
+                content: 预览区完成渲染
+              - keyword: THEN
+                content: 预览区显示一级标题「语法标题」
+              - keyword: AND
+                content: 预览区显示两项无序列表，文字分别为「项目一」「项目二」
+              - keyword: AND
+                content: 预览区显示引用区域，文字为「引用文字」
+              - keyword: AND
+                content: 预览区显示可点击链接，文字为「示例链接」
+              - keyword: AND
+                content: 预览区显示两列表格，表头为「列A」「列B」，数据为「1」「2」
+              - keyword: AND
+                content: 围栏代码块显示为独立代码区域，且不显示三个反引号
+          - id: preview-code-highlight
+            name: 代码块语法高亮
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 code.md，编辑区显示带 javascript 语言标识的围栏代码块
+              - keyword: WHEN
+                content: 预览区完成渲染
+              - keyword: THEN
+                content: 预览区代码区中的「const」与同一代码区内的普通字符显示为不同颜色
+          - id: preview-math
+            name: 数学公式渲染
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 math.md，编辑区显示一行「$E = mc^2$」
+              - keyword: WHEN
+                content: 预览区完成渲染
+              - keyword: THEN
+                content: 预览区将该公式显示为排版后的数学表达式（E、m、c 为斜体变量，2 为上标）
+              - keyword: BUT
+                content: 预览区不显示原始文本「$E = mc^2$」，也不显示「$」定界符
+          - id: preview-task-list
+            name: 任务列表渲染
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 tasks.md，编辑区显示「- [ ] 未完成项」与「- [x] 已完成项」两行
+              - keyword: WHEN
+                content: 预览区完成渲染
+              - keyword: THEN
+                content: 预览区显示两个复选框
+              - keyword: AND
+                content: 「未完成项」对应的复选框处于未选中状态
+              - keyword: AND
+                content: 「已完成项」对应的复选框处于选中状态
+      - id: view-mode-toggle
+        name: 编辑/预览切换
+        type: ATOMIC
+        dependencies:
+          - markdown-input
+          - markdown-preview
+        description: 页面工具栏提供带「编辑」「预览」文字的两个视图切换按钮，同一时刻只有一个视图按钮处于选中态。切到「预览」时页面只显示预览区渲染结果，编辑区不再显示；切到「编辑」时重新显示编辑区。来回切换不丢失编辑区内容。
+        scenarios:
+          - id: switch-to-preview
+            name: 切换到预览模式
+            steps:
+              - keyword: GIVEN
+                content: 页面处于编辑模式（工具栏「编辑」按钮为选中态），当前文档 a.md 的编辑区内容为「# A 文档」
+              - keyword: WHEN
+                content: 用户点击工具栏的「预览」按钮
+              - keyword: THEN
+                content: 页面不再显示编辑区输入框
+              - keyword: AND
+                content: 页面显示预览区的一级标题「A 文档」
+              - keyword: AND
+                content: 工具栏「预览」按钮为选中态，「编辑」按钮为未选中态
+          - id: switch-back-to-edit
+            name: 切回编辑模式
+            steps:
+              - keyword: GIVEN
+                content: 页面处于预览模式，当前文档 a.md 的编辑区内容为「# A 文档」，该内容已保存
+              - keyword: WHEN
+                content: 用户点击工具栏的「编辑」按钮
+              - keyword: THEN
+                content: 页面重新显示编辑区
+              - keyword: AND
+                content: 编辑区内容为「# A 文档」，与切换前一致
+              - keyword: AND
+                content: 工具栏「编辑」按钮为选中态
+  - id: document-management
+    name: 文档管理
+    type: FOLDER
+    dependencies: []
+    description: 多文档的组织方式（文件列表、文档切换、新建/重命名/删除）与各文档内容的本地持久化。
+    children:
+      - id: document-list
+        name: 文档列表与切换
+        type: ATOMIC
+        dependencies:
+          - markdown-input
+          - markdown-preview
+        description: 导入和新建的多篇文档以文件列表形式组织，列表按创建/导入顺序显示每条文档的名称，当前文档条目以选中态标识。点击列表项即切换当前文档，编辑区显示该文档内容并刷新预览；切换文档时各文档的编辑内容各自保留，切回时与离开前一致。
+        scenarios:
+          - id: switch-document
+            name: 在文档列表中切换文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md（内容「# A 文档」）与 b.md（内容「# B 文档」），当前文档为 a.md，编辑区显示「# A 文档」
+              - keyword: WHEN
+                content: 用户点击文件列表中的 b.md 条目
+              - keyword: THEN
+                content: 文件列表中 b.md 条目呈选中态，a.md 条目不再选中
+              - keyword: AND
+                content: 编辑区显示 b.md 的完整内容「# B 文档」，且不再显示「# A 文档」
+              - keyword: AND
+                content: 预览区显示一级标题「B 文档」
+          - id: keep-content-on-switch
+            name: 切换时保留各文档内容
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md（内容「# A 文档」）与 b.md（内容「# B 文档」），当前文档为 a.md，用户已在 a.md 编辑区末尾新增一段「新增段落」
+              - keyword: WHEN
+                content: 用户点击 b.md 条目，再点击 a.md 条目
+              - keyword: THEN
+                content: 编辑区显示「# A 文档」以及「新增段落」
+              - keyword: AND
+                content: 预览区显示一级标题「A 文档」以及段落「新增段落」
+      - id: document-file-ops
+        name: 新建/重命名/删除文档
+        type: ATOMIC
+        dependencies:
+          - document-list
+        description: 文件列表区域提供「新建」「重命名」「删除」操作入口。新建文档时名称自动为「未命名-」加 14 位时间戳（格式 yyyyMMddHHmmss，如「未命名-20240101120000」），内容为空。重命名时以输入框修改名称，确认为空名称时不允许保存并提示「名称不能为空」。删除文档需二次确认，取消则文档与其内容保持不变。删除当前文档后，当前文档切换到列表中剩余的第一篇；删除最后一篇文档后文件列表为空、编辑区与预览区为空，并显示空状态提示「暂无文档，可导入或新建」，此时仍可导入文件或新建文档。
+        scenarios:
+          - id: create-document
+            name: 新建文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md，当前文档为 a.md，编辑区显示「# A 文档」
+              - keyword: WHEN
+                content: 用户点击文件列表区域的「新建」按钮
+              - keyword: THEN
+                content: 文件列表新增一条名称为「未命名-」加 14 位时间戳（如「未命名-20240101120000」）的条目
+              - keyword: AND
+                content: 新增条目为当前文档并呈选中态
+              - keyword: AND
+                content: 编辑区与预览区为空
+          - id: rename-document
+            name: 重命名文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md，内容为「# A 文档」
+              - keyword: WHEN
+                content: 用户点击 a.md 条目的「重命名」入口，在名称输入框中输入「notes.md」并确认
+              - keyword: THEN
+                content: 文件列表中该条目显示为「notes.md」
+              - keyword: AND
+                content: 编辑区内容仍为「# A 文档」
+          - id: rename-empty-name
+            name: 重命名为空名称
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 notes.md，用户已打开其重命名输入框
+              - keyword: WHEN
+                content: 用户清空名称输入框并确认
+              - keyword: THEN
+                content: 页面提示「名称不能为空」
+              - keyword: AND
+                content: 文件列表中该条目仍显示为「notes.md」
+          - id: delete-document
+            name: 删除文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md 与 b.md，当前文档为 a.md
+              - keyword: WHEN
+                content: 用户点击 a.md 条目的「删除」入口，并在确认框中确认删除
+              - keyword: THEN
+                content: 文件列表中不再有 a.md 条目
+              - keyword: AND
+                content: 当前文档变为 b.md 且其条目呈选中态
+              - keyword: AND
+                content: 编辑区显示 b.md 的内容「# B 文档」
+          - id: delete-cancel
+            name: 取消删除文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md 与 b.md，当前文档为 a.md，编辑区显示「# A 文档」
+              - keyword: WHEN
+                content: 用户点击 a.md 条目的「删除」入口，并在确认框中选择取消
+              - keyword: THEN
+                content: 文件列表中仍有 a.md 与 b.md 两条条目
+              - keyword: AND
+                content: 当前文档仍为 a.md，编辑区内容仍为「# A 文档」
+          - id: delete-last-document
+            name: 删除最后一篇文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中只有一篇文档 a.md 且它是当前文档
+              - keyword: WHEN
+                content: 用户点击 a.md 条目的「删除」入口并在确认框中确认删除
+              - keyword: THEN
+                content: 文件列表中不再有任何文档条目
+              - keyword: AND
+                content: 编辑区与预览区均为空
+              - keyword: AND
+                content: 页面显示空状态提示「暂无文档，可导入或新建」
+          - id: create-after-delete-all
+            name: 空列表时新建文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表为空，页面显示空状态提示「暂无文档，可导入或新建」
+              - keyword: WHEN
+                content: 用户点击文件列表区域的「新建」按钮
+              - keyword: THEN
+                content: 文件列表新增一条「未命名-」加 14 位时间戳的条目并呈选中态
+              - keyword: AND
+                content: 空状态提示不再显示
+              - keyword: AND
+                content: 编辑区为空
+      - id: draft-persistence
+        name: 草稿本地持久化
+        type: ATOMIC
+        dependencies:
+          - markdown-input
+          - document-list
+        description: 全部文档（包括文件列表中未打开的那些）的内容、文档名称与文件列表组成自动保存到浏览器本地存储，无需后端服务；用户停止输入后立即保存，保存成功时页面显示「已保存」状态提示。重新打开页面时恢复文件列表、文档名称与各文档内容。当本地存储空间不足以保存当前草稿时，页面提示「保存失败：本地存储空间不足」，编辑区内容保持用户刚修改的结果。
+        scenarios:
+          - id: auto-save-draft
+            name: 自动保存草稿
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md 且为当前文档，编辑区内容为「# A 文档」
+              - keyword: WHEN
+                content: 用户把编辑区内容改为「# A 文档」加「新增内容」后停止输入
+              - keyword: THEN
+                content: 页面显示状态提示「已保存」
+          - id: restore-all-documents
+            name: 重新打开恢复全部文档
+            steps:
+              - keyword: GIVEN
+                content: 上次访问时文件列表中有 a.md（内容「# A 文档」与「A 内容」）和 b.md（内容「# B 文档」与「B 内容」），两篇均有编辑并已显示「已保存」，当前文档为 a.md
+              - keyword: WHEN
+                content: 用户在同一个浏览器中重新打开页面
+              - keyword: THEN
+                content: 文件列表恢复 a.md 与 b.md 两条条目
+              - keyword: AND
+                content: 当前文档为 a.md，编辑区显示「# A 文档」与「A 内容」
+              - keyword: AND
+                content: 预览区显示一级标题「A 文档」
+              - keyword: AND
+                content: 点击 b.md 条目后，编辑区显示「# B 文档」与「B 内容」
+          - id: persist-doc-changes
+            name: 新建/重命名/删除在重新打开后保持
+            steps:
+              - keyword: GIVEN
+                content: 用户新建了一篇文档、把 a.md 重命名为 notes.md、并删除了 b.md，以上操作均已在页面显示「已保存」
+              - keyword: WHEN
+                content: 用户在同一个浏览器中重新打开页面
+              - keyword: THEN
+                content: 文件列表中有重命名后的 notes.md 与新建的那篇文档
+              - keyword: AND
+                content: 文件列表中没有 a.md 条目
+              - keyword: AND
+                content: 文件列表中没有 b.md 条目
+          - id: save-failed-over-limit
+            name: 本地存储空间不足时保存失败
+            steps:
+              - keyword: GIVEN
+                content: 当前文档 a.md 中已内嵌多张大图片，占满浏览器本地存储，最近一次修改后页面已提示保存失败
+              - keyword: WHEN
+                content: 用户在编辑区继续输入「新增文字」并停止输入
+              - keyword: THEN
+                content: 页面提示「保存失败：本地存储空间不足」
+              - keyword: BUT
+                content: 编辑区仍显示用户刚输入的「新增文字」
+  - id: file-transfer
+    name: 文件导入与导出
+    type: FOLDER
+    dependencies: []
+    description: 把本地 Markdown 文件导入编辑器、插入图片，以及把当前内容导出下载。
+    children:
+      - id: upload-markdown
+        name: 上传 Markdown 文件
+        type: ATOMIC
+        dependencies:
+          - document-list
+          - markdown-input
+        description: 工具栏提供「导入」入口，用户可通过文件选择、拖拽文件到页面、或选择整个文件夹的方式导入本地 Markdown 文件，支持 .md、.markdown、.txt 扩展名，支持一次导入多个文件。每个导入的文件成为文件列表中的一篇文档，内容加载到编辑区并触发预览渲染；多文件导入时编辑区打开本次导入的第一个文件（按文件选择顺序）。导入完成后导入的文件成为当前文档。导入文件与已有文档同名时，用导入内容覆盖该已有文档，不在列表中新增重复条目。导入扩展名不受支持的文件时，页面提示「文件格式不受支持」，不新增文档且现有编辑区内容保持不变。
+        scenarios:
+          - id: upload-single-file
+            name: 上传单个 Markdown 文件
+            steps:
+              - keyword: GIVEN
+                content: 页面已打开，文件列表为空
+              - keyword: WHEN
+                content: 用户点击工具栏「导入」入口，在文件选择框中选择 a.md
+              - keyword: THEN
+                content: 文件列表出现一条 a.md 条目且呈选中态
+              - keyword: AND
+                content: 编辑区显示「# A 文档」与「这是 A 文档的正文。」
+              - keyword: AND
+                content: 预览区显示一级标题「A 文档」
+          - id: upload-multiple-files
+            name: 一次导入多个文件
+            steps:
+              - keyword: GIVEN
+                content: 页面已打开，文件列表为空
+              - keyword: WHEN
+                content: 用户点击工具栏「导入」入口，一次选中 a.md、b.md、c.txt 三个文件
+              - keyword: THEN
+                content: 文件列表出现 a.md、b.md、c.txt 三条条目
+              - keyword: AND
+                content: 当前文档为 a.md 且其条目呈选中态
+              - keyword: AND
+                content: 编辑区显示 a.md 的完整内容「# A 文档」与「这是 A 文档的正文。」
+          - id: upload-drag-drop
+            name: 拖拽导入文件
+            steps:
+              - keyword: GIVEN
+                content: 页面已打开，文件列表为空
+              - keyword: WHEN
+                content: 用户将本机文件 b.md 从系统文件管理器拖放到页面中
+              - keyword: THEN
+                content: 文件列表新增一条 b.md 条目且呈选中态
+              - keyword: AND
+                content: 编辑区显示 b.md 的内容「# B 文档」
+          - id: upload-folder
+            name: 导入整个文件夹
+            steps:
+              - keyword: GIVEN
+                content: 页面已打开，文件列表为空
+              - keyword: WHEN
+                content: 用户点击工具栏「导入」入口并选择本机的 docs 文件夹（内含 a.md、b.md、c.txt、shot.png）
+              - keyword: THEN
+                content: 文件列表出现 a.md、b.md、c.txt 三条条目
+              - keyword: BUT
+                content: 文件列表中没有 shot.png 条目
+          - id: upload-duplicate-file
+            name: 导入同名文件覆盖已有文档
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md，其内容为「# 旧内容」
+              - keyword: WHEN
+                content: 用户点击工具栏「导入」入口并选择本机的 a.md（内容为「# A 文档」与「这是 A 文档的正文。」）
+              - keyword: THEN
+                content: 文件列表中 a.md 条目仍只有一条
+              - keyword: AND
+                content: 编辑区显示「# A 文档」与「这是 A 文档的正文。」
+              - keyword: BUT
+                content: 编辑区不再显示「# 旧内容」
+          - id: upload-invalid-file
+            name: 上传不支持的文件类型
+            steps:
+              - keyword: GIVEN
+                content: 文件列表中有 a.md 且为当前文档，编辑区内容为「# A 文档」
+              - keyword: WHEN
+                content: 用户点击工具栏「导入」入口并选择本机的 report.docx
+              - keyword: THEN
+                content: 页面提示「文件格式不受支持」
+              - keyword: BUT
+                content: 文件列表仍只有 a.md 一条条目
+              - keyword: AND
+                content: 编辑区内容仍为「# A 文档」
+      - id: image-upload
+        name: 插入与粘贴图片
+        type: ATOMIC
+        dependencies:
+          - markdown-input
+          - markdown-preview
+        description: 编辑区工具栏提供「插入图片」入口，用户可选择本地图片插入，也可在编辑区直接粘贴剪贴板中的图片。插入后在光标位置写入图片 Markdown 语法，图片以 Base64 Data URL 内嵌在 Markdown 文本中，不依赖后端服务，草稿保存与导出时图片仍可显示。单张图片大小上限为 5MB：不超过 5MB 的图片插入成功，超过 5MB 时拒绝插入并提示「图片超过 5MB 上限」，编辑区内容保持不变。
+        scenarios:
+          - id: insert-image
+            name: 插入本地图片
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区内容为「# A 文档」，光标位于这段文字末尾
+              - keyword: WHEN
+                content: 用户点击编辑区工具栏的「插入图片」入口并选择本机的 example.png
+              - keyword: THEN
+                content: 编辑区在光标位置写入以「![」开头、包含「data:image/」的图片 Markdown 语法
+              - keyword: AND
+                content: 预览区显示该图片
+          - id: paste-image
+            name: 粘贴剪贴板图片
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区为空，系统剪贴板中已复制一张截图
+              - keyword: WHEN
+                content: 用户将焦点放在编辑区并按 Ctrl+V（macOS 为 Cmd+V）
+              - keyword: THEN
+                content: 编辑区写入以「![」开头、包含「data:image/」的图片 Markdown 语法
+              - keyword: AND
+                content: 预览区显示该截图
+          - id: image-at-limit
+            name: 插入恰好 5MB 的图片
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区为空
+              - keyword: WHEN
+                content: 用户点击「插入图片」入口并选择大小恰好 5MB 的 at-limit-5mb.png
+              - keyword: THEN
+                content: 编辑区写入图片 Markdown 语法
+              - keyword: AND
+                content: 页面不出现图片超限提示
+              - keyword: AND
+                content: 预览区显示该图片
+          - id: image-too-large
+            name: 插入超出大小上限的图片
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区内容为「# A 文档」
+              - keyword: WHEN
+                content: 用户点击「插入图片」入口并选择大于 5MB 的 over-limit-5mb.png
+              - keyword: THEN
+                content: 页面提示「图片超过 5MB 上限」
+              - keyword: BUT
+                content: 编辑区内容仍为「# A 文档」
+          - id: image-persist-after-reload
+            name: 重新打开后图片仍可见
+            steps:
+              - keyword: GIVEN
+                content: 当前文档 a.md 的编辑区已插入 example.png，且页面已显示「已保存」
+              - keyword: WHEN
+                content: 用户在同一个浏览器中重新打开页面
+              - keyword: THEN
+                content: 编辑区仍显示包含「data:image/」的图片 Markdown 语法
+              - keyword: AND
+                content: 预览区仍能显示该图片
+          - id: image-in-export
+            name: 导出结果中图片仍可见
+            steps:
+              - keyword: GIVEN
+                content: 当前文档 a.md 的编辑区已插入 example.png
+              - keyword: WHEN
+                content: 用户通过「导出」菜单导出为 HTML 并打开下载得到的 a.html
+              - keyword: THEN
+                content: a.html 中显示该图片
+      - id: export-document
+        name: 导出为 PDF / HTML / 图片
+        type: ATOMIC
+        dependencies:
+          - markdown-input
+          - markdown-preview
+          - document-file-ops
+        description: 工具栏提供「导出」菜单，选项为「PDF」「HTML」「图片」，导出当前文档的渲染结果并下载到本地；导出为图片时输出整篇渲染结果的一张 PNG 长图。菜单内不提供主题、页边距等样式设置项，导出使用固定样式。下载文件名取该文档当前名称去掉 .md/.markdown/.txt 后缀后加对应扩展名（a.md 导出为 a.pdf、a.html、a.png；未命名文档导出为如「未命名-20240101120000.pdf」）。当前文档没有内容时，页面提示「当前没有可导出的内容」且不产生下载文件。
+        scenarios:
+          - id: export-menu
+            name: 导出菜单选项
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md 且编辑区已有内容
+              - keyword: WHEN
+                content: 用户点击工具栏的「导出」菜单
+              - keyword: THEN
+                content: 菜单显示「PDF」「HTML」「图片」三个选项
+              - keyword: BUT
+                content: 菜单中没有主题、页边距等样式设置项
+          - id: export-html
+            name: 导出为 HTML
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区内容为「# A 文档」与「这是 A 文档的正文。」
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「HTML」选项
+              - keyword: THEN
+                content: 浏览器下载得到一个名为 a.html 的文件
+              - keyword: AND
+                content: 用浏览器打开 a.html 后显示一级标题「A 文档」与段落「这是 A 文档的正文。」
+              - keyword: BUT
+                content: a.html 打开后不显示原文的「#」符号
+          - id: export-pdf
+            name: 导出为 PDF
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 a.md，编辑区内容为「# A 文档」与「这是 A 文档的正文。」
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「PDF」选项
+              - keyword: THEN
+                content: 浏览器下载得到一个名为 a.pdf 的文件
+              - keyword: AND
+                content: 用 PDF 阅读器打开 a.pdf 后显示标题「A 文档」与段落「这是 A 文档的正文。」
+          - id: export-image
+            name: 导出为图片长图
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为 long.md，内容渲染后高度超出一个屏幕，末行为「结束语」
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「图片」选项
+              - keyword: THEN
+                content: 浏览器下载得到一个名为 long.png 的文件
+              - keyword: AND
+                content: 该 PNG 图片的高度大于浏览器视口高度
+              - keyword: AND
+                content: 该图片中包含开头的一级标题「长文」和末尾的「结束语」
+          - id: export-untitled
+            name: 导出未命名文档
+            steps:
+              - keyword: GIVEN
+                content: 当前文档为新建的未命名文档（名称形如「未命名-20240101120000」），编辑区已有内容
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「PDF」选项
+              - keyword: THEN
+                content: 下载文件的名称与文档名称一致并以 .pdf 结尾（如「未命名-20240101120000.pdf」）
+          - id: export-renamed
+            name: 重命名后导出使用新名称
+            steps:
+              - keyword: GIVEN
+                content: 当前文档原为 a.md，已被重命名为 notes.md，编辑区已有内容
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「HTML」选项
+              - keyword: THEN
+                content: 浏览器下载得到一个名为 notes.html 的文件
+          - id: export-empty
+            name: 空内容导出
+            steps:
+              - keyword: GIVEN
+                content: 当前文档的编辑区为空
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「PDF」选项
+              - keyword: THEN
+                content: 页面提示「当前没有可导出的内容」
+              - keyword: BUT
+                content: 浏览器没有产生任何下载文件
+          - id: export-fixed-style-in-dark-mode
+            name: 深色模式下导出使用固定样式
+            steps:
+              - keyword: GIVEN
+                content: 页面处于深色模式，当前文档为 a.md 且编辑区已有内容
+              - keyword: WHEN
+                content: 用户点击「导出」菜单中的「HTML」选项，并用浏览器打开下载得到的 a.html
+              - keyword: THEN
+                content: a.html 使用固定样式显示（浅色背景、深色文字），与页面当前的深色模式无关
+  - id: app-experience
+    name: 界面与主题
+    type: FOLDER
+    dependencies: []
+    description: 界面主题、整体视觉风格与响应式布局。
+    guidance:
+      - 视觉目标为页面尽量精致美观，以下配色与样式约定作为设计约定与实现参考，不作严格验收。
+      - 整体采用简约文档风，浅色为暖白底色配中性灰文字，深色为中性深灰底色，两套主题共用同一套层级与间距。
+      - 主题色单一，仅用于选中态、主按钮与链接。
+      - 字号层级清晰，标题、正文、次要文字层次分明。
+      - 正文使用含常见中文字体的系统字体栈，代码区与等宽内容使用等宽字体。
+      - 统一圆角约 6～8px、细微阴影与 8px 间距栅格，图标化工具栏并带悬停、选中与键盘聚焦反馈。
+      - 具备加载中、空状态、成功与错误提示的视觉样式。
+      - 过渡动画 150～200ms，平滑不突兀。
+      - 深色与浅色两套配色保持一致的观感。
+    children:
+      - id: dark-mode
+        name: 深色模式
+        type: ATOMIC
+        dependencies: []
+        description: 工具栏提供主题切换入口，用户可在浅色与深色模式之间双向切换，切换即时生效。深色模式下文件列表、编辑区与预览区背景均为深色、文字为浅色，正文文字与背景的对比度不低于 4.5:1。主题设置保存在浏览器本地，重新打开页面时保持上次选中的模式。
+        scenarios:
+          - id: toggle-dark-mode
+            name: 切换深色模式
+            steps:
+              - keyword: GIVEN
+                content: 页面当前为浅色模式，当前文档 a.md 的编辑区有内容
+              - keyword: WHEN
+                content: 用户点击工具栏的主题切换入口切换到深色模式
+              - keyword: THEN
+                content: 页面背景变为深色
+              - keyword: AND
+                content: 文件列表、编辑区与预览区背景为深色、文字为浅色
+              - keyword: AND
+                content: 编辑区与预览区正文文字与其背景的对比度不低于 4.5:1
+          - id: toggle-back-to-light
+            name: 切换回浅色模式
+            steps:
+              - keyword: GIVEN
+                content: 页面当前为深色模式
+              - keyword: WHEN
+                content: 用户点击工具栏的主题切换入口切换到浅色模式
+              - keyword: THEN
+                content: 页面背景变回浅色
+              - keyword: AND
+                content: 文件列表、编辑区与预览区背景为浅色、文字为深色
+          - id: remember-theme
+            name: 记住主题设置
+            steps:
+              - keyword: GIVEN
+                content: 用户已将页面切换为深色模式
+              - keyword: WHEN
+                content: 用户在同一个浏览器中重新打开页面
+              - keyword: THEN
+                content: 页面以深色模式显示，不需要用户再次切换
+      - id: responsive-layout
+        name: 响应式布局
+        type: ATOMIC
+        dependencies: []
+        description: 页面布局响应视口宽度变化：视口宽度不大于 768px 时改为单栏布局，内容不出现横向溢出；编辑/预览切换、「导入」、「导出」、「插入图片」等操作入口在该宽度下仍可点击并正常工作。
+        scenarios:
+          - id: narrow-screen
+            name: 窄屏布局
+            steps:
+              - keyword: GIVEN
+                content: 页面在 1280px 宽的视口下正常显示，当前文档 a.md 的编辑区有内容
+              - keyword: WHEN
+                content: 用户将浏览器视口宽度调整为 375px
+              - keyword: THEN
+                content: 页面改为单栏布局（编辑区与预览区不再左右并排）
+              - keyword: AND
+                content: 页面不出现横向滚动条
+              - keyword: AND
+                content: 工具栏「编辑」/「预览」切换按钮可点击，点击「预览」后显示预览区渲染结果
+          - id: narrow-screen-actions
+            name: 窄屏下导入导出与图片操作可用
+            steps:
+              - keyword: GIVEN
+                content: 页面在 375px 宽的视口下显示，当前文档为 a.md
+              - keyword: WHEN
+                content: 用户依次点击工具栏的「导入」「导出」「插入图片」入口
+              - keyword: THEN
+                content: 点击「导入」时出现系统文件选择框
+              - keyword: AND
+                content: 点击「导出」时出现包含「PDF」「HTML」「图片」的菜单
+              - keyword: AND
+                content: 点击「插入图片」时出现系统文件选择框
+data:
+  - category: 测试用本地 Markdown 文件（验收前在本机创建）
+    items:
+      - a.md：内容为「# A 文档」、一个空行、「这是 A 文档的正文。」
+      - b.md：内容为「# B 文档」、一个空行、「这是 B 文档的正文。」
+      - c.txt：内容为「# C 文本」、一个空行、「这是 C 文本的正文。」
+      - notes.md：内容为「# Notes」
+      - suite.md：内容依次为一级标题「语法标题」、两项无序列表（项目一、项目二）、一行引用「引用文字」、链接「[示例链接](https://example.com)」、两列表格（表头 列A/列B，一行数据 1/2）、带 js 语言标识的围栏代码块（内容 const a = 1;）
+      - code.md：内容为带 javascript 语言标识的围栏代码块，代码为 const a = 1;
+      - math.md：内容为一行「$E = mc^2$」
+      - tasks.md：内容为两行任务列表「- [ ] 未完成项」与「- [x] 已完成项」
+      - long.md：内容为一级标题「长文」、30 段正文文字、末行「结束语」，渲染后高度超出一个屏幕
+      - report.docx：任意内容的 Word 文件，用于不支持格式校验
+  - category: 测试用本地图片文件
+    items:
+      - example.png：小于 1MB 的 PNG 图片
+      - at-limit-5mb.png：大小恰好 5MB 的 PNG 图片
+      - over-limit-5mb.png：大于 5MB 的 PNG 图片
+  - category: 测试用本地文件夹
+    items:
+      - docs 文件夹：内含 a.md、b.md、c.txt 以及 shot.png
