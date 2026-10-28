@@ -2,11 +2,13 @@ id: algorithm-lab
 name: 交互式算法实验室
 type: ROOT
 dependencies: []
-description: 纯前端单页应用，简体中文。含四个实验室：排序实验室、网格寻路实验室、动态规划实验室、数据结构实验室，以及运行记录与帮助页。前三个实验室用同一套轨迹模型（预计算轨迹、控制条、步骤 0..N、状态行与检查器、完成横幅、排序与寻路的对比模式与全部算法总览）；数据结构实验室是直接操作型页面，无轨迹、控制条、完成横幅、对比模式与全部算法总览，操作立即执行，只进页内操作日志、不写运行记录。术语：步骤＝一次原子动作；写入＝不经过交换的赋值操作；对比模式的胜负只用比较次数与步骤数判定，交换次数只展示、不参与胜负；路径长度＝边的数量，经过格子＝路径长度＋1；LCS＝最长公共子序列，多解时只展示固定回溯规则得到的一个；运行记录最多 50 条；所有指标为非负整数。
+description: 纯前端单页应用，简体中文。含四个实验室：排序实验室、网格寻路实验室、动态规划实验室、数据结构实验室，以及运行记录与帮助页。前三个实验室用同一套轨迹模型（预计算轨迹、控制条、步骤 0..N、状态行与检查器、完成横幅、排序与寻路的对比模式与全部算法总览）；数据结构实验室是直接操作型页面，无轨迹、控制条、完成横幅、对比模式与全部算法总览，操作立即执行，只进页内操作日志、不写运行记录。术语：步骤＝一次原子动作；写入＝不经过交换的赋值操作；对比模式的胜负只用比较次数与步骤数判定，交换次数只展示、不参与胜负；路径长度＝边的数量，经过格子＝路径长度＋1；LCS＝最长公共子序列，多解时只展示固定回溯规则得到的一个；运行记录最多 50 条；所有指标为非负整数，无路径时路径长度与经过格子显示“—”。
 guidance:
   - 整体视觉风格简洁、克制，以信息可读为先，不做花哨动效；关键变化要有即时视觉反馈。
   - 界面文案语气直白、面向学习者，不用营销化措辞；正式文案使用简体中文全角标点。
   - 播放、单步、拖动滑块都要感觉即时，不出现明显卡顿或跳帧。
+  - 实现使用 React + Vite + TypeScript 的纯前端 SPA；无后端、无账号体系，运行时不发起后端或第三方网络请求。
+  - 以最新 Chromium 为主要验收浏览器，兼顾现代 Firefox 与 Safari 的基本布局。
 children:
   - id: app-shell
     name: 应用框架与导航
@@ -175,7 +177,7 @@ children:
         name: 偏好与工作区持久化
         type: ATOMIC
         dependencies: []
-        description: 刷新后恢复主题、速度、hash 页面、各实验室最近一次有效输入、算法、对比模式、枢轴策略，以及数据结构实验室当前页签、三种结构各自的结构数据与页内操作日志（最多 20 条）与撤销栈；不恢复播放状态、完成横幅与临时错误，三个算法实验室回到步骤 0 并重新生成轨迹、指标归零，数据结构实验室保留结构与日志。工作区数据损坏、缺失或版本不兼容时回默认且保持可用，不抛未捕获异常。
+        description: 刷新后恢复主题、速度、hash 页面、各实验室最近一次有效输入、算法、对比模式、枢轴策略，以及数据结构实验室当前页签、三种结构各自的结构数据与页内操作日志（最多 20 条）与撤销栈；不恢复播放状态、完成横幅与临时错误，三个算法实验室回到步骤 0 并重新生成轨迹、指标归零，数据结构实验室保留结构与日志。持久化使用 localStorage，键名以 `algorithm-lab:v1:` 开头并按 `preferences`、`workspace:<lab>`、`history` 区分，其中 `<lab>` 取 `sorting`、`pathfinding`、`dp`、`structures`，每项保存 `{version:1,data:...}`。工作区数据损坏、缺失或版本号不等于 1 时回默认且保持可用，不抛未捕获异常。
         scenarios:
           - id: refresh-restores-inputs
             name: 刷新后恢复输入并回到步骤 0
@@ -203,15 +205,61 @@ children:
                 content: 操作日志仍为 3 条，最上一条为“已插入 8”
               - keyword: AND
                 content: 点击“撤销”后数组恢复为“3, 5”
-          - id: corrupt-workspace-falls-back
-            name: 工作区数据损坏时回默认
+          - id: refresh-restores-pathfinding
+            name: 刷新后恢复寻路输入与算法
             steps:
               - keyword: GIVEN
-                content: 本地存储中排序实验室工作区数据被替换为“not-json”
+                content: 网格寻路实验室，预设“空白网格”，起点第 1 行第 1 列、终点第 12 行第 18 列，算法“A* 算法”，已点击“跳到结尾”
               - keyword: WHEN
-                content: "打开 #/sorting"
+                content: 刷新页面
               - keyword: THEN
-                content: 输入框内容为默认“5, 2, 9, 1, 5, 6”，控制条显示“步骤 0 / 26”
+                content: 仍在网格寻路实验室，摘要显示“12 × 18 · 墙 0 格”
+              - keyword: AND
+                content: 起点为第 1 行第 1 列、终点为第 12 行第 18 列，算法为“A* 算法”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 29”，指标归零，未自动播放
+          - id: refresh-restores-dp
+            name: 刷新后恢复动态规划输入
+            steps:
+              - keyword: GIVEN
+                content: 动态规划实验室，字符串 A 为“AB”、字符串 B 为“BA”，已点击“跳到结尾”并显示“LCS：A（长度 1）”
+              - keyword: WHEN
+                content: 刷新页面
+              - keyword: THEN
+                content: 仍在动态规划实验室，两个输入框分别为“AB”与“BA”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 4”，指标“LCS”与“LCS 长度”都显示“—”，未自动播放
+          - id: refresh-restores-compare-mode
+            name: 刷新后恢复对比模式与两侧算法
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，输入“3, 1, 2”并应用，切到对比模式，算法 A“冒泡排序”、算法 B“快速排序”，已到全局步骤 5
+              - keyword: WHEN
+                content: 刷新页面
+              - keyword: THEN
+                content: 仍为对比模式，算法 A 为“冒泡排序”、算法 B 为“快速排序”
+              - keyword: AND
+                content: 控制条显示“步骤 0 / 6”，两侧指标归零，未自动播放
+          - id: refresh-keeps-hash-route
+            name: 刷新后保留 hash 页面
+            steps:
+              - keyword: GIVEN
+                content: 从顶栏进入“帮助”页，hash 为 #/help
+              - keyword: WHEN
+                content: 刷新页面
+              - keyword: THEN
+                content: 仍停留在帮助页，地址栏 hash 为 #/help，页面标题为“帮助”
+              - keyword: AND
+                content: 导航项“帮助”带 aria-current="page"
+          - id: corrupt-workspace-falls-back
+            name: 工作区数据损坏、缺失或版本不兼容时回默认
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室此前已保存过工作区数据
+              - keyword: WHEN
+                content: 依次把 localStorage 的 `algorithm-lab:v1:workspace:sorting` 设为“not-json”、删除该键、设为 `{"version":0,"data":{}}`，每次重新打开 #/sorting
+              - keyword: THEN
+                content: 三次都显示默认输入“5, 2, 9, 1, 5, 6”与控制条“步骤 0 / 26”
               - keyword: AND
                 content: 页面无未捕获错误提示，可继续应用数据并播放
       - id: responsive-a11y
@@ -277,6 +325,17 @@ children:
                 content: 页面中不存在 canvas 元素
               - keyword: AND
                 content: 柱状图、网格与 dp 表格都由 SVG 或 DOM 元素构成，可选中节点并读到文字
+          - id: control-labels-and-focus
+            name: 控制条可访问名称与焦点可见
+            steps:
+              - keyword: GIVEN
+                content: 排序实验室，默认数据，步骤 0
+              - keyword: WHEN
+                content: 把焦点移到控制条，再用 Tab 依次经过“上一步”“下一步”“播放”“重置”“跳到结尾”
+              - keyword: THEN
+                content: 五个按钮都有可访问名称，焦点按上述顺序移动
+              - keyword: AND
+                content: 当前焦点元素有明显的可见焦点指示，且不依赖颜色单独表达
           - id: live-region-during-play
             name: 自动播放不逐步播报
             steps:
@@ -882,7 +941,7 @@ children:
         type: ATOMIC
         dependencies:
           - sorting-algorithm-select
-        description: 最多 n-1 轮；每轮从左到右比较相邻 a[j] 与 a[j+1]，j 从 0 到 n-2，不缩小范围，不特殊跳过已排好的尾部。每次比较产生一个比较步骤；左边大于右边再产生一个交换步骤，交换步骤的数组状态是交换后的状态，比较步骤不改变数组。某轮无任何交换时提前结束。内部变量显示轮次、比较位置、本轮是否交换。状态行 1 开始下标，如“比较第 1 个和第 2 个元素（3 与 1）”“交换第 1 个和第 2 个元素（3 与 1）”。
+        description: 最多 n-1 轮；每轮从左到右比较相邻 a[j] 与 a[j+1]，j 从 0 到 n-2，不缩小范围，不特殊跳过已排好的尾部。每次比较产生一个比较步骤；左边大于右边再产生一个交换步骤，交换步骤的数组状态是交换后的状态，比较步骤不改变数组。某轮无任何交换时提前结束。内部变量显示轮次、比较位置、本轮是否交换。状态行使用 1 开始下标：比较步骤为“比较第 j 个和第 j+1 个元素（a[j] 与 a[j+1]）”，交换步骤为“交换第 j 个和第 j+1 个元素（a[j] 与 a[j+1]）”。
         scenarios:
           - id: bubble-reference-312
             name: 输入 3,1,2 的参考指标
@@ -922,7 +981,7 @@ children:
         type: ATOMIC
         dependencies:
           - sorting-algorithm-select
-        description: 从 i=1 起把 a[i] 作为关键字 key 前向扫描：每次拿 a[j] 与 key 比较产生一个比较步骤；a[j] 大于 key 时把 a[j] 写到 a[j+1] 产生一个写入步骤并 j 减一；a[j] 小于等于 key 则停止。本轮至少移动过一次时把 key 写入最终空位再产生一个写入步骤；一次移动都没有则不产生额外写入。内部变量显示当前 i、关键字、比较位置；入位状态行如“把关键字 2 放入第 2 个位置”。
+        description: 从 i=1 起把 a[i] 作为关键字 key 前向扫描：每次拿 a[j] 与 key 比较产生一个比较步骤；a[j] 大于 key 时把 a[j] 写到 a[j+1] 产生一个写入步骤并 j 减一；a[j] 小于等于 key 则停止。本轮至少移动过一次时把 key 写入最终空位再产生一个写入步骤；一次移动都没有则不产生额外写入。内部变量显示当前 i、关键字、比较位置；入位状态行为“把关键字 2 放入第 2 个位置”。
         scenarios:
           - id: insertion-reference-312
             name: 输入 3,1,2 的参考指标
@@ -951,7 +1010,7 @@ children:
         type: ATOMIC
         dependencies:
           - sorting-algorithm-select
-        description: i 从 0 到 n-2，维护当前最小位置 min；每次拿 a[j]（j 从 i+1 到 n-1）与 a[min] 比较产生一个比较步骤，a[j] 小于 a[min] 时更新 min（不单独成步）。扫描结束若 min 不等于 i，交换 a[i] 与 a[min] 产生一个交换步骤；min 等于 i 时不产生交换步骤；标记已排序不算步骤。内部变量显示当前 i、当前最小位置；状态行如“比较第 3 个元素与当前最小值（2 与 3）”。
+        description: i 从 0 到 n-2，维护当前最小位置 min；每次拿 a[j]（j 从 i+1 到 n-1）与 a[min] 比较产生一个比较步骤，a[j] 小于 a[min] 时更新 min（不单独成步）。扫描结束若 min 不等于 i，交换 a[i] 与 a[min] 产生一个交换步骤；min 等于 i 时不产生交换步骤；标记已排序不算步骤。内部变量显示当前 i、当前最小位置。比较步骤状态行为“比较第 j 个元素与当前最小值（a[j] 与 a[min]）”，交换步骤状态行为“交换第 i 个和第 min 个元素（a[i] 与 a[min]）”；下标均从 1 开始。
         scenarios:
           - id: selection-reference-312
             name: 输入 3,1,2 的参考指标
@@ -970,9 +1029,9 @@ children:
               - keyword: GIVEN
                 content: 排序实验室，输入“3, 1, 2”并应用，算法“选择排序”，步骤 0
               - keyword: WHEN
-                content: 点击“下一步”3 次
+                content: 点击“下一步”4 次
               - keyword: THEN
-                content: 第 3 步状态行为“第 3 / 5 步：比较第 3 个元素与当前最小值（2 与 3）”
+                content: 第 4 步状态行为“第 4 / 5 步：比较第 3 个元素与当前最小值（2 与 3）”
               - keyword: AND
                 content: 状态行使用 1 开始下标，不出现 0 基下标
           - id: selection-sorted-no-swap
@@ -989,7 +1048,7 @@ children:
         type: ATOMIC
         dependencies:
           - sorting-algorithm-select
-        description: 自顶向下二分，mid = floor((lo + hi) / 2)，先左后右再合并。合并时比较左右两段当前元素产生一个比较步骤，相等优先取左边（稳定）；每写回一个元素产生一个写入步骤；一侧取完后剩余元素依次写回，每步都是写入且不再产生比较。辅助数组读入不计入，只统计写回主数组的写入。内部变量显示合并区间、左右指针、临时缓冲区；状态行如“合并区间 [2, 3]：比较 1 与 2”。
+        description: 自顶向下二分，mid = floor((lo + hi) / 2)，先左后右再合并。合并时比较左右两段当前元素产生一个比较步骤，相等优先取左边（稳定）；每写回一个元素产生一个写入步骤；一侧取完后剩余元素依次写回，每步都是写入且不再产生比较。辅助数组读入不计入，只统计写回主数组的写入。内部变量显示合并区间、左右指针、临时缓冲区。比较步骤状态行为“合并区间 [lo, hi]：比较 x 与 y”，写入步骤状态行为“合并区间 [lo, hi]：将 x 写入第 k 个位置”。
         scenarios:
           - id: merge-reference-312
             name: 输入 3,1,2 的参考指标
@@ -1010,7 +1069,7 @@ children:
               - keyword: WHEN
                 content: 点击“下一步”2 次并查看状态行与检查器
               - keyword: THEN
-                content: 状态行以“第 2 / 8 步：”开头并包含“合并区间”与“比较”
+                content: 状态行以“第 2 / 8 步：”开头并包含“合并区间”与“写入”
               - keyword: AND
                 content: 检查器显示“合并区间”“左指针”“右指针”“临时缓冲区”四个标签
       - id: sorting-quick
@@ -1018,7 +1077,7 @@ children:
         type: ATOMIC
         dependencies:
           - sorting-algorithm-select
-        description: Lomuto 划分，目标升序。“末元素”枢轴为区间最后一个元素，不做预处理交换；“首元素”先把首元素与末元素交换（位置不同才产生交换步骤）再以末元素为枢轴；“中间元素”先取 mid = floor((lo+hi)/2)，先把中间元素与首元素交换（mid 不等于 lo 时产生交换步骤），再按首元素策略与末元素交换（位置不同才产生交换步骤），然后以末元素为枢轴；预处理交换的状态行如“将枢轴 3 移到区间末尾”。划分时 j 从 lo 到 hi-1，每次比较 a[j] <= pivot 产生一个比较步骤；成立时 i 加一，i 不等于 j 则交换 a[i] 与 a[j] 产生一个交换步骤；扫描结束 i+1 不等于 hi 时交换 a[i+1] 与 a[hi] 产生一个交换步骤，枢轴已在最终位置则不产生交换；递归左右区间，长度 0 或 1 不产生步骤。相等元素走小于等于分支，允许不稳定。内部变量显示枢轴值、枢轴原位置、扫描位置、分界位置、枢轴最终位置。
+        description: Lomuto 划分，目标升序。“末元素”枢轴为区间最后一个元素，不做预处理交换；“首元素”先把首元素与末元素交换（位置不同才产生交换步骤）再以末元素为枢轴；“中间元素”先取 mid = floor((lo+hi)/2)，把中间元素与末元素交换（位置不同才产生交换步骤），再以末元素为枢轴；预处理交换的状态行为“将枢轴 3 移到区间末尾”。划分时 j 从 lo 到 hi-1，每次比较 a[j] <= pivot 产生一个比较步骤；成立时 i 加一，i 不等于 j 则交换 a[i] 与 a[j] 产生一个交换步骤；扫描结束 i+1 不等于 hi 时交换 a[i+1] 与 a[hi] 产生一个交换步骤，枢轴已在最终位置则不产生交换；递归左右区间，长度 0 或 1 不产生步骤。相等元素走小于等于分支，允许不稳定。内部变量显示枢轴值、枢轴原位置、扫描位置、分界位置、枢轴最终位置。
         scenarios:
           - id: quick-last-pivot-reference
             name: 末元素枢轴参考指标
@@ -1588,7 +1647,7 @@ children:
         type: ATOMIC
         dependencies:
           - dp-input
-        description: 设 A 长 m、B 长 n，dp 表为 (m+1) × (n+1)；第 0 行与第 0 列预填 0、不占步骤；内部单元格 m×n 个，填写顺序固定行优先（i 从 1 到 m，j 从 1 到 n），每个内部单元格填一次产生一个步骤。A[i-1] 等于 B[j-1] 时 dp[i][j] = dp[i-1][j-1] + 1，否则取 dp[i-1][j] 与 dp[i][j-1] 的较大值。步骤 k 对应第 k 个内部单元格；步骤 0 内部单元格全为空并显示“·”；步骤数 N = m×n，完成时全部内部单元格都有数字。填表过程中不显示最终 LCS，填满后才计算并显示；改字符串后从步骤 0 重来。状态行如“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 1 的较大值 1”，坐标 1 开始并说明字符关系与取值依据。
+        description: 设 A 长 m、B 长 n，dp 表为 (m+1) × (n+1)；第 0 行与第 0 列预填 0、不占步骤；内部单元格 m×n 个，填写顺序固定行优先（i 从 1 到 m，j 从 1 到 n），每个内部单元格填一次产生一个步骤。A[i-1] 等于 B[j-1] 时 dp[i][j] = dp[i-1][j-1] + 1，否则取 dp[i-1][j] 与 dp[i][j-1] 的较大值。步骤 k 对应第 k 个内部单元格；步骤 0 内部单元格全为空并显示“·”；步骤数 N = m×n，完成时全部内部单元格都有数字。填表过程中不显示最终 LCS，填满后才计算并显示；改字符串后从步骤 0 重来。状态行为“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 2 的较大值 2”，坐标 1 开始并说明字符关系与取值依据。
         scenarios:
           - id: table-shape-and-empty-cells
             name: 表格结构与未填状态
@@ -1620,7 +1679,7 @@ children:
               - keyword: WHEN
                 content: 点击“下一步”12 次
               - keyword: THEN
-                content: 状态行显示“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 1 的较大值 1”
+                content: 状态行显示“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 2 的较大值 2”
               - keyword: AND
                 content: 状态行坐标从 1 开始，指标“已填单元格”显示“12 / 42”
           - id: no-lcs-before-full
@@ -1695,7 +1754,7 @@ children:
               - keyword: THEN
                 content: 指标“LCS”与“LCS 长度”都显示“—”，表格上不再显示回溯路径描边
               - keyword: AND
-                content: 状态行显示“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 1 的较大值 1”
+                content: 状态行显示“第 12 / 42 步：填写第 2 行第 6 列，B 与 A 不相等，取上方 1 与左侧 2 的较大值 2”
       - id: dp-display
         name: DP 表格展示与边界
         type: ATOMIC
