@@ -40,9 +40,6 @@ export interface InitializationOptions {
   privateDir: string;
   requirementsContext: string;
   intent: string | null;
-  resumePath?: InitializationPath;
-  existingConfigContent?: string;
-  previousUsage?: InitializationResult["modelUsage"];
   env: Record<string, string | undefined>;
   diagnosticSecrets?: readonly string[];
   startedAtMs: number;
@@ -59,9 +56,9 @@ export async function initializeProject(options: InitializationOptions): Promise
   const { outputDir, applications } = options;
   const configExists = (await readdir(outputDir)).includes(PROJECT_SPEC_FILENAME);
   const hasCode = await hasProjectFiles(outputDir);
-  const path = options.resumePath ?? selectInitializationPath(hasCode, configExists, options.intent);
+  const path = selectInitializationPath(hasCode, configExists, options.intent);
   const explicitConfig = (path === "existing" || path === "declared_empty")
-    ? options.existingConfigContent ?? (configExists ? await readFile(join(outputDir, PROJECT_SPEC_FILENAME), "utf8") : undefined)
+    ? await readFile(join(outputDir, PROJECT_SPEC_FILENAME), "utf8")
     : undefined;
   await options.onEvent?.("initialization_started", { path, hasCode, hasConfig: configExists, intentPresent: options.intent !== null });
   const parse = () => loadProjectSpec(outputDir, undefined, (raw, origin) =>
@@ -79,7 +76,7 @@ export async function initializeProject(options: InitializationOptions): Promise
     await options.verify(outputDir, contract, options.privateDir);
     return { spec, contract };
   };
-  const usage: InitializationResult["modelUsage"] = [...(options.previousUsage ?? [])];
+  const usage: InitializationResult["modelUsage"] = [];
   let feedback = "";
   if (path === "default_scaffold") {
     const adapter = applications.get("web");
@@ -104,13 +101,6 @@ export async function initializeProject(options: InitializationOptions): Promise
       feedback = sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), options.diagnosticSecrets);
       await options.onEvent?.("initialization_validation_failed", { path, attempt: 0, message: feedback });
     }
-  }
-  if (options.resumePath && path !== "existing" && path !== "declared_empty") {
-    try {
-      const actual = await validate();
-      await options.onEvent?.("initialization_verified", { path, adapterId: actual.contract.adapterId, resumed: true });
-      return { path, ...actual, modelUsage: usage };
-    } catch { /* Retain generated files and continue the interrupted initializer. */ }
   }
   let builder: CodingAgentPort | undefined;
   try {

@@ -1,6 +1,6 @@
 import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 
-import { AGENT_LABELS, AGENT_ROLES, agentEnv, agentEnvName, isAgentRole, type AgentRole } from "./agent-config.js";
+import { AGENT_LABELS, AGENT_ROLES, agentEnv, agentEnvName, type AgentRole } from "./agent-config.js";
 
 /**
  * 模型单价与用量统计。

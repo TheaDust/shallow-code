@@ -40,14 +40,8 @@ export async function loadRequirementCatalog(
   const root = parseNode(record, "root");
   const nodes = new Map<string, ParsedNode>();
   collectNodes(root, nodes);
-  const evolutionProductName = stripEvolutionMarker(root.name);
-  const productName = evolutionProductName ?? root.name;
-  const stage = parseProgressiveStage(productName);
-  // An injected application establishes an incremental starting point even
-  // when the new requirement tree retains the original product title.
-  const evolution = evolutionProductName !== undefined
-    || (options.inheritedApplication === true && stage === undefined);
-  validateDependencies(nodes, evolution || (stage?.index ?? 0) > 1);
+  // Existing applications may provide dependencies outside the current requirement tree.
+  validateDependencies(nodes, options.inheritedApplication === true);
 
   const requirements: AtomicRequirement[] = [];
   const product: ProductContext = {
@@ -57,8 +51,6 @@ export async function loadRequirementCatalog(
     description: root.description,
     seedData: parseSeedData(record.data),
     ...(root.guidance.length ? { guidance: root.guidance } : {}),
-    ...(evolution ? { evolution: true as const } : {}),
-    ...(stage ? { stage } : {}),
   };
   collectAtomics(root, [], [], product, requirements);
   // Folder dependencies are completion barriers over their atomic descendants.
@@ -91,35 +83,6 @@ export async function loadRequirementCatalog(
       requirements.map((requirement) => [requirement.id, "todo"]),
     ),
   };
-}
-
-function parseProgressiveStage(rootName: string): ProductContext["stage"] | undefined {
-  const match = progressiveStageMatch(rootName);
-  if (!match) return undefined;
-  const index = Number(match[1]);
-  if (!Number.isSafeInteger(index) || index < 1) {
-    throw new Error(`Invalid progressive stage name: ${rootName}`);
-  }
-  return {
-    index,
-    currentStageTestsOnly: true,
-  };
-}
-
-function stripEvolutionMarker(rootName: string): string | undefined {
-  const productName = rootName
-    .replace(/\(\s*evolution(?:\s+\d+)?\s*\)|\[\s*evolution(?:\s+\d+)?\s*\]|(?:^|[-–—:：])\s*evolution(?:\s+\d+)?(?=\s*(?:$|[-–—:：]))/gi, "")
-    .replace(/^evolution\s+(?=requirements\s+for\b)/i, "");
-  if (productName === rootName) return undefined;
-  return productName
-    .replace(/^[\s\-–—:：()\[\]]+|[\s\-–—:：()\[\]]+$/g, "")
-    .replace(/\s+/g, " ");
-}
-
-function progressiveStageMatch(rootName: string): RegExpExecArray | null {
-  const name = rootName.trim();
-  return /(?:^|[\s\-–—:：]+)(?:stage|phase)\s*(\d+)\s*$/i.exec(name)
-    ?? /(?:^|[\s\-–—:：]+)第?\s*(\d+)\s*阶段\s*$/u.exec(name);
 }
 
 function parseSeedData(value: unknown): SeedDataCategory[] {

@@ -126,31 +126,15 @@ function describe(event: RunEvent): string | null {
       const contextWindow = pickNumber(detail, "builderContextWindow");
       const scaffold = asRecord(detail?.starterScaffold);
       const scaffoldStatus = scaffold && typeof scaffold.status === "string" ? scaffold.status : null;
-      const stage = asRecord(detail?.progressiveStage);
-      const stageIndex = pickNumber(stage, "index");
-      const stageStart = pickString(stage, "startingPoint");
-      const stageText = stageIndex === null ? "" : `；分阶段任务 Stage ${stageIndex}${stageStart === "inherited_application" ? "（继承前序应用）" : stageStart === "blank_template" ? "（空白模板）" : ""}`;
-      const evolution = asRecord(detail?.evolution);
-      const evolutionStage = pickNumber(evolution, "stageIndex");
-      const evolutionStart = pickString(evolution, "startingPoint");
-      const evolutionText = evolution ? `；增量开发 Evolution${evolutionStage === null ? "" : ` Stage ${evolutionStage}`}${evolutionStart === "inherited_application" ? "（继承已有应用）" : evolutionStart === "blank_template" ? "（空白模板）" : ""}` : "";
       const model = pickString(detail, "model");
       const verifierModel = pickString(detail, "verifierModel");
       const verifierText = verifierModel && verifierModel !== model ? `；Verifier 模型 ${verifierModel}` : "";
       const grouperModel = pickString(detail, "grouperModel");
       const grouperText = grouperModel && grouperModel !== model ? `；Grouper 模型 ${grouperModel}` : "";
-      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${verifierText}${grouperText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}${stageText}${evolutionText}` : ""}`;
+      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${verifierText}${grouperText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}` : ""}`;
     }
     case "packet_selected":
       return `选定需求包 ${packetId}${strings(detail?.names).length ? `：${strings(detail?.names).join("、")}` : ""}`;
-    case "evolution_scope_selected": {
-      const skipped = strings(detail?.skippedRequirementIds).length;
-      const history = pickNumber(detail, "historicalRequirementCount") === null ? ""
-        : `；历史计划需求 ID ${pickNumber(detail, "historicalPlanRequirementCount") ?? 0}；历史检查点需求 ID ${pickNumber(detail, "historicalCheckpointRequirementCount") ?? 0}；检查点补充 ID ${pickNumber(detail, "historicalCheckpointSupplementCount") ?? 0}；合并历史 ID ${pickNumber(detail, "historicalRequirementCount")}`;
-      const auditScope = Array.isArray(detail?.auditRequirementIds)
-        ? `；本轮验收 ${strings(detail.auditRequirementIds).length} 条；跳过旧需求验收 ${skipped} 条` : "";
-      return `增量实现范围已确定；有效历史计划 ${pickNumber(detail, "historicalPlans") ?? 0}；忽略损坏计划 ${pickNumber(detail, "ignoredPlans") ?? 0}${history}；新增或历史缺失 ${strings(detail?.addedRequirementIds).length} 条；明确修改 ${strings(detail?.changedRequirementIds).length} 条；初次实现 ${strings(detail?.implementationRequirementIds).length} 条；沿用 ${strings(detail?.inheritedRequirementIds).length} 条${skipped ? "" : "并独立验收"}${auditScope}${reason ? `；${reason}` : ""}`;
-    }
     case "feature_grouping_started":
       return `开始运行时语义分组；原子需求 ${pickNumber(detail, "requirements") ?? 0}`;
     case "feature_grouping_usage": {

@@ -20,7 +20,7 @@ export async function withModulePipeline(callback: (fixture: PipelineFixture) =>
       { id: "SECOND", name: "Second", type: "FOLDER", dependencies: [], children: [atom("C", ["B"])] },
     ] }));
     const options: PipelineOptions = { requirementsFile, outputDir: join(directory, "output"), ledgerFile: join(directory, "logs", "ledger.jsonl"),
-      totalBudgetMs: 60_000, verifier: { mode: "active", concurrency: 2 }, auditInheritedRequirements: true, applicationContract: { adapterId: "fake", adapterConfig: {},
+      totalBudgetMs: 60_000, verifier: { mode: "active", concurrency: 2 }, applicationContract: { adapterId: "fake", adapterConfig: {},
         installCommands: [], buildCommands: [], startCommand: { executable: "node", args: [], cwd: "output" }, buildTimeoutMs: 5_000, startTimeoutMs: 5_000 } };
     const builder = new FakeBuilder();
     const git = new FakeGitOps(["initial", "first", "second", "repair-one", "repair-two"]);

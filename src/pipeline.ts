@@ -5,7 +5,6 @@ import type { GitOps } from "./git-ops.js";
 import type { FeatureGrouper } from "./feature-grouper.js";
 import type { LogSink } from "./run-state.js";
 import type { GatewayRecovery } from "./gateway-recovery.js";
-import type { HistoricalRequirements } from "./evolution.js";
 import type { ModelUsageSummary } from "./model-usage.js";
 import type { ApplicationContract, DeliveryReport } from "./application/port.js";
 import type { InconclusiveKind, RunScenarioResult } from "./types.js";
@@ -36,13 +35,8 @@ export interface PipelineOptions {
   applicationContract: ApplicationContract;
   /** Product-visible journal directory (`shallow-progress`). */
   progressDir?: string;
-  /** Previous requirement provenance from the project. */
-  historicalProgressDir?: string;
-  historicalRequirements?: HistoricalRequirements;
-  /** Whether this stage starts from a selected prior-stage application or the blank scaffold. */
-  stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
-  /** Evolution only: true includes inherited atomics in audits and delivery coverage. Default false. */
-  auditInheritedRequirements?: boolean;
+  /** Project state at the start of this build. */
+  startingPoint?: "inherited_application" | "blank_template" | "unknown";
   /** Unchanged implementations found in the current project; always checked again in a fresh build. */
   resumedRequirementIds?: string[];
   requirementDigests?: Record<string, string>;

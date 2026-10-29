@@ -4,21 +4,9 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import { deriveModelTimeouts, parseBuilderContextWindow, parseEvolutionAuditInherited, parseRunDirOverride, readEnvFile, readGatewayConfig, resolveSseCaptureDir } from "../src/runtime-config.js";
+import { deriveModelTimeouts, parseBuilderContextWindow, parseRunDirOverride, readEnvFile, readGatewayConfig, resolveSseCaptureDir } from "../src/runtime-config.js";
 import { parseEvaluationPort, parseProbePortOverride, pickFreePort } from "../src/adapters/web/ports.js";
 import { withTempDir } from "./helpers/temp-dir.js";
-
-test("Evolution inherited audits default off and can be explicitly restored", () => {
-  assert.equal(parseEvolutionAuditInherited({}), false);
-  for (const value of ["1", "true", " YES ", "ON"]) {
-    assert.equal(parseEvolutionAuditInherited({ SHALLOW_EVOLUTION_AUDIT_INHERITED: value }), true);
-  }
-  for (const value of ["", "0", "false", " NO ", "OFF"]) {
-    assert.equal(parseEvolutionAuditInherited({ SHALLOW_EVOLUTION_AUDIT_INHERITED: value }), false);
-  }
-  assert.throws(() => parseEvolutionAuditInherited({ SHALLOW_EVOLUTION_AUDIT_INHERITED: "fales" }), /SHALLOW_EVOLUTION_AUDIT_INHERITED/);
-});
-
 
 test("Runtime config requires the three explicit gateway variables", () => {
   const complete = {

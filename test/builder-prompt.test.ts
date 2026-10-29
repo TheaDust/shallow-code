@@ -147,121 +147,45 @@ test("Builder shares its product and platform prefix across packets and repair m
   }
 });
 
-test("Evolution packets share the static context before their prerequisite ids", () => {
-  const prompts = ["REQ-1-1-2", "REQ-3-3"].map((externalId, index) => {
-    const request = implementRequest();
-    if (request.mode !== "implement") throw new Error("unexpected mode");
-    request.packet.id = `packet-${index}`;
-    request.packet.requirements[0].text += ` Packet ${index}.`;
-    request.packet.requirements[0].ancestors = [{ id: `AREA-${index}`, name: `Area ${index}`, description: `Area ${index}.` }];
-    request.projectContext.ancestors = [{ id: `AREA-${index}`, name: `Area ${index}`, description: `Area ${index}.` }];
-    request.projectContext.evolution = { startingPoint: "inherited_application", externalPrerequisiteIds: [externalId], changesOnly: true };
-    return compileBuilderPrompt(request).taskPrompt;
-  });
-  const marker = "前序能力 ID：";
-  const boundary = prompts[0]!.indexOf(marker);
-  assert.ok(boundary > 0);
-  const prefix = prompts[0]!.slice(0, boundary + marker.length);
-  assert.ok(prefix.includes("## 增量开发上下文"));
-  assert.ok(prefix.includes(loadPrompt("builder", "evolution-audit-all")));
-  assert.ok(prefix.includes(loadPrompt("builder", "incremental-start-inherited")));
-  assert.ok(prefix.includes("继承应用的持久化目录"), "the last static paragraph stays in the shared prefix");
-  for (const prompt of prompts) assert.ok(prompt.startsWith(prefix));
-  assert.notEqual(prompts[0]!.slice(boundary), prompts[1]!.slice(boundary));
-});
-
-test("Builder receives progressive-stage rules for inherited and blank starting points", () => {
-  for (const [startingPoint, expected] of [
-    ["inherited_application", "继承自前序阶段的应用"],
-    ["blank_template", "空白通用模板"],
-  ] as const) {
-    const request = implementRequest();
-    if (request.mode !== "implement") throw new Error("unexpected mode");
-    request.projectContext.progressiveStage = {
-      index: 3,
-      currentStageTestsOnly: true,
-      startingPoint,
-      externalPrerequisiteIds: ["REQ-1-1-2", "REQ-3-3"],
-    };
-    const compiled = compileBuilderPrompt(request);
-    const prompt = compiled.taskPrompt;
-    assert.match(prompt, /## 分阶段增量上下文/);
-    assert.ok(prompt.indexOf("前序阶段能力 ID：") > prompt.indexOf("无论起点如何"));
-    assert.match(prompt, /当前阶段：Stage 3/);
-    assert.ok(prompt.includes(`本轮起点：${expected}`));
-    assert.match(prompt, /REQ-1-1-2、REQ-3-3/);
-    assert.match(prompt, /不是本轮单独验收的需求/);
-    assert.ok(prompt.includes(loadPrompt("builder", "action-implement")));
-    assert.ok(compiled.systemPrompt.includes(loadPrompt("builder", "self-test")));
-    if (startingPoint === "inherited_application") assert.match(prompt, /不换栈、不推倒重写/);
-    else assert.match(prompt, /最小必要的前序支撑能力/);
-  }
-});
-
-test("Evolution context reaches implementation and repair modes for each starting point", () => {
-  for (const [startingPoint, expected] of [
-    ["inherited_application", "已有应用"],
-    ["blank_template", "空白通用模板"],
-    ["unknown", "未明确；先检查项目目录判断是否已有应用"],
+test("Development context reaches implementation and repair with one starting-point action", () => {
+  for (const [startingPoint, assetName, expected] of [
+    ["inherited_application", "incremental-start-inherited", "已有应用"],
+    ["blank_template", "incremental-start-blank", "空白通用模板"],
+    ["unknown", "incremental-start-unknown", "未明确；先检查项目目录判断是否已有应用"],
   ] as const) {
     for (const request of [implementRequest(), repairRequest("repair"), repairRequest("root_cause_repair")]) {
       if (request.mode === "delivery_repair") throw new Error("unexpected mode");
-      request.projectContext.product.evolution = true;
-      request.projectContext.evolution = { startingPoint, externalPrerequisiteIds: ["REQ-1", "REQ-2"] };
-      const compiled = compileBuilderPrompt(request);
-      const prompt = compiled.taskPrompt;
-      assert.match(prompt, /## 增量开发上下文/);
-      assert.match(prompt, /当前任务：Evolution\n/);
-      assert.ok(prompt.includes(`本轮起点：${expected}`));
-      assert.match(prompt, /前序能力 ID：REQ-1、REQ-2/);
-      assert.match(prompt, /本工作包是本轮实现范围，验收范围见下方声明/);
-      assert.match(prompt, /本轮模块边界验收和最终交付覆盖当前需求树，包括沿用项/);
-      assert.match(prompt, /不是本轮单独验收的需求/);
-      assert.match(prompt, /改动的原始需求与新增需求/);
-      assert.match(prompt, /原功能复用符合当前合同的部分，局部修改变化/);
-      assert.match(prompt, /新增功能沿用既有模型和接口补齐完整业务链路/);
-      assert.match(prompt, /不能凭旧需求 ID 或前次通过结果跳过核对/);
-      assert.ok(compiled.systemPrompt.includes(loadPrompt("builder", "self-test")));
-      assert.equal(prompt.includes(loadPrompt("builder", "action-implement")), request.mode === "implement");
-      if (startingPoint === "inherited_application") assert.match(prompt, /沿用现有技术栈、模型和接口/);
-      else if (startingPoint === "blank_template") assert.match(prompt, /最小必要的前序支撑能力/);
-      else assert.match(prompt, /先阅读项目目录、其中适用的 AGENTS\.md、ARCHITECTURE\.md/);
-    }
-  }
-});
-
-test("Evolution and progressive stages share starting-point actions across implementation and repair", () => {
-  for (const [startingPoint, assetName] of [
-    ["inherited_application", "incremental-start-inherited"],
-    ["blank_template", "incremental-start-blank"],
-    ["unknown", "incremental-start-unknown"],
-  ] as const) {
-    for (const request of [implementRequest(), repairRequest("repair"), repairRequest("root_cause_repair")]) {
-      if (request.mode === "delivery_repair") throw new Error("unexpected mode");
-      request.projectContext.progressiveStage = { index: 2, currentStageTestsOnly: true, startingPoint, externalPrerequisiteIds: [] };
-      const stagePrompt = compileBuilderPrompt(request).taskPrompt;
-      request.projectContext.evolution = { stageIndex: 2, startingPoint, externalPrerequisiteIds: [] };
-      const evolutionPrompt = compileBuilderPrompt(request).taskPrompt;
-      const action = loadPrompt("builder", assetName);
-      assert.equal(stagePrompt.split(action).length, 2);
-      assert.equal(evolutionPrompt.split(action).length, 2);
-      assert.match(evolutionPrompt, /当前任务：Evolution；Stage 2/);
-      assert.doesNotMatch(evolutionPrompt, /## 分阶段增量上下文/);
+      request.projectContext.startingPoint = startingPoint;
+      request.projectContext.externalPrerequisiteIds = ["OLD-A", "OLD-B"];
+      const { systemPrompt, taskPrompt } = compileBuilderPrompt(request);
+      assert.match(taskPrompt, /## 开发上下文/);
+      assert.ok(taskPrompt.includes(`本轮起点：${expected}`));
+      assert.match(taskPrompt, /前序能力 ID：OLD-A、OLD-B/);
+      assert.match(taskPrompt, /验收覆盖当前需求树中的全部条目，包括沿用项/);
+      assert.match(taskPrompt, /当前需求摘要和已封存的实现进度/);
+      assert.match(taskPrompt, /变更或未完成的需求继续开发/);
+      assert.equal(taskPrompt.split(loadPrompt("builder", assetName)).length, 2);
+      assert.ok(systemPrompt.includes(loadPrompt("builder", "self-test")));
+      assert.doesNotMatch(taskPrompt, /Evolution|当前阶段：Stage/);
       for (const other of ["incremental-start-inherited", "incremental-start-blank", "incremental-start-unknown"]) {
-        if (other !== assetName) {
-          assert.ok(!stagePrompt.includes(loadPrompt("builder", other)));
-          assert.ok(!evolutionPrompt.includes(loadPrompt("builder", other)));
-        }
+        if (other !== assetName) assert.ok(!taskPrompt.includes(loadPrompt("builder", other)));
       }
     }
   }
 });
 
-test("Evolution context includes a declared stage as optional metadata", () => {
-  const request = implementRequest();
-  if (request.mode !== "implement") throw new Error("unexpected mode");
-  request.projectContext.evolution = { stageIndex: 2, startingPoint: "inherited_application", externalPrerequisiteIds: [] };
-  assert.match(compileBuilderPrompt(request).taskPrompt, /当前任务：Evolution；Stage 2/);
+test("Development packets share the static context before their prerequisite ids", () => {
+  const prompts = ["OLD-A", "OLD-B"].map(id => {
+    const request = implementRequest();
+    if (request.mode !== "implement") throw new Error("unexpected mode");
+    request.projectContext.startingPoint = "inherited_application";
+    request.projectContext.externalPrerequisiteIds = [id];
+    return compileBuilderPrompt(request).taskPrompt;
+  });
+  const boundary = prompts[0]!.indexOf("前序能力 ID：");
+  assert.ok(boundary > 0);
+  assert.equal(prompts[0]!.slice(0, boundary), prompts[1]!.slice(0, boundary));
+  assert.notEqual(prompts[0]!.slice(boundary), prompts[1]!.slice(boundary));
 });
 
 test("Every Builder mode includes shared handoff and public-entry contracts", () => {

@@ -16,7 +16,7 @@ import { withTempDir } from "./helpers/temp-dir.js";
 import { loadRunRecord } from "../src/run-record.js";
 import { webRuntimeConfig, minimalWebProjectSpec, npmExecutable } from "../src/adapters/web/project-spec.js";
 import { GitCliOps } from "../src/git-ops.js";
-import { saveImplementationDigests } from "../src/evolution.js";
+import { saveImplementationDigests } from "../src/requirement-progress.js";
 
 test("Build discovers project progress after an interruption without selecting an old private run", async () => {
   await withTempDir("shallow-entry-local-progress-", async root => {
@@ -64,7 +64,6 @@ res.statusCode=404; res.end('missing'); }).listen(Number(process.env.PORT),'127.
     const first = join(runs, (await readdir(runs)).find(name => !name.startsWith("."))!);
     const record = await loadRunRecord(first);
     assert.equal(record.outputDir, source);
-    assert.equal(record.sourceProjectDir, undefined);
     assert.equal(record.checkpointGitDirectory, join(first, "checkpoints.git"));
     await assert.rejects(access(join(source, ".git")), "controller checkpoints do not create an application repository");
     const originalLedger = await readFile(join(first, "run-ledger.jsonl"), "utf8");
@@ -79,7 +78,6 @@ res.statusCode=404; res.end('missing'); }).listen(Number(process.env.PORT),'127.
     const second = join(runs, (await readdir(runs)).find(name => !name.startsWith(".") && join(runs, name) !== first)!);
     const continued = await loadRunRecord(second);
     assert.equal(continued.outputDir, source);
-    assert.equal(continued.resumedFrom, undefined);
     assert.deepEqual(continued.projectSpec.env, { CURRENT_CONTRACT: "changed" });
     assert.notEqual(continued.requirementsDigest, record.requirementsDigest);
     assert.notEqual(continued.contractDigest, record.contractDigest);
@@ -98,7 +96,7 @@ test("Existing project entry develops in place and passes its current declared r
     await writeFile(join(requirements, "requirements.yaml"), "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
     await main(["--requirements-dir", requirements, "--project", source], { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "runs") }, async context => {
       assert.equal(context.pipelineOptions.outputDir, source);
-      assert.equal(context.pipelineOptions.stageStartingPoint, "inherited_application");
+      assert.equal(context.pipelineOptions.startingPoint, "inherited_application");
       assert.deepEqual(context.pipelineOptions.applicationContract.env, { FLAG: "declared" });
       assert.equal(context.pipelineOptions.applicationContract.testTargets?.[0].id, "unit");
       await writeFile(join(context.pipelineOptions.outputDir, "server.js"), "implemented");
@@ -141,7 +139,6 @@ test("An output directory carrying only requirements metadata starts a blank tem
       null,
     );
     assert.equal(exitCode, 0);
-    assert.equal(received?.runRecord.sourceProjectDir, undefined, "req 元数据目录不应被当作已有项目");
     assert.equal(received?.pipelineOptions.outputDir, output);
     assert.deepEqual(received?.runRecord.projectSpec, minimalWebProjectSpec(npmExecutable()), "空白目录使用随附模板的运行合同");
     const run = join(root, "runs", (await readdir(join(root, "runs")))[0]);
@@ -198,29 +195,9 @@ test("Agent entry validates paths and passes bounded production context", async 
     assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3100);
     assert.equal(received?.builderContextWindow, 400_000);
     assert.equal(received?.requirementTree?.id, "ROOT");
-    assert.equal(received?.pipelineOptions.auditInheritedRequirements, false);
   });
 });
 
-
-test("Agent entry loads the Evolution audit switch from env files with real env winning", async () => {
-  await withTempDir("shallow-entry-evolution-audit-", async directory => {
-    const requirementsDir = join(directory, "requirements");
-    await mkdir(requirementsDir);
-    await writeFile(join(requirementsDir, "requirements.yaml"), "id: ROOT\nname: Root\ntype: FOLDER\nchildren: []\n");
-    const envFile = join(directory, "gateway.env");
-    await writeFile(envFile, "SHALLOW_EVOLUTION_AUDIT_INHERITED=0\n");
-    const argv = ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output")];
-    const received: boolean[] = [];
-    const execute: AgentExecution = async context => {
-      received.push(context.pipelineOptions.auditInheritedRequirements!);
-      return { status: "delivered", verifiedRequirementIds: [], blockedRequirementIds: [], acceptedSha: "sha" };
-    };
-    await main(argv, gatewayEnv(), execute, envFile);
-    await main(argv, { ...gatewayEnv(), SHALLOW_EVOLUTION_AUDIT_INHERITED: "1" }, execute, envFile);
-    assert.deepEqual(received, [false, true]);
-  });
-});
 
 test("Agent entry picks a non-3000 probe port when the override is absent", async () => {
   await withTempDir("shallow-entry-", async (directory) => {

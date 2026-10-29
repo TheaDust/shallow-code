@@ -13,12 +13,6 @@ import { join } from "node:path";
  */
 export const PROGRESS_DIR_NAME = "shallow-progress";
 
-/** True when a repository-relative path is the progress directory or below it. */
-export function isProgressPath(relativePath: string): boolean {
-  const normalised = relativePath.replaceAll("\\", "/");
-  return normalised === PROGRESS_DIR_NAME || normalised.startsWith(`${PROGRESS_DIR_NAME}/`);
-}
-
 export function progressPlansDirectory(progressDir: string): string {
   return join(progressDir, "plans");
 }

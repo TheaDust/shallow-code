@@ -35,7 +35,6 @@ import {
   deriveModelTimeouts,
   parseBuilderContextWindow,
   parseVerifierConfig,
-  parseEvolutionAuditInherited,
   parseRunDirOverride,
   readEnvFile,
   resolveSseCaptureDir,
@@ -52,7 +51,7 @@ import { verifierAdapters } from "./src/adapters/verifier.js";
 import { hasProjectFiles } from "./src/project-workspace.js";
 import { digest, lockWorkspace, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
 import { loadRequirementCatalog } from "./src/catalog.js";
-import { readHistoricalRequirementIds, readImplementationDigests, requirementDigest, saveRequirementDigests } from "./src/evolution.js";
+import { readImplementationDigests, requirementDigest, saveRequirementDigests } from "./src/requirement-progress.js";
 
 export interface AgentExecutionContext {
   tui?: BuildTui;
@@ -148,8 +147,6 @@ export async function main(
   const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
   const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
   const progressDir = join(workingDirectory, PROGRESS_DIR_NAME);
-  const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(progressDir) : undefined;
-  const historicalRequirements = sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined;
   const previousImplementations = inheritedProject ? await readImplementationDigests(progressDir) : {};
   const resumedRequirementIds = Object.keys(requirementDigests).filter(id => previousImplementations[id] === requirementDigests[id]);
   const initializationTui = execute === executeProduction && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb"
@@ -199,14 +196,13 @@ export async function main(
     const contractDigest = await controllerContractDigest(spec);
     const applicationContract = initialization?.contract ?? await applications.get(spec.adapter ?? "web").configure(spec, mergedEnv);
     const pipelineOptions: PipelineOptions = {
-      verifier, requirementDigests, historicalRequirements,
+      verifier, requirementDigests,
       requirementsFile: join(requirementSnapshot, "requirements.yaml"),
       outputDir: workingDirectory, ledgerFile: join(runDirectory, "run-ledger.jsonl"),
       totalBudgetMs: cli.budgetMs, startedAtMs, initializationUsage: initialization?.modelUsage,
       ...(initialization ? { initialization: { path: initialization.path, intent } } : {}),
       applicationContract, progressDir,
-      ...(inheritedProject ? { historicalProgressDir: progressDir, stageStartingPoint: "inherited_application" as const } : {}),
-      auditInheritedRequirements: parseEvolutionAuditInherited(mergedEnv),
+      startingPoint: inheritedProject ? "inherited_application" : "blank_template",
       ...(Object.keys(previousImplementations).length ? { resumedRequirementIds } : {}),
     };
     const runRecord: RunRecord = {
@@ -214,10 +210,9 @@ export async function main(
       requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
       ...(initialization ? { initializationPath: initialization.path } : {}),
       outputDir: workingDirectory, inputFiles: inputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
-      requirementDigests, historicalRequirements,
-      auditInheritedRequirements: pipelineOptions.auditInheritedRequirements ?? false,
+      requirementDigests,
       ...(initializationBaseline ? { inputBaseline: initializationBaseline, checkpointGitDirectory } : {}),
-      stageStartingPoint: inheritedProject ? "inherited_application"
+      startingPoint: inheritedProject ? "inherited_application"
         : initialization?.path === "default_scaffold" ? "blank_template" : "unknown",
     };
     await saveRunRecord(runDirectory, runRecord);
@@ -361,14 +356,14 @@ async function executeProduction(
         ? { status: "installed" as const, reason: "installed and validated during initialization", files: [] }
         : { status: "skipped_existing_application" as const, reason: "initialized project", files: [] }
       : await applicationAdapter.installScaffold(pipelineOptions.outputDir, pipelineOptions.applicationContract);
-    const stageStartingPoint = context.runRecord.stageStartingPoint
-      ? context.runRecord.stageStartingPoint
+    const startingPoint = context.runRecord.startingPoint
+      ? context.runRecord.startingPoint
       : starterScaffold.status === "skipped_existing_application"
       ? "inherited_application" as const
       : starterScaffold.status === "installed"
         ? "blank_template" as const
         : "unknown" as const;
-    context.runRecord.stageStartingPoint = stageStartingPoint;
+    context.runRecord.startingPoint = startingPoint;
     await saveRunRecord(dirname(runLogFile), context.runRecord);
     if (!tui) process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
     const promptDir = new URL("./prompts/", import.meta.url);
@@ -387,7 +382,7 @@ async function executeProduction(
       let initialDataSnapshot: ContentRef;
       try { initialDataSnapshot = JSON.parse(await readFile(join(directory, "baseline.json"), "utf8")) as ContentRef; await snapshots.open(initialDataSnapshot); }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT" || context.runRecord.resumedFrom) throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         initialDataSnapshot = (await snapshots.seal({ sourceDirectory: pipelineOptions.outputDir,
           sourceSha: await git.captureAccepted("shallow: Verifier input baseline"), packetId: "input-baseline",
           generatedPaths: pipelineOptions.applicationContract.generatedPaths, dataPaths: pipelineOptions.applicationContract.dataPaths })).ref;
@@ -413,7 +408,7 @@ async function executeProduction(
       const baseline = await snapshots.open(initialDataSnapshot);
       const programCache = await VerifierProgramCache.open({ directory: programCacheDirectory, artifacts, binding: execution.adapter.binding,
         initialData: baseline.manifest.files.filter(file => pipelineOptions.applicationContract.dataPaths?.some(path => file.path === path || file.path.startsWith(path + "/"))),
-        requirements: (await loadRequirementCatalog(pipelineOptions.requirementsFile, { inheritedApplication: stageStartingPoint === "inherited_application" })).requirements,
+        requirements: (await loadRequirementCatalog(pipelineOptions.requirementsFile, { inheritedApplication: startingPoint === "inherited_application" })).requirements,
         requirementDigests: pipelineOptions.requirementDigests ?? {} });
       verifierRuntime = { directory, artifacts, snapshots, verifier: createVerifierAgent({ artifacts, adapter: execution.adapter, model, sourceIndex,
         semanticReview: pipelineOptions.verifier.semanticReview === true, programCache }),
@@ -427,7 +422,7 @@ async function executeProduction(
             report: { ok: false, stage: "readiness", message: error instanceof Error ? error.message : String(error) } }; }
         } };
     }
-    const summary = await runPipeline({ ...pipelineOptions, stageStartingPoint }, {
+    const summary = await runPipeline({ ...pipelineOptions, startingPoint }, {
       verifier: verifierRuntime,
       grouper: new PiFeatureGrouper({ gateway: grouperGateway, sessionDir: join(dirname(runLogFile), "grouper-sessions"),
         recovery: gatewayRecovery, ...(grouperModelCost ? { modelCost: grouperModelCost } : {}) }),

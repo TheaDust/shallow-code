@@ -25,8 +25,6 @@ export const CONTROLLER_METADATA_NAMES = [
   ...IGNORED_METADATA_NAMES,
 ] as const;
 
-export type ControllerMetadataName = (typeof CONTROLLER_METADATA_NAMES)[number];
-
 export const CONTROLLER_METADATA: ReadonlySet<string> = new Set(CONTROLLER_METADATA_NAMES);
 
 /** 不属于应用内容、不进入应用历史或运行副本的元数据目录。 */

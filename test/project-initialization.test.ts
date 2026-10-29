@@ -8,7 +8,6 @@ import type { RuntimeAdapter } from "../src/application/port.js";
 import { parseProjectSpec, resolveApplicationContract } from "../src/project-spec.js";
 import type { CodingAgentPort, CodingAgentRequest, CodingAgentResult } from "../src/builder/execution-port.js";
 import { initializeProject, readProjectIntent, selectInitializationPath } from "../src/project-initialization.js";
-import { loadPendingInitialization, savePendingInitialization } from "../src/run-record.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 test("initialization routing distinguishes all five input states", () => {
@@ -122,29 +121,5 @@ test("technical intent input is optional and empty files are rejected", async ()
     assert.equal(await readProjectIntent(root), "Vue + SQLite");
     await writeFile(join(root, "project-intent.md"), "   ");
     await assert.rejects(readProjectIntent(root), /empty/);
-  });
-});
-
-test("interrupted custom initialization reuses generated files and its durable record", async () => {
-  await withTempDir("shallow-init-", async root => {
-    const outputDir = join(root, "app");
-    const privateDir = join(root, "private");
-    await mkdir(outputDir);
-    await writeFile(join(outputDir, "shallowcode.config.json"), JSON.stringify({
-      start: { executable: "node", args: ["server.mjs"] }, adapter: "web",
-    }));
-    await writeFile(join(outputDir, "server.mjs"), "// existing generated code\n");
-    const record = { version: 1 as const, requirementsDir: root, requirementsDigest: "digest",
-      outputDir, inputBaseline: "a".repeat(40), inputFiles: {}, path: "custom" as const, modelUsage: [] };
-    await savePendingInitialization(privateDir, record);
-    assert.deepEqual(await loadPendingInitialization(privateDir), record);
-    let modelCalls = 0;
-    const result = await initializeProject({ outputDir, privateDir, requirementsContext: "app",
-      intent: "自定义技术栈", resumePath: record.path, env: {}, startedAtMs: Date.now(), budgetMs: 0,
-      applications, createBuilder: () => { modelCalls++; throw new Error("resumed runnable project should not call model"); },
-      verify: async () => {}, });
-    assert.equal(result.path, "custom");
-    assert.equal(modelCalls, 0);
-    assert.match(await readFile(join(outputDir, "server.mjs"), "utf8"), /existing/);
   });
 });

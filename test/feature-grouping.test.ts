@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { loadRequirementCatalog } from "../src/catalog.js";
-import { FEATURE_GROUPING_SCHEMA, parseFeatureGrouping } from "../src/feature-grouper.js";
+import { parseFeatureGrouping } from "../src/feature-grouper.js";
 import { validateGrouping } from "../src/feature-grouping-tools.js";
-import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets } from "../src/scheduler.js";
+import { featureGroupPackets } from "../src/scheduler.js";
 import type { RequirementCatalog } from "../src/types.js";
 
 const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })), scenarioPrerequisites: [] });

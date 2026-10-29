@@ -134,14 +134,6 @@ export function referenceImagesEnabled(env: Record<string, string | undefined>):
   return raw !== undefined && /^(1|true|yes|on)$/i.test(raw);
 }
 
-/** Finals default to the delta; operators can restore inherited requirement audits. */
-export function parseEvolutionAuditInherited(env: Record<string, string | undefined>): boolean {
-  const raw = env["SHALLOW_EVOLUTION_AUDIT_INHERITED"]?.trim();
-  if (!raw || /^(0|false|no|off)$/i.test(raw)) return false;
-  if (/^(1|true|yes|on)$/i.test(raw)) return true;
-  throw new Error("SHALLOW_EVOLUTION_AUDIT_INHERITED must be 1/true/yes/on or 0/false/no/off");
-}
-
 export function deriveModelTimeouts(totalBudgetMs: number): {
   builderTimeoutMs: number;
   verifierTimeoutMs: number;

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { BuilderRequest, BuilderResult } from "./builder/port.js";
 import type { BuilderProjectContext, BuilderShadowObservation } from "./builder/prompt-input.js";
 import { loadRequirementCatalog } from "./catalog.js";
-import { evolutionImplementationCatalog, readHistoricalRequirementIds, saveImplementationDigests, selectEvolutionScope } from "./evolution.js";
+import { pendingImplementationCatalog, saveImplementationDigests } from "./requirement-progress.js";
 import { ExecutionFault } from "./execution-fault.js";
 import { GatewayRequestError } from "./gateway-failure.js";
 import { GatewayRecovery } from "./gateway-recovery.js";
@@ -193,7 +193,7 @@ export class VerifierCoordinator {
 }
 
 export async function runVerifierPipeline(options: PipelineOptions, deps: PipelineDeps, runtime: VerifierRuntime): Promise<RunSummary> {
-  const catalog = await loadRequirementCatalog(options.requirementsFile, { inheritedApplication: options.stageStartingPoint === "inherited_application" });
+  const catalog = await loadRequirementCatalog(options.requirementsFile, { inheritedApplication: options.startingPoint === "inherited_application" });
   const started = options.startedAtMs ?? deps.clock.nowMs();
   const budget = new RunBudget(options.totalBudgetMs, started, () => deps.clock.nowMs());
   const initialSha = await deps.git.captureAccepted("shallow: initial Verifier state");
@@ -220,8 +220,6 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
   if (recoveredHead) await runtime.snapshots.restore(recoveredHead.snapshot, options.outputDir,
     { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
   const implemented = new Set(coordinator.checkpoints.snapshot.producedHead?.implementedRequirementIds ?? options.resumedRequirementIds ?? []);
-  const inherited = new Set<string>();
-  const skipped = new Set<string>();
   const currentResults = new Map<string, ScopedOutcome[]>();
   const replay = options.verifier.replay === true;
   let auditGroups: WorkPacket[] = [];
@@ -236,11 +234,8 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
   const contextFor = (packet: WorkPacket): BuilderProjectContext => ({ product: packet.requirements[0].product,
     ancestors: [...new Map(packet.requirements.flatMap(item => item.ancestors).map(item => [item.id, item])).values()],
     satisfiedDependencies: (packet.prerequisites ?? []).filter(item => implemented.has(item.id)).map(item => ({ id: item.id, name: item.name, contract: item.text })),
-    ...(packet.requirements[0].product.evolution ? { evolution: { startingPoint: options.stageStartingPoint ?? "unknown",
-      externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [], changesOnly: true as const,
-      ...(options.resumedRequirementIds === undefined && !options.auditInheritedRequirements ? { auditInheritedRequirements: false as const } : {}) } }
-      : packet.requirements[0].product.stage ? { progressiveStage: { ...packet.requirements[0].product.stage,
-        startingPoint: options.stageStartingPoint ?? "unknown", externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [] } } : {}) });
+    startingPoint: options.startingPoint ?? "unknown",
+    externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [] });
   const build = async (request: BuilderRequest, phase: PipelinePhase, resumeInterrupted = false): Promise<BuilderResult> => {
     // Fixed services declared by a project must also be exclusive with Builder self-tests.
     if (runtime.resourceKeys.length) await coordinator.drain();
@@ -327,7 +322,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       currentResults.set(requirement.id, clauses);
       state.markRequirements([requirement.id], outcomeStatus(clauses));
     }
-    const selected = catalog.requirements.filter(item => !skipped.has(item.id));
+    const selected = catalog.requirements;
     const allOutcomes = [...currentResults.values()].flat();
     await state.record({ at: now(), type: "module_check_finished", detail: { moduleId: module, moduleEpoch: epoch,
       snapshotId: head.snapshot.id, published: true, replay,
@@ -341,7 +336,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     if (!head) return;
     const moduleRequirements = catalog.requirements.filter(item => moduleId(item) === module && implemented.has(item.id));
     const prerequisites = dependencyClosure(moduleRequirements, byId);
-    const scope = catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id) &&
+    const scope = catalog.requirements.filter(item => implemented.has(item.id) &&
       (moduleId(item) === module || prerequisites.has(item.id)));
     let epoch = await coordinator.checkpoints.nextEpoch();
     await state.record({ at: now(), type: "module_check_started", detail: { moduleId: module, moduleEpoch: epoch,
@@ -375,7 +370,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", checkBudget(), { epoch, priority: 0 });
         await coordinator.report(readyJob); await coordinator.drain();
         if (coordinator.checkpoints.snapshot.accepted.snapshot?.id === repaired.snapshot.id) {
-          const regressionScope = replay ? catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id) &&
+          const regressionScope = replay ? catalog.requirements.filter(item => implemented.has(item.id) &&
             (moduleId(item) === module || currentResults.get(item.id)?.some(outcome => outcome.status === "pass"))) : repairRequirements;
           const checked = await inspect(repaired, regressionScope, epoch, !replay);
           const guards = [...baselineOutcomes, ...[...currentResults.values()].flat()].filter(item => item.status === "pass"
@@ -421,22 +416,8 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       totalBudgetMs: options.totalBudgetMs, adapterId: options.applicationContract.adapterId, ...deps.runMetadata } });
     // 恢复运行时先把已实现范围交给展示层；验收结果仍由后续独立检查确定。
     if (implemented.size) await state.record({ at: now(), type: "run_resumed", detail: { requirementIds: [...implemented] } });
-    // Local implementation records take precedence over legacy stage provenance.
-    if (options.resumedRequirementIds === undefined && options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution) {
-      const history = options.historicalRequirements ?? await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, "shallow-progress"));
-      const selection = selectEvolutionScope(catalog, new Set(history.requirementIds), history.requirementDigests, options.requirementDigests);
-      for (const id of [...selection.addedRequirementIds, ...selection.changedRequirementIds]) implemented.delete(id);
-      for (const id of selection.inheritedRequirementIds) { inherited.add(id); implemented.add(id); if (!options.auditInheritedRequirements) skipped.add(id); }
-      implementationCatalog = evolutionImplementationCatalog(catalog, inherited);
-      await state.record({ at: now(), type: "evolution_scope_selected", detail: {
-        ...selection, historicalPlans: history.plans, ignoredPlans: history.ignoredPlans,
-        historicalPlanRequirementCount: history.planRequirementCount, historicalCheckpointRequirementCount: history.checkpointRequirementCount,
-        historicalCheckpointSupplementCount: history.checkpointSupplementCount, historicalRequirementCount: new Set(history.requirementIds).size,
-        implementationRequirementIds: implementationCatalog.requirements.map(item => item.id),
-        auditRequirementIds: catalog.requirements.filter(item => !skipped.has(item.id)).map(item => item.id), skippedRequirementIds: [...skipped] } });
-    }
     if (!recoveredHead && options.resumedRequirementIds !== undefined) {
-      implementationCatalog = evolutionImplementationCatalog(catalog, implemented);
+      implementationCatalog = pendingImplementationCatalog(catalog, implemented);
     }
     const savedGroups = coordinator.checkpoints.snapshot.featureGroups;
     let grouping = savedGroups ? featureGroupingFromIds(implementationCatalog, savedGroups) : featureGroupPackets(implementationCatalog);
@@ -457,7 +438,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     if (!savedGroups) await coordinator.checkpoints.setFeatureGroups(grouping.packets.map(packet => packet.requirementIds));
     auditGroups = grouping.packets.map(packet => packetFor(packet.id, packet.requirementIds.map(id => byId.get(id)!)));
     if (!coordinator.checkpoints.snapshot.producedHead && options.resumedRequirementIds?.length) {
-      const continued = catalog.requirements.filter(item => implemented.has(item.id) && !skipped.has(item.id));
+      const continued = catalog.requirements.filter(item => implemented.has(item.id));
       if (continued.length) {
         const head = await coordinator.seal(packetFor("continue", continued), implemented);
         for (const group of auditPackets({ requirements: continued, statusById: catalog.statusById })) {
@@ -514,7 +495,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     await emitPhase("audit");
     // Replay the final scope when enabled; otherwise publish original group evidence.
     let head = coordinator.checkpoints.snapshot.producedHead;
-    const scope = catalog.requirements.filter(item => !skipped.has(item.id) && implemented.has(item.id));
+    const scope = catalog.requirements.filter(item => implemented.has(item.id));
     if (head) {
       const epoch = await coordinator.checkpoints.nextEpoch();
       const outcomes = await inspect(head, scope, epoch);
@@ -568,7 +549,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         await runtime.snapshots.restore(fallback.snapshot, options.outputDir,
           { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
         head = fallback;
-        implemented.clear(); for (const id of [...fallback.implementedRequirementIds, ...inherited]) implemented.add(id);
+        implemented.clear(); for (const id of fallback.implementedRequirementIds) implemented.add(id);
         if (budget.remaining("delivery") > 0) {
           delivery = await verifyDelivery(fallback);
           const fallbackScope = scope.filter(item => implemented.has(item.id));
@@ -588,14 +569,14 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       }
     }
     await state.record({ at: now(), type: "delivery_finished", detail: delivery });
-    const selected = catalog.requirements.filter(item => !skipped.has(item.id));
+    const selected = catalog.requirements;
     const ids = (status: RequirementStatus) => selected.filter(item => state.snapshot.statusByRequirementId[item.id] === status).map(item => item.id);
     const verified = ids("verified");
     const summary: RunSummary = { status: !delivery.ok ? "failed" : verified.length === selected.length ? "delivered" : "partial",
       acceptedSha: state.snapshot.acceptedSha, delivery, verifiedRequirementIds: verified,
       blockedRequirementIds: ids("blocked"), failedRequirementIds: ids("failed"), inconclusiveRequirementIds: ids("inconclusive"), pendingRequirementIds: ids("todo"),
-      implementedRequirementIds: [...implemented].filter(id => !skipped.has(id)), modelUsage: usage.summary(),
-      auditRequirementIds: selected.map(item => item.id), skippedRequirementIds: [...skipped],
+      implementedRequirementIds: [...implemented], modelUsage: usage.summary(),
+      auditRequirementIds: selected.map(item => item.id), skippedRequirementIds: [],
       verifier: { mode: "active", semanticReview: options.verifier.semanticReview === true, replay,
         producedHead: coordinator.checkpoints.snapshot.producedHead,
         verifiedSnapshotId: delivery.ok && replay ? head?.snapshot.id : undefined, outcomes: [...currentResults.values()].flat() },

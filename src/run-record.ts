@@ -1,16 +1,14 @@
 import { createHash } from "node:crypto";
-import { appendFile, lstat, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { NON_APPLICATION_METADATA } from "./controller-metadata.js";
 import type { ProjectSpec } from "./project-spec.js";
 import { parseProjectSpec } from "./project-spec.js";
 import type { RunSummary } from "./pipeline.js";
 import { runGit } from "./git-ops.js";
-import { saveRequirementDigests, type HistoricalRequirements } from "./evolution.js";
 import { formatModelUsageSummary } from "./model-usage.js";
 import type { VerifierConfig } from "./runtime-config.js";
-import { readVerifierCheckpoint } from "./verifier/checkpoints.js";
 import { ArtifactStore } from "./verifier/artifacts.js";
 import type { EvidenceReceipt } from "./verifier/port.js";
 
@@ -22,54 +20,14 @@ export interface RunRecord {
   projectSpec: ProjectSpec;
   initializationPath?: import("./project-initialization.js").InitializationPath;
   outputDir: string;
-  sourceProjectDir?: string;
   inputBaseline?: string;
   checkpointGitDirectory?: string;
   inputFiles: Record<string, string>;
   requirementDigests?: Record<string, string>;
-  historicalRequirements?: HistoricalRequirements;
-  stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
-  auditInheritedRequirements: boolean;
-  resumedFrom?: string;
+  startingPoint?: "inherited_application" | "blank_template" | "unknown";
   verifier: VerifierConfig;
   bindingDigest?: string;
   verifierRunId?: string;
-}
-
-/** Durable state before a runnable project contract exists. */
-export interface PendingInitialization {
-  version: 1;
-  requirementsDir: string;
-  requirementsDigest: string;
-  outputDir: string;
-  sourceProjectDir?: string;
-  inputBaseline: string;
-  inputFiles: Record<string, string>;
-  path: import("./project-initialization.js").InitializationPath;
-  existingConfigContent?: string;
-  modelUsage: import("./model-usage.js").UsageSummary[];
-}
-
-export async function savePendingInitialization(runDirectory: string, record: PendingInitialization): Promise<void> {
-  await mkdir(runDirectory, { recursive: true, mode: 0o700 });
-  const file = join(runDirectory, "initialization.json");
-  await writeFile(file + ".tmp", JSON.stringify(record, null, 2) + "\n", { mode: 0o600 });
-  await rename(file + ".tmp", file);
-}
-
-export async function loadPendingInitialization(runDirectory: string): Promise<PendingInitialization | null> {
-  let content: string;
-  try { content = await readFile(join(runDirectory, "initialization.json"), "utf8"); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
-  }
-  const record = JSON.parse(content) as PendingInitialization;
-  if (record.version !== 1 || !isAbsolute(record.outputDir) || !isAbsolute(record.requirementsDir) ||
-    !/^[0-9a-f]{40,64}$/i.test(record.inputBaseline) || !Array.isArray(record.modelUsage)) {
-    throw new Error("Initialization record is invalid");
-  }
-  return record;
 }
 
 export function digest(content: string | Buffer): string {
@@ -136,17 +94,8 @@ export async function lockWorkspace(directory: string): Promise<() => Promise<vo
   return () => unlink(file);
 }
 
-export async function readResumeCheckpoint(runDirectory: string, record: RunRecord): Promise<{ sha: string; requirementIds: string[] }> {
-  const checkpoint = await readVerifierCheckpoint(join(runDirectory, "verifier", "controller.json"));
-  if (!checkpoint) throw new Error("Verifier run has no committed checkpoint index");
-  const sha = checkpoint.producedHead?.sourceSha ?? checkpoint.accepted.sha;
-  await runGit(record.outputDir, ["cat-file", "-e", `${sha}^{commit}`], false);
-  return { sha, requirementIds: checkpoint.producedHead?.implementedRequirementIds ?? checkpoint.accepted.requirementIds };
-}
-
-export async function writeRunReport(runDirectory: string, summary: RunSummary, patchFile?: string): Promise<void> {
-  const result = { ...summary, ...(patchFile ? { patchSha256: digest(await readFile(patchFile)) } : {}) };
-  await writeFile(join(runDirectory, "result.json"), JSON.stringify(result, null, 2) + "\n", { mode: 0o600 });
+export async function writeRunReport(runDirectory: string, summary: RunSummary): Promise<void> {
+  await writeFile(join(runDirectory, "result.json"), JSON.stringify(summary, null, 2) + "\n", { mode: 0o600 });
   const groups = {
     verified: summary.verifiedRequirementIds, failed: summary.failedRequirementIds,
     inconclusive: summary.inconclusiveRequirementIds, blocked: summary.blockedRequirementIds,
@@ -205,54 +154,4 @@ async function writeVerifierExplanation(runDirectory: string, summary: RunSummar
   }
   await writeFile(join(runDirectory, "verifier-report.md"), lines.join("\n"), { encoding: "utf8", mode: 0o600 });
   await appendFile(join(runDirectory, "report.md"), "\n逐子句证据见 [Verifier 验收证据](verifier-report.md)。\n", "utf8");
-}
-
-/** Exact touched-file checks precede Git's atomic patch application; the user's index is never used. */
-export async function applyRun(runDirectory: string, allowPartial = false): Promise<string> {
-  const record = await loadRunRecord(runDirectory);
-  if (!record.sourceProjectDir) throw new Error("This run created a new project; its output directory is already the delivery");
-  const result = JSON.parse(await readFile(join(runDirectory, "result.json"), "utf8")) as RunSummary & { patchSha256?: string };
-  if (result.status !== "delivered" && !(allowPartial && result.status === "partial")) throw new Error("Apply requires delivered status; partial results require --allow-partial");
-  const patch = join(resolve(runDirectory), "changes.patch");
-  const bytes = await readFile(patch);
-  if (digest(bytes) !== result.patchSha256) throw new Error("Delivery patch changed after the report was written");
-  if (/^(?:new file mode|old mode|new mode) (?:120000|160000)$/m.test(bytes.toString("utf8"))) throw new Error("Delivery links and submodules cannot be applied");
-  const target = await realpath(record.sourceProjectDir);
-  if (record.requirementDigests) {
-    try { if ((await lstat(join(target, "shallow-progress"))).isSymbolicLink()) throw new Error("Progress directory must not be a link"); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  }
-  if (record.inputFiles["shallowcode.config.json"] && digest(await readFile(join(target, "shallowcode.config.json"))) !== record.inputFiles["shallowcode.config.json"]) {
-    throw new Error("Project run configuration changed since the input baseline");
-  }
-  const saveProvenance = async () => {
-    if (record.requirementDigests) await saveRequirementDigests(join(target, "shallow-progress"), record.requirementDigests,
-      [...result.verifiedRequirementIds, ...(result.skippedRequirementIds ?? [])]);
-  };
-  if (!bytes.length) { await saveProvenance(); return target; }
-  const invoke = (args: string[]) => runGit(target, ["--git-dir=" + join(record.outputDir, ".git"),
-    "--work-tree=" + target, "-c", "core.autocrlf=false", "apply", ...args, patch], false);
-  const stats = await invoke(["--numstat", "-z"]);
-  for (const line of stats.stdout.split("\0").filter(Boolean)) {
-    const path = line.slice(line.indexOf("\t", line.indexOf("\t") + 1) + 1);
-    const parts = path.split(/[\\/]/);
-    if (isAbsolute(path) || /^[A-Za-z]:/.test(path) ||
-      parts.some(p => p === ".." || NON_APPLICATION_METADATA.has(p.toLowerCase()))) throw new Error(`Invalid patch path: ${path}`);
-    const rel = relative(target, resolve(target, path));
-    if (!rel || isAbsolute(rel) || rel.startsWith("..")) throw new Error(`Patch path escapes project: ${path}`);
-    let ancestor = target;
-    for (const part of parts) {
-      ancestor = join(ancestor, part);
-      try { if ((await lstat(ancestor)).isSymbolicLink()) throw new Error(`Patch path contains a link: ${path}`); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    }
-    let current: string | undefined;
-    try { current = digest(await readFile(join(target, path))); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    if (current !== record.inputFiles[path]) throw new Error(`Project changed since the input baseline: ${path}. Patch and workspace are retained.`);
-  }
-  await invoke(["--check", "--whitespace=nowarn"]);
-  await invoke(["--whitespace=nowarn"]);
-  await saveProvenance();
-  return target;
 }

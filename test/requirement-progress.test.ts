@@ -3,14 +3,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { loadRequirementCatalog } from "../src/catalog.js";
-import { evolutionImplementationCatalog, readHistoricalPlanIds, readHistoricalRequirementIds, selectEvolutionScope, requirementDigest, saveRequirementDigests } from "../src/evolution.js";
+import { pendingImplementationCatalog, readHistoricalPlanIds, readHistoricalRequirementIds, requirementDigest, saveRequirementDigests } from "../src/requirement-progress.js";
 import { HumanRunFormatter } from "../src/human-log.js";
 import { ProgressJournal } from "../src/progress-journal.js";
 import { featureGroupPackets, featureGroupingFromIds } from "../src/scheduler.js";
 import { withModulePipeline } from "./helpers/module-pipeline.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-const modified = "Original Feature Description\n\nDisplay the old workspace.\n\nModified Feature Description\n\nDisplay the updated workspace.";
 
 test("Incremental identity detects changed descriptions and ancestors with stable requirement IDs", async () => {
   await withModulePipeline(async f => {
@@ -22,11 +21,10 @@ test("Incremental identity detects changed descriptions and ancestors with stabl
     assert.deepEqual([...history.requirementIds], ["A", "B", "C"]);
     const changed = structuredClone(catalog);
     changed.requirements[0].text = "Display the updated workspace.";
-    assert.deepEqual(selectEvolutionScope(changed, history.requirementIds, history.requirementDigests), {
-      addedRequirementIds: [], changedRequirementIds: ["A"], inheritedRequirementIds: ["B", "C"],
-    });
+    assert.notEqual(requirementDigest(changed.requirements[0]), old.A);
+    assert.equal(requirementDigest(changed.requirements[1]), old.B);
     changed.requirements[1].ancestors[0].description = "Use the updated folder contract.";
-    assert.deepEqual(selectEvolutionScope(changed, history.requirementIds, history.requirementDigests).changedRequirementIds, ["A", "B"]);
+    assert.notEqual(requirementDigest(changed.requirements[1]), old.B);
     // Stage labels alone do not change a behavior contract.
     const staged = structuredClone(catalog.requirements[2]);
     staged.product.rootName += " - Stage 2";
@@ -152,49 +150,29 @@ test("Missing historical plans provide no grounds to skip a requirement", async 
   });
 });
 
-test("Explicit ordered change headings take precedence over historical IDs", async () => {
-  await withModulePipeline(async f => {
-    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
-    catalog.requirements[0].text = modified;
-    catalog.requirements[1].text = "Mention Original Feature Description and Modified Feature Description as ordinary prose.";
-    const history = new Set(["A", "B", "REMOVED"]);
-    assert.deepEqual(selectEvolutionScope(catalog, history), {
-      addedRequirementIds: ["C"], changedRequirementIds: ["A"], inheritedRequirementIds: ["B"],
-    });
-    catalog.requirements[2].text = modified.replaceAll("\n", "\r\n");
-    assert.deepEqual(selectEvolutionScope(catalog, history).changedRequirementIds, ["A", "C"]);
-    catalog.requirements[0].text = "Modified Feature Description\nnew\nOriginal Feature Description\nold";
-    assert.deepEqual(selectEvolutionScope(catalog, history).inheritedRequirementIds, ["A", "B"]);
-  });
-});
-
 test("Scheduling bypasses inherited nodes while preserving dependencies on pending changes", async () => {
   await withModulePipeline(async f => {
     const catalog = await loadRequirementCatalog(f.options.requirementsFile);
     const before = structuredClone(catalog);
-    const scoped = evolutionImplementationCatalog(catalog, new Set(["B"]));
+    const scoped = pendingImplementationCatalog(catalog, new Set(["B"]));
     assert.deepEqual(scoped.requirements.map(item => [item.id, item.dependencyIds]), [["A", []], ["C", ["A"]]]);
     assert.deepEqual(featureGroupPackets(scoped).packets.map(item => item.requirementIds), [["A"], ["C"]]);
     assert.throws(() => featureGroupingFromIds(scoped, [["C"], ["A"]]), /must precede/);
     assert.deepEqual(catalog, before);
     assert.equal(scoped.requirements[1].text, catalog.requirements[2].text);
     assert.equal(scoped.requirements[1].scenarios, catalog.requirements[2].scenarios);
-    assert.equal(evolutionImplementationCatalog(catalog, new Set()), catalog);
-    assert.equal(evolutionImplementationCatalog(catalog, new Set(["A", "B", "C"])).requirements.length, 0);
+    assert.equal(pendingImplementationCatalog(catalog, new Set()), catalog);
+    assert.equal(pendingImplementationCatalog(catalog, new Set(["A", "B", "C"])).requirements.length, 0);
   });
 });
 
-test("Both final requirement trees select five added and five modified atomics with complete initial ID history", async () => {
-  for (const [product, total, inheritedCount] of [["github", 52, 42], ["sheet", 10, 0]] as const) {
-    const previous = await loadRequirementCatalog(`data/official-competition/hackathon--${product}/requirements.yaml`);
-    const current = await loadRequirementCatalog(`data/final/hackathon-evolution--${product}/requirements.yaml`, { inheritedApplication: true });
-    const scope = selectEvolutionScope(current, new Set(previous.requirements.map(item => item.id)));
-    assert.equal(scope.addedRequirementIds.length, 5);
-    assert.equal(scope.changedRequirementIds.length, 5);
-    assert.equal(scope.inheritedRequirementIds.length, inheritedCount);
-    const scoped = evolutionImplementationCatalog(current, new Set(scope.inheritedRequirementIds));
-    assert.equal(scoped.requirements.length, 10);
-    assert.equal(featureGroupPackets(scoped).stats.requirements, 10);
-    assert.equal(current.requirements.length, total);
-  }
+test("Change-description headings are ordinary contract text and unchanged digests remain reusable", async () => {
+  await withModulePipeline(async f => {
+    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
+    catalog.requirements[0].text = "Original Feature Description\nOld behavior.\nModified Feature Description\nNew behavior.";
+    const saved = requirementDigest(catalog.requirements[0]);
+    assert.equal(requirementDigest(structuredClone(catalog.requirements[0])), saved);
+    catalog.requirements[0].text += " Include another behavior.";
+    assert.notEqual(requirementDigest(catalog.requirements[0]), saved);
+  });
 });

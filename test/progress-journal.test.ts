@@ -3,16 +3,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { PROGRESS_DIR_NAME, ProgressJournal, isProgressPath } from "../src/progress-journal.js";
+import { PROGRESS_DIR_NAME, ProgressJournal } from "../src/progress-journal.js";
 import { withTempDir } from "./helpers/temp-dir.js";
-
-test("isProgressPath recognises the journal directory and its children", () => {
-  assert.equal(isProgressPath("shallow-progress"), true);
-  assert.equal(isProgressPath("shallow-progress/plans/a.json"), true);
-  assert.equal(isProgressPath("shallow-progress\\progress.log"), true);
-  assert.equal(isProgressPath("shallow-progress-extra/x"), false);
-  assert.equal(isProgressPath("frontend/src/main.js"), false);
-});
 
 test("ProgressJournal appends UTF-8 lines under the product directory", async () => {
   await withTempDir("shallow-progress-", async (output) => {

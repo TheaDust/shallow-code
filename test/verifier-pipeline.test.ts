@@ -14,7 +14,7 @@ import { BuildView } from "../src/terminal/build-tui.js";
 import { terminalTheme } from "../src/terminal/theme.js";
 import { withModulePipeline, type PipelineFixture } from "./helpers/module-pipeline.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
-import { readImplementationDigests, requirementDigest } from "../src/evolution.js";
+import { readImplementationDigests, requirementDigest } from "../src/requirement-progress.js";
 
 async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSignal) => Promise<void>,
   status?: (job: CheckJob) => Promise<CheckOutcome["status"]>): Promise<VerifierRuntime> {
@@ -81,7 +81,7 @@ test("Fresh builds continue interrupted or completed work in place and reimpleme
     const updated = await loadRequirementCatalog(f.options.requirementsFile);
     f.options.requirementDigests = Object.fromEntries(updated.requirements.map(r => [r.id, requirementDigest(r)]));
     f.options.resumedRequirementIds = Object.keys(previous).filter(id => previous[id] === f.options.requirementDigests![id]);
-    f.options.stageStartingPoint = "inherited_application";
+    f.options.startingPoint = "inherited_application";
     f.options.ledgerFile = join(dirname(f.options.ledgerFile), "next-build", "ledger.jsonl");
     const jobs: CheckJob[] = [];
     await attach(f, async job => { jobs.push(job); });
@@ -94,7 +94,7 @@ test("Fresh builds continue interrupted or completed work in place and reimpleme
     assert.deepEqual(f.builder.requests.slice(requestCount).filter(r => r.mode === "implement").map(r => r.packet.requirementIds),
       interrupted ? [["B"], ["C"]] : [["B"]]);
     assert(f.builder.requests.slice(requestCount).filter(r => "projectContext" in r).every(r =>
-      "projectContext" in r && r.projectContext.evolution?.auditInheritedRequirements !== false),
+      "projectContext" in r && r.projectContext.startingPoint === "inherited_application"),
     "Builder context agrees that continued work is included in current verification");
     assert(jobs.some(job => job.mode === "discover" && job.requirementIds.includes("A")), "continued implementations receive fresh behavior checks even with replay disabled");
     assert.equal(await readFile(join(f.options.outputDir, "user-edit.txt"), "utf8"), "current user code");
@@ -170,7 +170,7 @@ test("An exhausted grouper falls back once without restarting its private planni
   await withModulePipeline(async f => {
     await attach(f);
     let calls = 0;
-    f.deps.grouper = { async group(catalog) {
+    f.deps.grouper = { async group() {
       calls++;
       throw Object.assign(new Error("gateway temporarily unavailable"), {
         gatewayFailure: { kind: "unavailable" as const, retryable: true },
@@ -303,27 +303,26 @@ test("An incomplete group cannot grant its implementation or dispatch dependent 
   });
 });
 
-test("Current changed requirements are audited while inherited Evolution context remains explicitly skipped", async () => {
+for (const title of ["Product", "Product - Evolution", "Product - Stage 2"]) test(`Current scope is verified uniformly for ${title}`, async () => {
   await withModulePipeline(async f => {
+    await mkdir(f.options.outputDir, { recursive: true });
+    await writeFile(join(f.options.outputDir, "existing.txt"), "implemented A");
     const jobs: CheckJob[] = [];
     const runtime = await attach(f, async job => { jobs.push(job); });
     const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
-    input.type = "ROOT";
-    input.name = "Product - Evolution";
+    input.name = title;
     await writeFile(f.options.requirementsFile, JSON.stringify(input));
-    f.options.stageStartingPoint = "inherited_application";
-    f.options.auditInheritedRequirements = false;
-    f.options.historicalRequirements = { requirementIds: ["A"], plans: 0, ignoredPlans: 0,
-      planRequirementCount: 0, checkpointRequirementCount: 1, checkpointSupplementCount: 1, requirementDigests: {} };
+    f.options.startingPoint = "inherited_application";
+    f.options.resumedRequirementIds = ["A"];
     const result = await f.run();
-    assert.deepEqual(result.skippedRequirementIds, ["A"]);
-    assert.deepEqual(result.verifiedRequirementIds.sort(), ["B", "C"]);
+    assert.deepEqual(result.skippedRequirementIds, []);
+    assert.deepEqual(result.verifiedRequirementIds.sort(), ["A", "B", "C"]);
     assert.ok(!f.builder.requests.some(request => request.mode === "implement" && request.packet.requirementIds.includes("A")));
     const audit = jobs.find(job => job.mode !== "prepare" && job.requirementIds.includes("B"))!;
     const context = await runtime.artifacts.getJson<{ requirements: Array<{ dependencyIds: string[] }>; prerequisites: Array<{ id: string }> }>(audit.requirements);
     assert.deepEqual(context.requirements[0]!.dependencyIds, ["A"]);
-    assert(context.prerequisites.some(item => item.id === "A"), "group discovery retains the original inherited prerequisite context");
-    assert(!jobs.some(job => job.mode !== "prepare" && job.requirementIds.includes("A")));
+    assert(context.prerequisites.some(item => item.id === "A"));
+    assert(jobs.some(job => job.mode !== "prepare" && job.requirementIds.includes("A")));
   });
 });
 

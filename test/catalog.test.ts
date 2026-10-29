@@ -110,7 +110,7 @@ test("Catalog loads Web requirements independently of legacy product titles", as
     async (file) => {
       const catalog = await loadRequirementCatalog(file);
       assert.equal(catalog.requirements[0].product.kind, "generic_web");
-      assert.equal(catalog.requirements[0].product.stage?.index, 2);
+      assert.equal(catalog.requirements[0].product.rootName, "GitHub - Stage 2");
     },
   );
   await withYaml(
@@ -129,118 +129,26 @@ test("Catalog loads Web requirements independently of legacy product titles", as
   );
 });
 
-test("Catalog recognises generic progressive stages and keeps earlier-stage dependencies external", async () => {
-  await withYaml(
-    `id: ROOT
-name: Inventory Workspace — Phase 2
-type: FOLDER
-dependencies: []
-description: Add the next set of inventory capabilities.
-children:
-  - id: REQ-3
-    name: Repositories
-    type: FOLDER
-    dependencies: [REQ-1-1-2]
-    description: Repository work.
-    children:
-      - id: REQ-3-1
-        name: Browse repositories
-        type: ATOMIC
-        dependencies: []
-        description: Browse repositories.
-      - id: REQ-3-2
-        name: Edit repositories
-        type: ATOMIC
-        dependencies: [REQ-3-1]
-        description: Edit repositories.
-`,
-    async (file) => {
-      const catalog = await loadRequirementCatalog(file);
-      assert.deepEqual(catalog.requirements[0].product.stage, {
-        index: 2,
-        currentStageTestsOnly: true,
-      });
-      assert.equal(catalog.requirements[0].product.kind, "generic_web");
-      assert.deepEqual(catalog.requirements[0].dependencyIds, []);
-      assert.deepEqual(catalog.requirements[0].externalDependencyIds, ["REQ-1-1-2"]);
-      assert.deepEqual(catalog.requirements[1].dependencyIds, ["REQ-3-1"]);
-      assert.deepEqual(catalog.requirements[1].externalDependencyIds, ["REQ-1-1-2"]);
-    },
-  );
-});
-
-test("Catalog recognises Evolution increments independently of product titles and preserves optional stages", async () => {
-  for (const [name, kind, stageIndex] of [
-    ["GitHub - Evolution", "generic_web", undefined],
-    ["Evolution - GitHub", "generic_web", undefined],
-    ["GitHub - eVoLuTiOn 2", "generic_web", undefined],
-    ["GitHub (Evolution)", "generic_web", undefined],
-    ["GitHub [Evolution]", "generic_web", undefined],
-    ["Evolution 2 - GitHub", "generic_web", undefined],
-    ["GitHub：Evolution", "generic_web", undefined],
-    ["GitHub Collaboration Platform Core Requirements - Evolution", "generic_web", undefined],
-    ["Core Requirements for an Online Spreadsheet Data Workspace - Evolution", "generic_web", undefined],
-    ["Evolution Requirements for an Online Spreadsheet Data Workspace", "generic_web", undefined],
-    ["Evolution Requirements for Inventory Workspace", "generic_web", undefined],
-    ["Inventory Workspace - Evolution", "generic_web", undefined],
-    ["GitHub - Evolution - Stage 2", "generic_web", 2],
-    ["GitHub - Stage 2 - Evolution", "generic_web", 2],
-    ["GitHub (Evolution) - Phase 3", "generic_web", 3],
-  ] as const) {
+test("Titles are ordinary metadata; existing application context alone permits external dependencies", async () => {
+  for (const name of ["Inventory", "Inventory - Evolution", "Evolution Requirements for Inventory",
+    "Inventory - Stage 2", "Inventory - Phase 3", "Inventory - 第2阶段", "Pet Evolution Tracker - Stage 1"]) {
     await withYaml(JSON.stringify({ id: "ROOT", name, type: "FOLDER", children: [
-      { id: "REQ-3", name: "New area", type: "FOLDER", dependencies: ["REQ-1"], children: [
-        { id: "REQ-3-1", name: "Browse", type: "ATOMIC", dependencies: ["REQ-2"], description: "Browse existing records." },
-        { id: "REQ-3-2", name: "Edit", type: "ATOMIC", dependencies: ["REQ-3-1"], description: "Edit existing records." },
+      { id: "AREA", name: "Area", type: "FOLDER", dependencies: ["OLD"], children: [
+        { id: "A", name: "Browse", type: "ATOMIC", description: "Browse records." },
+        { id: "B", name: "Edit", type: "ATOMIC", dependencies: ["A"], description: "Edit records." },
       ] },
     ] }), async file => {
-      const catalog = await loadRequirementCatalog(file);
-      const [first, second] = catalog.requirements;
-      assert.equal(first.product.rootName, name);
-      assert.equal(first.product.evolution, true);
-      assert.equal(first.product.kind, kind);
-      assert.equal(first.product.stage?.index, stageIndex);
-      assert.deepEqual(first.dependencyIds, []);
-      assert.deepEqual(first.externalDependencyIds, ["REQ-1", "REQ-2"]);
-      assert.deepEqual(second.dependencyIds, ["REQ-3-1"]);
-      assert.deepEqual(second.externalDependencyIds, ["REQ-1"]);
-      assert.deepEqual(catalog.statusById, { "REQ-3-1": "todo", "REQ-3-2": "todo" });
+      await assert.rejects(loadRequirementCatalog(file), /Unknown dependency OLD/);
+      const catalog = await loadRequirementCatalog(file, { inheritedApplication: true });
+      const [a, b] = catalog.requirements;
+      assert.deepEqual(a.product, { kind: "generic_web", rootId: "ROOT", rootName: name, description: "", seedData: [] });
+      assert.deepEqual(a.dependencyIds, []);
+      assert.deepEqual(b.dependencyIds, ["A"]);
+      assert.deepEqual(a.externalDependencyIds, ["OLD"]);
+      assert.deepEqual(b.externalDependencyIds, ["OLD"]);
+      assert.deepEqual(catalog.statusById, { A: "todo", B: "todo" });
     });
   }
-});
-
-test("Catalog requires a mode marker or inherited application context to accept prior-increment IDs", async () => {
-  for (const name of ["Inventory Workspace", "Evolutionary Workspace", "Pet Evolution Tracker", "Evolution CRM",
-    "GitHub Evolution", "Pet - Evolution Tracker", "GitHub (Evolution CRM)", "Evolution Requirements Tracker"]) {
-    await withYaml(JSON.stringify({ id: "ROOT", name, type: "FOLDER", children: [
-      { id: "REQ-99", name: "Evolution controls", type: "ATOMIC", description: "Display records." },
-    ] }), async file => {
-      const { requirements: [requirement] } = await loadRequirementCatalog(file);
-      assert.equal(requirement.product.evolution, undefined);
-      assert.equal(requirement.product.rootName, name);
-    });
-    await withYaml(JSON.stringify({ id: "ROOT", name, type: "FOLDER", children: [
-      { id: "REQ-99", name: "Evolution controls", type: "ATOMIC", dependencies: ["REQ-1"], description: "Display records." },
-    ] }), async file => {
-      await assert.rejects(loadRequirementCatalog(file), /Unknown dependency REQ-1/);
-    });
-  }
-});
-
-test("An inherited application establishes Evolution context without changing the requirement title", async () => {
-  await withYaml(JSON.stringify({ id: "ROOT", name: "GitHub", type: "FOLDER", children: [
-    { id: "REQ-NEW", name: "New feature", type: "ATOMIC", dependencies: ["REQ-OLD"], description: "Extend existing records." },
-  ] }), async file => {
-    await assert.rejects(loadRequirementCatalog(file), /Unknown dependency REQ-OLD/);
-    const catalog = await loadRequirementCatalog(file, { inheritedApplication: true });
-    const [requirement] = catalog.requirements;
-    assert.equal(catalog.tree.name, "GitHub");
-    assert.equal(requirement.product.rootName, "GitHub");
-    assert.equal(requirement.product.kind, "generic_web");
-    assert.equal(requirement.product.evolution, true);
-    assert.deepEqual(requirement.externalDependencyIds, ["REQ-OLD"]);
-    assert.deepEqual(requirement.dependencyIds, []);
-    assert.deepEqual(catalog.statusById, { "REQ-NEW": "todo" });
-  });
 });
 
 test("Final requirement trees preserve their full current scope and inherited dependencies", async () => {
@@ -253,28 +161,19 @@ test("Final requirement trees preserve their full current scope and inherited de
     assert.equal(catalog.requirements.length, requirementCount);
     assert.equal(catalog.requirements.reduce((sum, item) => sum + item.scenarios.length, 0), scenarioCount);
     assert.equal(catalog.requirements[0].product.kind, kind);
-    assert.equal(catalog.requirements[0].product.evolution, true);
     assert.deepEqual([...new Set(catalog.requirements.flatMap(item => item.externalDependencyIds ?? []))].sort(), expectedExternal);
     assert.deepEqual(Object.keys(catalog.statusById), catalog.requirements.map(item => item.id));
-    const plain = await loadRequirementCatalog(file);
-    assert.equal(plain.requirements[0].product.evolution, product === "sheet" ? true : undefined);
+    if (expectedExternal.length) await assert.rejects(loadRequirementCatalog(file), /Unknown dependency/);
+    else assert.equal((await loadRequirementCatalog(file)).requirements.length, requirementCount);
   }
 });
 
-test("Ordinary Evolution product names keep Stage 1 unknown-dependency validation", async () => {
-  await withYaml(JSON.stringify({ id: "ROOT", name: "Pet Evolution Tracker - Stage 1", type: "FOLDER", children: [
-    { id: "REQ-99", name: "Current feature", type: "ATOMIC", dependencies: ["TYPO-OLD-ID"], description: "Display records." },
-  ] }), async file => {
-    await assert.rejects(loadRequirementCatalog(file), /Unknown dependency TYPO-OLD-ID/);
-  });
-});
-
-test("Evolution increments still reject cycles between current requirements", async () => {
+test("Existing applications still reject cycles between current requirements", async () => {
   await withYaml(JSON.stringify({ id: "ROOT", name: "Inventory - Evolution", type: "FOLDER", children: [
     { id: "REQ-3", name: "A", type: "ATOMIC", dependencies: ["REQ-1", "REQ-4"], description: "A." },
     { id: "REQ-4", name: "B", type: "ATOMIC", dependencies: ["REQ-3"], description: "B." },
   ] }), async file => {
-    await assert.rejects(loadRequirementCatalog(file), /Dependency cycle/);
+    await assert.rejects(loadRequirementCatalog(file, { inheritedApplication: true }), /Dependency cycle/);
   });
 });
 
@@ -296,7 +195,7 @@ test("Catalog rejects unknown dependencies", async () => {
   );
 });
 
-test("Stage 1 still rejects dependencies because no earlier-stage context exists", async () => {
+test("New applications reject unknown dependencies independently of title", async () => {
   await withYaml(
     `id: ROOT
 name: 库存工作台 - 第 1 阶段
@@ -319,7 +218,7 @@ test("Catalog rejects dependency cycles", async () => {
   await withYaml(
     `id: ROOT\nname: Root\ntype: FOLDER\ndependencies: []\nchildren:\n  - id: X\n    name: One\n    type: ATOMIC\n    dependencies: [Y]\n    description: One\n  - id: Y\n    name: Two\n    type: ATOMIC\n    dependencies: [X]\n    description: Two\n`,
     async (file) => {
-      await assert.rejects(loadRequirementCatalog(file), /Dependency cycle/);
+      await assert.rejects(loadRequirementCatalog(file, { inheritedApplication: true }), /Dependency cycle/);
     },
   );
 });
@@ -566,7 +465,7 @@ test("Bundled competition seeds and legacy Seed data declarations remain extract
   assert.ok(github.requirements.find(item => item.id === "REQ-1-1-2")!.seedDeclarations.some(value => value.includes('username `alice-dev`')));
   assert.ok(github.requirements.find(item => item.id === "REQ-5-2-2")!.seedDeclarations.some(value => value.includes('`Original issue title`')));
   for (const stage of [1, 2, 3]) {
-    const catalog = await loadRequirementCatalog(resolve(`data/official-competition/hackathon--github-stage-${stage}/requirements.yaml`));
+    const catalog = await loadRequirementCatalog(resolve(`data/official-competition/hackathon--github-stage-${stage}/requirements.yaml`), { inheritedApplication: true });
     assert.ok(catalog.requirements.filter(item => item.id !== "REQ-1-1-1").every(item => item.seedDeclarations.length > 0));
   }
 

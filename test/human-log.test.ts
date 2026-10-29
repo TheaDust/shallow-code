@@ -19,33 +19,6 @@ function formatLine(formatter: HumanRunFormatter, raw: string): string {
   return formatted;
 }
 
-test("Evolution scope logs separate inherited IDs from current independent verification", () => {
-  const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-06T00:00:00Z", "evolution_scope_selected", {
-    detail: { historicalPlans: 2, ignoredPlans: 1, addedRequirementIds: ["NEW"], changedRequirementIds: ["CHANGED"],
-      historicalPlanRequirementCount: 3, historicalCheckpointRequirementCount: 4,
-      historicalCheckpointSupplementCount: 2, historicalRequirementCount: 5,
-      inheritedRequirementIds: ["OLD"], implementationRequirementIds: ["CHANGED", "NEW"] },
-  }));
-  assert.match(line, /有效历史计划 2.*忽略损坏计划 1.*初次实现 2.*沿用 1 条并独立验收/);
-  assert.match(line, /历史计划需求 ID 3；历史检查点需求 ID 4；检查点补充 ID 2；合并历史 ID 5/);
-  assert.doesNotMatch(line, /已通过/);
-});
-
-test("Evolution competition logs expose skipped requirements without saying they were verified", () => {
-  const scope = formatLine(new HumanRunFormatter(), eventLine("2026-10-06T00:00:00Z", "evolution_scope_selected", {
-    detail: { historicalPlans: 2, ignoredPlans: 0, addedRequirementIds: ["NEW"], changedRequirementIds: [],
-      inheritedRequirementIds: ["OLD"], implementationRequirementIds: ["NEW"], auditRequirementIds: ["NEW"], skippedRequirementIds: ["OLD"] },
-  }));
-  assert.match(scope, /本轮验收 1 条；跳过旧需求验收 1 条/);
-  assert.doesNotMatch(scope, /沿用 1 条并独立验收/);
-  const summary = formatLine(new HumanRunFormatter(), eventLine("2026-10-06T00:00:00Z", "pipeline_finished", {
-    detail: { status: "delivered", implementedRequirementIds: ["NEW"], verifiedRequirementIds: ["NEW"],
-      auditRequirementIds: ["NEW"], skippedRequirementIds: ["OLD"], acceptedSha: "sha" },
-  }));
-  assert.match(summary, /已实现 1，已验证 1/);
-  assert.match(summary, /本轮验收范围 1 条；跳过旧需求验收 1 条/);
-});
-
 test("Runtime grouping logs show its validated source, fallback reason and actual usage", () => {
   const formatter = new HumanRunFormatter();
   const at = "2026-09-29T00:00:00Z";
@@ -161,32 +134,6 @@ test("HumanRunFormatter shows Verifier and Grouper models when they differ from 
   assert.match(same, /；模型 provider\/model/);
   assert.doesNotMatch(same, /Verifier 模型/);
   assert.doesNotMatch(same, /Grouper 模型/);
-});
-
-test("HumanRunFormatter identifies progressive stage starting points", () => {
-  const formatter = new HumanRunFormatter();
-  const line = formatLine(formatter, eventLine("2026-10-02T00:00:00Z", "pipeline_started", {
-    detail: { requirements: 14, totalBudgetMs: 0, adapterId: "web",
-      progressiveStage: { index: 2, currentStageTestsOnly: true,
-        startingPoint: "inherited_application", externalDependencyIds: ["REQ-1-1-2"] } },
-  }));
-  assert.match(line, /分阶段任务 Stage 2（继承前序应用）/);
-});
-
-test("HumanRunFormatter identifies Evolution starting points and optional stages", () => {
-  for (const [startingPoint, expected] of [
-    ["inherited_application", "（继承已有应用）"],
-    ["blank_template", "（空白模板）"],
-    ["unknown", ""],
-  ]) {
-    for (const stageIndex of [undefined, 2]) {
-      const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-06T00:00:00Z", "pipeline_started", {
-        detail: { evolution: { startingPoint, externalDependencyIds: ["REQ-1"],
-          ...(stageIndex === undefined ? {} : { stageIndex }) } },
-      }));
-      assert.ok(line.endsWith(`增量开发 Evolution${stageIndex === undefined ? "" : " Stage 2"}${expected}`));
-    }
-  }
 });
 
 test("HumanRunFormatter reports candidate reuse, installation and preparation failures", () => {

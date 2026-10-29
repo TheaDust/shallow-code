@@ -15,7 +15,7 @@ import type { AtomicRequirement } from "../src/types.js";
 import { VerifierSourceIndex } from "../src/verifier/source-index.js";
 import { SnapshotStore } from "../src/snapshot-store.js";
 import { VerifierProgramCache } from "../src/verifier/program-cache.js";
-import { requirementDigest } from "../src/evolution.js";
+import { requirementDigest } from "../src/requirement-progress.js";
 
 async function fixture(config: { initialState?: unknown; failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean; sourceTools?: boolean; emptySource?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "verifier-agent-"));

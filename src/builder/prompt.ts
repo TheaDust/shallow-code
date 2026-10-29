@@ -146,8 +146,7 @@ function productContextSection(product: ProductContext): string {
 
 function projectContextSection(context: BuilderProjectContext): string {
   return [
-    ...(context.evolution ? [evolutionSection(context.evolution), ""]
-      : context.progressiveStage ? [progressiveStageSection(context.progressiveStage), ""] : []),
+    developmentSection(context), "",
     "当前功能路径：",
     context.ancestors.length > 0
       ? context.ancestors
@@ -172,38 +171,15 @@ function projectContextSection(context: BuilderProjectContext): string {
   ].join("\n");
 }
 
-function evolutionSection(context: NonNullable<BuilderProjectContext["evolution"]>): string {
-  const inherited = context.startingPoint === "inherited_application";
-  return fillTemplate(loadPrompt("builder", "evolution-context"), {
-    STAGE_CONTEXT: context.stageIndex === undefined ? "" : `；Stage ${context.stageIndex}`,
-    STARTING_POINT: inherited ? "已有应用"
-      : context.startingPoint === "blank_template" ? "空白通用模板" : "未明确；先检查项目目录判断是否已有应用",
-    EXTERNAL_PREREQUISITES: context.externalPrerequisiteIds.join("、") || "无",
-    STARTING_POINT_ACTION: incrementalStartingPointAction(context.startingPoint),
-    IMPLEMENTATION_SCOPE: context.changesOnly ? loadPrompt("builder", "evolution-changes-only") : "",
-    AUDIT_SCOPE: loadPrompt("builder", context.auditInheritedRequirements === false ? "evolution-audit-changes" : "evolution-audit-all"),
+function developmentSection(context: BuilderProjectContext): string {
+  const startingPoint = context.startingPoint ?? "unknown";
+  return fillTemplate(loadPrompt("builder", "development-context"), {
+    STARTING_POINT: startingPoint === "inherited_application" ? "已有应用"
+      : startingPoint === "blank_template" ? "空白通用模板" : "未明确；先检查项目目录判断是否已有应用",
+    EXTERNAL_PREREQUISITES: context.externalPrerequisiteIds?.join("、") || "无",
+    STARTING_POINT_ACTION: loadPrompt("builder", startingPoint === "inherited_application" ? "incremental-start-inherited"
+      : startingPoint === "blank_template" ? "incremental-start-blank" : "incremental-start-unknown"),
   });
-}
-
-function progressiveStageSection(stage: NonNullable<BuilderProjectContext["progressiveStage"]>): string {
-  const inherited = stage.startingPoint === "inherited_application";
-  const startingPoint = inherited
-    ? "继承自前序阶段的应用"
-    : stage.startingPoint === "blank_template"
-      ? "空白通用模板"
-      : "未明确；先检查项目目录判断是否已有应用";
-  return fillTemplate(loadPrompt("builder", "progressive-stage-context"), {
-    STAGE_INDEX: String(stage.index),
-    STARTING_POINT: startingPoint,
-    EXTERNAL_PREREQUISITES: stage.externalPrerequisiteIds.join("、") || "无",
-    STARTING_POINT_ACTION: incrementalStartingPointAction(stage.startingPoint),
-  });
-}
-
-function incrementalStartingPointAction(startingPoint: NonNullable<BuilderProjectContext["evolution"]>["startingPoint"]): string {
-  const asset = startingPoint === "inherited_application" ? "incremental-start-inherited"
-    : startingPoint === "blank_template" ? "incremental-start-blank" : "incremental-start-unknown";
-  return loadPrompt("builder", asset);
 }
 
 function workPacketSection(packet: WorkPacket): string {

@@ -88,17 +88,13 @@ test("Only retained repairs update live audit counts and the final summary repla
   assert.match(text, /未实现 0/);
 });
 
-test("Evolution skips stay outside the current numerator and denominator", () => {
+test("Continued implementations keep the entire current requirement tree in scope", () => {
   const view = new BuildView(options, () => 24, terminalTheme(false));
-  receive(view, "evolution_scope_selected", { auditRequirementIds: ["B", "C"], skippedRequirementIds: ["A"] });
-  receive(view, "module_check_finished", { moduleId: "first", packetIds: ["audit-packet"],
-    results: { "audit-packet": "verified" }, requirementResults: { A: "verified", B: "verified", C: "inconclusive" } });
-  assert.match(view.render(80).join("\n"), /已实现 2\/2.*已验证 1\/2.*证据不足 1/);
-  receive(view, "module_check_finished", { requirementIds: ["A", "B"], status: "verified" });
-  const text = view.render(80).join("\n");
-  assert.match(text, /已实现 2\/2/);
-  assert.match(text, /已验证 1\/2/);
-  assert.match(text, /沿用跳过 1/);
+  receive(view, "run_resumed", { requirementIds: ["A"] });
+  assert.match(view.render(80).join("\n"), /已实现 1\/3.*已验证 0\/3/);
+  receive(view, "module_check_finished", { published: true,
+    requirementResults: { A: "verified", B: "verified", C: "inconclusive" } });
+  assert.match(view.render(80).join("\n"), /已验证 2\/3/);
 });
 
 test("Run view names all three models in full and compact layouts", () => {

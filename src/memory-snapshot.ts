@@ -26,20 +26,3 @@ export async function resolveCgroupMemoryMount(): Promise<CgroupMemoryMount | un
   } catch { /* Resource counters are diagnostic, never a reason to skip behavior. */ }
   return undefined;
 }
-
-export async function memorySnapshot(): Promise<Record<string, unknown>> {
-  if (process.platform !== "linux") return { status: "unavailable", platform: process.platform };
-  const mount = await resolveCgroupMemoryMount();
-  if (!mount) return { status: "unavailable", platform: "linux" };
-  try {
-    const names = mount.version === 2 ? ["memory.current", "memory.peak", "memory.max", "memory.events", "memory.swap.max"]
-      : ["memory.usage_in_bytes", "memory.max_usage_in_bytes", "memory.limit_in_bytes", "memory.failcnt"];
-    const values: Record<string, string> = {};
-    for (const name of names) {
-      const value = await readFile(posix.join(mount.directory, name), "utf8").catch(() => undefined);
-      if (value !== undefined) values[name] = value.trim();
-    }
-    if (Object.keys(values).length) return { status: "available", version: mount.version, directory: mount.directory, ...values };
-  } catch { /* Resource counters are diagnostic, never a reason to skip behavior. */ }
-  return { status: "unavailable", platform: "linux" };
-}

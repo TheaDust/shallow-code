@@ -28,7 +28,7 @@
 - 准备前缀须建立并断言初始状态。修改种子或持久化行为时检查空数据与继承数据；同名对象依据归属、父对象与名称区分。
 - `acceptedSha` 是可运行检查点，`verified` 来自报告所标注检查快照的行为证据；跨快照汇总不授予最终版本的全量重验标记。关闭语义复核仍须校验合同与执行证据，复核批准缓存仅由真实复核写入。Verifier 的探索、复核和执行等故障记 `inconclusive` 并保留可运行实现。
 - 保持候选副本、case 数据隔离和源码/构建一致性检查。修复接受前验收修复范围；开启历史重放时同时复验既有通过路径。未接受改动恢复检查点，并保留失败尝试历史。
-- 最终结果只覆盖当前验收范围；交付修复后检查运行合同，行为重验遵循历史重放开关。Evolution / Stage 的外部前序依赖只作上下文，跳过沿用项单列，不计作通过。
+- 最终结果只覆盖当前验收范围；交付修复后检查运行合同，行为重验遵循历史重放开关。当前需求树是统一验收范围；已有应用中，树外依赖仅作上下文。
 
 ### 项目配置、提示词与观测
 
@@ -47,7 +47,7 @@
 | 任务 | 优先入口 |
 | --- | --- |
 | 生产装配、CLI、项目运行配置 | `index.ts`、`bin/shallow.mjs`、`src/cli.ts`、`src/project-spec.ts`、`src/runtime-config.ts` |
-| 需求解析、原文阶段分析、依赖、增量范围 | `src/catalog.ts`、`src/requirement-text.ts`、`src/requirement-analysis.ts`、`src/evolution.ts`、`src/scheduler.ts` |
+| 需求解析、原文阶段分析、依赖、增量范围 | `src/catalog.ts`、`src/requirement-text.ts`、`src/requirement-analysis.ts`、`src/requirement-progress.ts`、`src/scheduler.ts` |
 | 功能分组、Pi Grouper 与网关恢复 | `src/feature-grouper.ts`、`src/llm-feature-grouper.ts`、`src/feature-grouping-tools.ts`、`prompts/grouper/feature-grouping.md` |
 | 管线、工作区、恢复、写回、交付 | `src/pipeline.ts`、`src/project-workspace.ts`、`src/controller-metadata.ts`、`src/run-record.ts`、`src/application/candidate-runtime.ts`、`src/git-ops.ts` |
 | Builder 提示词、技能与执行 | `src/builder/prompt.ts`、`skills.ts`、`prompt-builder.ts`、`pi-sdk-adapter.ts`、`pi-worker-client.ts`、`pi-worker.ts`、`pi-tools.ts`（均在 `src/builder/`），`prompts/builder/`、`prompts/skills/` |
@@ -72,7 +72,7 @@ npm run test:all
 
 按改动选择回归入口：
 
-- 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/pi-feature-grouper.test.ts`、`test/evolution.test.ts`。
+- 需求与分组：`test/catalog.test.ts`、`test/scheduler.test.ts`、`test/feature-grouping.test.ts`、`test/pi-feature-grouper.test.ts`、`test/requirement-progress.test.ts`。
 - 应用适配与运行：`test/application.test.ts`、`test/application-boundaries.test.ts`、`test/web-runtime.test.ts`、`test/project-spec.test.ts`、`test/candidate-runtime.test.ts`。
 - Verifier：`test/verifier-core.test.ts`、`test/verifier-agent.test.ts`、`test/verifier-pipeline.test.ts`、`test/verifier-entry.test.ts`、`test/verifier-web-runtime.test.ts`、`test/snapshot-store.test.ts` 及 `test/browser/verifier-*.test.ts`。
 - 管线、工作区与交付：`test/project-workspace.test.ts`、`test/run-record.test.ts`、`test/entry.test.ts`、`test/candidate-runtime.test.ts`、`test/inherited-data.test.ts`。

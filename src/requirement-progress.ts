@@ -129,39 +129,19 @@ function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function selectEvolutionScope(catalog: RequirementCatalog, historicalIds: ReadonlySet<string>,
-  historicalDigests: Readonly<Record<string, string>> = {}, currentDigests: Readonly<Record<string, string>> = {}): {
-  addedRequirementIds: string[]; changedRequirementIds: string[]; inheritedRequirementIds: string[];
-} {
-  const scope = { addedRequirementIds: [] as string[], changedRequirementIds: [] as string[], inheritedRequirementIds: [] as string[] };
-  for (const requirement of catalog.requirements) {
-    // Match the explicit, ordered section headings of the current Evolution format.
-    if (/^[ \t]*Original Feature Description[ \t]*\r?\n[\s\S]*?^[ \t]*Modified Feature Description[ \t]*\r?\n/m.test(requirement.text)) {
-      scope.changedRequirementIds.push(requirement.id);
-    } else if (historicalDigests[requirement.id] && historicalDigests[requirement.id] !== (currentDigests[requirement.id] ?? requirementDigest(requirement))) {
-      scope.changedRequirementIds.push(requirement.id);
-    } else if (!historicalIds.has(requirement.id)) {
-      scope.addedRequirementIds.push(requirement.id);
-    } else {
-      scope.inheritedRequirementIds.push(requirement.id);
-    }
-  }
-  return scope;
-}
-
 /** Scheduling view only. Builder and Verifier still receive the original current contracts. */
-export function evolutionImplementationCatalog(
-  catalog: RequirementCatalog, inheritedIds: ReadonlySet<string>,
+export function pendingImplementationCatalog(
+  catalog: RequirementCatalog, implementedIds: ReadonlySet<string>,
 ): RequirementCatalog {
-  if (inheritedIds.size === 0) return catalog;
+  if (implementedIds.size === 0) return catalog;
   const byId = new Map(catalog.requirements.map(item => [item.id, item]));
-  const requirements = catalog.requirements.filter(item => !inheritedIds.has(item.id)).map(item => {
+  const requirements = catalog.requirements.filter(item => !implementedIds.has(item.id)).map(item => {
     const dependencies = new Set<string>();
     const visited = new Set<string>();
     const visit = (id: string): void => {
       if (visited.has(id)) return;
       visited.add(id);
-      if (inheritedIds.has(id)) byId.get(id)?.dependencyIds.forEach(visit);
+      if (implementedIds.has(id)) byId.get(id)?.dependencyIds.forEach(visit);
       else dependencies.add(id);
     };
     item.dependencyIds.forEach(visit);

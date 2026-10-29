@@ -55,8 +55,6 @@ function semanticReviewRequirements(input: VerifierRequirements, contract: Pick<
       rootName: requirement.product.rootName,
       description: requirement.product.description,
       seedData: requirement.product.seedData,
-      ...(requirement.product.evolution ? { evolution: true as const } : {}),
-      ...(requirement.product.stage ? { stage: requirement.product.stage } : {}),
     },
     ancestors: requirement.ancestors.map(ancestor => ({ id: ancestor.id, name: ancestor.name, description: ancestor.description })),
   }));

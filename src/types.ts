@@ -40,13 +40,6 @@ export interface ProductContext {
   seedData: SeedDataCategory[];
   /** Root-declared implementation guidance: expectations that cannot be verified independently. */
   guidance?: string[];
-  /** The selected requirement tree is an Evolution increment over an existing application. */
-  evolution?: true;
-  /** Present when the selected requirement file is one increment of a progressive task. */
-  stage?: {
-    index: number;
-    currentStageTestsOnly: boolean;
-  };
 }
 
 export interface RequirementAncestor {
@@ -162,13 +155,6 @@ interface RunEventDetails {
   /** 进行中 Verifier 会话的累计用量；仅投递交互终端实时展示，不写账本或日志，最终以 verifier_usage 结算。 */
   verifier_usage_progress: { jobId: string; role: string; input: number; output: number; cacheRead: number; cacheWrite: number;
     total: number; cost?: number; reasoning?: number };
-  evolution_scope_selected: { historicalPlans: number; ignoredPlans: number;
-    historicalPlanRequirementCount: number; historicalCheckpointRequirementCount: number;
-    historicalCheckpointSupplementCount: number; historicalRequirementCount: number; addedRequirementIds: string[];
-    changedRequirementIds: string[]; inheritedRequirementIds: string[]; implementationRequirementIds: string[]; reason?: string;
-    auditRequirementIds?: string[]; skippedRequirementIds?: string[];
-    delivery?: { ok: boolean; stage: string; message: string; candidate?: CandidateEvidence };
-    scenarioResults?: RunScenarioResult[] };
   gateway_wait: { source: AgentRole; retry: number; delayMs: number; failure: import("./gateway-failure.js").GatewayFailure; reason?: string };
   builder_work_preserved: { preserved: boolean; requirementIds: string[]; reason?: string };
   implementation_retry: { requirementIds: string[]; timeoutMs: number; reason?: "timeout" | import("./builder/port.js").BuilderResult["terminationReason"] };
@@ -189,13 +175,8 @@ interface RunEventDetails {
 
   pipeline_started: { requirements?: number; totalBudgetMs?: number; adapterId?: string; model?: string;
     verifierModel?: string; grouperModel?: string;
-    auditInheritedRequirements?: boolean;
     builderTimeoutMs?: number; builderContextWindow?: number;
     promptSha256?: string;
-    progressiveStage?: { index: number; currentStageTestsOnly: boolean;
-      startingPoint: "inherited_application" | "blank_template" | "unknown"; externalDependencyIds: string[] };
-    evolution?: { stageIndex?: number;
-      startingPoint: "inherited_application" | "blank_template" | "unknown"; externalDependencyIds: string[] };
     starterScaffold?: { status: import("./application/port.js").ScaffoldResult["status"]; reason: string; files: string[] };
     grouping?: GroupingStats; groupingSource?: "pending_llm" };
   feature_grouping_started: { requirements: number; limits: import("./scheduler.js").FeatureGroupThresholds };

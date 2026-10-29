@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 
@@ -17,7 +17,7 @@ import {
 } from "../src/controller-metadata.js";
 import { GitCliOps, runGit } from "../src/git-ops.js";
 import { PROGRESS_DIR_NAME } from "../src/progress-journal.js";
-import { copyProjectWorkspace, hasProjectFiles } from "../src/project-workspace.js";
+import { hasProjectFiles } from "../src/project-workspace.js";
 import { PROJECT_SPEC_FILENAME } from "../src/project-spec.js";
 import { snapshotFiles } from "../src/run-record.js";
 import { installStarterScaffold } from "../src/adapters/web/scaffold.js";
@@ -107,22 +107,6 @@ test("starter scaffold installs over every controller metadata entry except a pr
     const result = await installStarterScaffold(root, contract());
     assert.equal(result.status, "installed");
     assert.equal(await readFile(join(root, ".requirements-agent", "content.txt"), "utf8"), ".requirements-agent\n");
-  });
-});
-
-test("workspace copies skip every non-application metadata entry", async () => {
-  await withTempDir("shallow-metadata-", async root => {
-    const source = join(root, "source");
-    await mkdir(source);
-    await seedMetadata(source);
-    await writeFile(join(source, "app.txt"), "source");
-    const work = join(root, "run/workspace");
-    await copyProjectWorkspace(source, work);
-    for (const name of NON_APPLICATION_METADATA_NAMES) {
-      await assert.rejects(access(join(work, name)), `${name} 不应复制到运行副本`);
-    }
-    for (const name of TRACKED_METADATA_NAMES) await access(join(work, name));
-    assert.equal(await readFile(join(work, "app.txt"), "utf8"), "source");
   });
 });
 

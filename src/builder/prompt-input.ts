@@ -5,29 +5,12 @@ import type {
   WorkPacket,
 } from "../types.js";
 
-export type BuilderMode =
-  | "implement"
-  | "repair"
-  | "root_cause_repair"
-  | "delivery_repair";
-
 export interface BuilderProjectContext {
   product: ProductContext;
   ancestors: RequirementAncestor[];
   satisfiedDependencies: Array<{ id: string; name: string; contract?: string }>;
-  evolution?: {
-    stageIndex?: number;
-    startingPoint: "inherited_application" | "blank_template" | "unknown";
-    externalPrerequisiteIds: string[];
-    changesOnly?: true;
-    auditInheritedRequirements?: false;
-  };
-  progressiveStage?: {
-    index: number;
-    currentStageTestsOnly: boolean;
-    startingPoint: "inherited_application" | "blank_template" | "unknown";
-    externalPrerequisiteIds: string[];
-  };
+  startingPoint?: "inherited_application" | "blank_template" | "unknown";
+  externalPrerequisiteIds?: string[];
 }
 
 export interface BuilderShadowObservation {

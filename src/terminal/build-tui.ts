@@ -4,7 +4,7 @@ import type { RunSummary } from "../pipeline.js";
 import type { RequirementNode, RequirementStatus, RunEvent, RunScenarioResult } from "../types.js";
 import { AGENT_LABELS, AGENT_ROLES, type AgentRole } from "../agent-config.js";
 import type { PiWorkerProgress } from "../builder/pi-worker-client.js";
-import { ModelUsageTotals, UsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage, type UsageSummary } from "../model-usage.js";
+import { ModelUsageTotals, UsageTotals, formatModelUsageSummary, formatUsageSummary, type TokenUsage } from "../model-usage.js";
 import { setMouseTracking } from "./mouse-wheel.js";
 import { clearTerminalScreen, elapsedTime, fitTerminalText, terminalHeader, terminalRow, terminalTheme, type TerminalTheme } from "./theme.js";
 import { TextViewer } from "./text-viewer.js";
@@ -132,10 +132,6 @@ export class BuildView implements Component {
       for (const id of ids("implementedRequirementIds")) this.implemented.add(id);
       // 封存新模块只代表源码更新；旧覆盖保留到后续验收明确给出失败或无法判断。
       this.verifierTasks.clear();
-    }
-    if (event.type === "evolution_scope_selected") {
-      if (Array.isArray(detail?.auditRequirementIds)) this.scope = new Set(ids("auditRequirementIds"));
-      this.setSkipped(ids("skippedRequirementIds"));
     }
     if (["checkpoint_saved", "module_rescued", "run_resumed"].includes(event.type)) {
       for (const id of ids("requirementIds")) this.implemented.add(id);

@@ -12,7 +12,7 @@ import type { ProjectSpec } from "../../src/project-spec.js";
 import { SnapshotStore } from "../../src/snapshot-store.js";
 import { VerifierSourceIndex } from "../../src/verifier/source-index.js";
 import { VerifierProgramCache } from "../../src/verifier/program-cache.js";
-import { requirementDigest } from "../../src/evolution.js";
+import { requirementDigest } from "../../src/requirement-progress.js";
 import type { AtomicRequirement } from "../../src/types.js";
 import { withTempDir } from "../helpers/temp-dir.js";
 
