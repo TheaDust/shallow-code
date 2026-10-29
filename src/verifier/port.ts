@@ -91,6 +91,7 @@ export type VerifierProgress = {
   programId?: string;
   clauseIds?: string[];
   reason?: string;
+  /** For replay: the program was imported from the private cross-build cache. */
   cached?: boolean;
 };
 

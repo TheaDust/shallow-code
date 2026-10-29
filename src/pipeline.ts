@@ -36,14 +36,14 @@ export interface PipelineOptions {
   applicationContract: ApplicationContract;
   /** Product-visible journal directory (`shallow-progress`). */
   progressDir?: string;
-  /** Read-only history from the input project, outside the owned development copy. */
+  /** Previous requirement provenance from the project. */
   historicalProgressDir?: string;
   historicalRequirements?: HistoricalRequirements;
   /** Whether this stage starts from a selected prior-stage application or the blank scaffold. */
   stageStartingPoint?: "inherited_application" | "blank_template" | "unknown";
   /** Evolution only: true includes inherited atomics in audits and delivery coverage. Default false. */
   auditInheritedRequirements?: boolean;
-  /** Runnable implementations recovered from an owned checkpoint; replay follows Verifier settings. */
+  /** Unchanged implementations found in the current project; always checked again in a fresh build. */
   resumedRequirementIds?: string[];
   requirementDigests?: Record<string, string>;
 }

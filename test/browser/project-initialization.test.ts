@@ -48,7 +48,7 @@ test("a custom single-process Web project passes real runtime and browser initia
       OPENAI_API_KEY: "test", OPENAI_BASE_URL: "https://gateway.example/v1", MODEL: "provider/model",
       SHALLOW_RUN_DIR: runsDir,
     }, undefined, null), 0);
-    const runDir = join(runsDir, (await readdir(runsDir))[0]);
+    const runDir = join(runsDir, (await readdir(runsDir)).find(name => !name.startsWith("."))!);
     const record = await loadRunRecord(runDir);
     assert.equal(record.initializationPath, "existing");
     assert.equal(record.projectSpec.start.executable, process.execPath);

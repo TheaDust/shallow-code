@@ -7,6 +7,7 @@ import type { AdapterDeclaration, CheckOutcome, CheckReport, VerifierPort, Verif
 import { verifierSourceClauses, evaluateProgramEvidence, sameRef, validateAcceptanceContract,
   type AcceptanceContract, type VerifierManifest, type VerifierProgramDescriptor, type VerifierRequirements, type SemanticReview, type UnsupportedClause } from "./evidence.js";
 import type { VerifierModel, VerifierTool } from "./model.js";
+import type { VerifierProgramCache } from "./program-cache.js";
 import type { AtomicRequirement } from "../types.js";
 import { SOURCE_TREE_MAX_DEPTH, SOURCE_TREE_MAX_LIMIT, type VerifierSourceIndex, type VerifierSourceView } from "./source-index.js";
 import { compactExecutionFeedback, feedbackSlice, type ExecutionFeedback } from "./feedback.js";
@@ -98,7 +99,7 @@ function reviewReceipt(receipt: EvidenceReceipt, payload: unknown): Record<strin
 
 /** Exploration, semantic review and replay share one immutable task, with separate model sessions. */
 export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter: ExecutionAdapter; model: VerifierModel; sourceIndex?: VerifierSourceIndex;
-  semanticReview?: boolean }): VerifierPort {
+  semanticReview?: boolean; programCache?: VerifierProgramCache }): VerifierPort {
   const { artifacts: store, adapter, model } = options;
   const semanticReview = options.semanticReview === true;
   const invocationInput = async (capabilityId: string, schema: ContentRef, input: unknown): Promise<unknown> => {
@@ -132,6 +133,12 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
     let sourceView: VerifierSourceView | undefined;
     const progress = async (detail: VerifierProgress): Promise<void> => {
       try { await onProgress?.(detail); } catch { /* Presentation failures must not change evidence or prevent cleanup. */ }
+    };
+    const cacheFailure = async (error: unknown): Promise<void> => {
+      signal.throwIfAborted();
+      const reason = `Program cache unavailable: ${errorMessage(error)}`;
+      manifest.diagnostics.push(reason);
+      await progress({ stage: "diagnostic", reason });
     };
     const prepare = async (executionSignal = signal): Promise<ExecutionSession> => {
       executionSignal.throwIfAborted();
@@ -216,7 +223,9 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
         const coveredSources = new Set<string>();
         const rejectedPrograms: RejectedProgram[] = [];
         const candidates: Array<{ program: ProgramRef; descriptor: VerifierProgramDescriptor; approved: boolean }> = [];
-        for (const program of job.programs) {
+        const cachedPrograms = job.mode === "discover" ? await options.programCache?.load(job, input) ?? [] : [];
+        const cachedProgramIds = new Set(cachedPrograms.map(program => canonicalJson(program)));
+        for (const program of [...job.programs, ...cachedPrograms]) {
           try {
             if (!sameRef(program.binding, job.binding) || program.format !== `${declaration.programFormat.id}@${declaration.programFormat.version}`) continue;
             const descriptor = await store.readTypedJson<VerifierProgramDescriptor>(program.descriptor);
@@ -339,6 +348,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                   throw new Error(`Program was rejected by semantic review; revise its source or contract: ${cached.review.reasons.join("; ")}`);
                 }
                 programs.set(canonicalJson(program), program);
+                await options.programCache?.save(job, input, program).catch(cacheFailure);
                 const execution = await prepare(explorationSignal);
                 let refs = [...execution.readinessEvidence];
                 try {
@@ -479,6 +489,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
           }
           finally { await close(exploration); }
         };
+        const unusableCachedPrograms = new Set<string>();
         const replaySubmitted = async (): Promise<Set<string>> => {
           type Executed = { program: ProgramRef; contract: AcceptanceContract; descriptor: VerifierProgramDescriptor; source: string;
             refs: ContentRef[]; outcomes: CheckOutcome[]; cached: Awaited<ReturnType<typeof cachedReview>>;
@@ -488,6 +499,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
           for (const program of submitted.splice(0)) {
             signal.throwIfAborted();
             let failedContract: AcceptanceContract | undefined;
+            let replayStarted = false;
             try {
               if (!sameRef(program.binding, job.binding)) throw new Error("Reusable program execution binding changed");
               if (program.format !== `${declaration.programFormat.id}@${declaration.programFormat.version}`) throw new Error("Reusable program format changed");
@@ -510,17 +522,22 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
               if (!refs) {
                 const replay = await prepare();
                 try {
-                  await progress({ stage: "replay", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
+                  await progress({ stage: "replay", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id),
+                    ...(cachedProgramIds.has(canonicalJson(program)) ? { cached: true } : {}) });
                   refs = [...replay.readinessEvidence];
-                  if (await ready(replay)) refs.push(...await replay.replay(program, signal));
+                  if (await ready(replay)) { replayStarted = true; refs.push(...await replay.replay(program, signal)); }
                   manifest.receipts.push(...refs);
                 } finally { await close(replay); }
               }
               const outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(refs));
+              if (replayStarted && cachedProgramIds.has(canonicalJson(program)) && outcomes.some(outcome => outcome.status === "inconclusive")) {
+                unusableCachedPrograms.add(canonicalJson(program));
+              }
               executed.push({ program, contract, descriptor, source, refs, outcomes, cached, review: cached.review, reviewRef: cached.ref });
             } catch (error) {
               if (cleanupFailure) throw cleanupFailure;
               signal.throwIfAborted();
+              if (replayStarted && cachedProgramIds.has(canonicalJson(program))) unusableCachedPrograms.add(canonicalJson(program));
               const reason = `Program execution failed: ${errorMessage(error)}`;
               manifest.diagnostics.push(reason);
               for (const clause of failedContract?.clauses ?? []) {
@@ -537,6 +554,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
               if (reviewRef) manifest.reviews.push(reviewRef);
               if (review && item.cached.review) await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
               if (review && !review.approved) {
+                await options.programCache?.invalidate(program).catch(cacheFailure);
                 rejectedPrograms.push({ program, contract, source, clauseIds: review.clauseIds, reasons: review.reasons,
                   observations: item.projected?.filter(value => value.receipt.kind === "observation").map(value => reviewReceipt(value.receipt, value.payload)) });
                 review.clauseIds.forEach(id => rejectedClauses.add(id));
@@ -652,6 +670,18 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
         };
         // Verify reusable programs first; one difficult discovery cannot erase their results.
         const corrections = await replaySubmitted();
+        // A stale locator or non-executing cached script needs fresh discovery. A
+        // reproduced business assertion failure keeps its result and its program.
+        for (const program of cachedPrograms.filter(program => unusableCachedPrograms.has(canonicalJson(program)))) {
+          const contract = await store.getJson<AcceptanceContract>(program.contract);
+          const inconclusive = contract.clauses.filter(clause => outcomeMap.get(clause.id)?.status === "inconclusive" && !corrections.has(clause.id));
+          if (!inconclusive.length) continue;
+          await options.programCache?.invalidate(program).catch(cacheFailure);
+          const descriptor = await store.readTypedJson<VerifierProgramDescriptor>(program.descriptor);
+          rejectedPrograms.push({ program, contract, source: (await store.getBytes(descriptor.source)).toString("utf8"),
+            clauseIds: inconclusive.map(clause => clause.id), reasons: inconclusive.map(clause => outcomeMap.get(clause.id)!.reason ?? "Cached program could not execute") });
+          inconclusive.forEach(clause => coveredSources.delete(clause.id));
+        }
         const missing = eligibleSources.filter(source => !coveredSources.has(source.id) && !unsupported.has(source.id));
         for (let round = 0; job.mode === "discover" && round < 2; round++) {
           const repair = round > 0 || !missing.length;

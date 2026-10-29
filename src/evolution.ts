@@ -29,18 +29,31 @@ export function requirementDigest(requirement: AtomicRequirement, referenceFiles
 }
 
 export async function saveRequirementDigests(directory: string, digests: Record<string, string>, acceptedIds: readonly string[]): Promise<void> {
+  await writeDigests(directory, "requirements.json", digests, acceptedIds);
+}
+
+/** Scheduling hints only; each new build verifies these implementations again. */
+export async function saveImplementationDigests(directory: string, digests: Record<string, string>, implementedIds: readonly string[]): Promise<void> {
+  await writeDigests(directory, "implementation.json", digests, implementedIds);
+}
+
+export async function readImplementationDigests(directory: string): Promise<Record<string, string>> {
+  return await readRequirementDigests(directory, "implementation.json") ?? await readRequirementDigests(directory) ?? {};
+}
+
+async function writeDigests(directory: string, name: string, digests: Record<string, string>, ids: readonly string[]): Promise<void> {
   await mkdir(directory, { recursive: true });
   if ((await lstat(directory)).isSymbolicLink()) throw new Error("Progress directory must not be a link");
-  const file = join(directory, "requirements.json");
+  const file = join(directory, name);
   const temporary = `${file}.${randomUUID()}.tmp`;
-  const current = Object.fromEntries(acceptedIds.filter(id => digests[id]).map(id => [id, digests[id]]));
+  const current = Object.fromEntries(ids.filter(id => digests[id]).map(id => [id, digests[id]]));
   await writeFile(temporary, JSON.stringify({ version: 1, digests: current }, null, 2) + "\n", { flag: "wx" });
   await rename(temporary, file);
 }
 
-async function readRequirementDigests(directory: string): Promise<Record<string, string> | undefined> {
+async function readRequirementDigests(directory: string, name = "requirements.json"): Promise<Record<string, string> | undefined> {
   try {
-    const raw: unknown = JSON.parse(await readFile(join(directory, "requirements.json"), "utf8"));
+    const raw: unknown = JSON.parse(await readFile(join(directory, name), "utf8"));
     if (!record(raw) || raw.version !== 1 || !record(raw.digests) ||
       !Object.entries(raw.digests).every(([id, hash]) => id && typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash))) return {};
     return raw.digests as Record<string, string>;

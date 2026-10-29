@@ -399,7 +399,7 @@ test("Interactive presentation keeps human-readable logs on disk and routes live
   });
 });
 
-test("Result card offers applicable commands, quotes paths and separates skips from verification", () => {
+test("Result card offers in-place continuation and separates skips from verification", () => {
   const summary = { status: "partial" as const, verifiedRequirementIds: ["A"], blockedRequirementIds: [], acceptedSha: "sha",
     inconclusiveRequirementIds: ["B"], skippedRequirementIds: ["C"],
     scenarioResults: [{ requirementId: "A", scenarioId: "a-1", name: "a-1", status: "verified" as const, caseIds: [] },
@@ -410,11 +410,11 @@ test("Result card offers applicable commands, quotes paths and separates skips f
   assert.match(partial, /已验证 1.*证据不足 1/);
   assert.match(partial, /场景覆盖 1\/3 · 失败 1 · 无法判断 1/);
   assert.match(partial, /沿用跳过 1/);
-  assert.match(partial, /shallow build resume.*user''s run/);
-  assert.doesNotMatch(partial, /shallow build apply/);
+  assert.match(partial, /在项目目录再次执行 shallow build/);
+  assert.doesNotMatch(partial, /shallow build (apply|resume)/);
   const delivered = buildResult({ ...summary, status: "delivered" }, "run", "changes.patch", "demo", 3_600_000, false);
   assert.match(delivered, /总耗时\s+60:00/);
-  assert.match(delivered, /shallow build apply/);
+  assert.match(delivered, /项目已写入 demo/);
   assert.doesNotMatch(delivered, /\x1b\[/);
   const usage = new ModelUsageTotals();
   usage.add("builder", { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
@@ -552,7 +552,8 @@ test("Completed build TUI stays open for cost, requirements and logs until Ctrl+
   assert.match(log, /本轮结束：交付完成 · 总耗时 01:05/);
   assert.match(log, /报告：E:\\runs\\demo\\report\.md/);
   assert.match(log, /日志：E:\\runs\\demo\\run-log\.txt/);
-  assert.match(log, /shallow build apply --run-dir 'E:\\runs\\demo'/);
+  assert.match(log, /项目：E:\\project/);
+  assert.doesNotMatch(log, /shallow build (apply|resume)/);
   terminal.input("\x1b");
 
   terminal.input("t");

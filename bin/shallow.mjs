@@ -8,11 +8,9 @@ const USAGE = `ShallowCode —— shallow <子命令>
 
 示例：
   shallow req
-  shallow build                                # 查找当前目录及其子目录中的 requirements.yaml，产物输出到当前目录
+  shallow build                                # 在当前目录开发；中断后或需求更新后仍执行这条命令
   shallow build --requirements-dir <需求目录> --output-dir <新项目目录>
   shallow build --requirements-dir <需求目录> --project <已有项目目录>
-  shallow build resume --run-dir <运行目录>
-  shallow build apply --run-dir <运行目录>
 `;
 
 const [subcommand, ...rest] = process.argv.slice(2);

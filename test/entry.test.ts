@@ -16,11 +16,42 @@ import { withTempDir } from "./helpers/temp-dir.js";
 import { loadRunRecord } from "../src/run-record.js";
 import { webRuntimeConfig, minimalWebProjectSpec, npmExecutable } from "../src/adapters/web/project-spec.js";
 import { GitCliOps } from "../src/git-ops.js";
+import { saveImplementationDigests } from "../src/evolution.js";
 
-test("The production entry resumes an owned checkpoint with fresh artifacts and applies without gateway credentials", { timeout: 60_000 }, async () => {
-  await withTempDir("shallow-entry-resume-", async root => {
-    const source = join(root, "project"), requirements = join(root, "requirements"), runs = join(root, "runs");
-    await mkdir(source); await mkdir(requirements);
+test("Build discovers project progress after an interruption without selecting an old private run", async () => {
+  await withTempDir("shallow-entry-local-progress-", async root => {
+    const project = join(root, "project"), requirements = join(project, "requirements");
+    await mkdir(requirements, { recursive: true });
+    await writeFile(join(project, "server.js"), "current source");
+    await writeFile(join(project, "shallowcode.config.json"), JSON.stringify({ start: { executable: "node", args: ["server.js"] } }));
+    const input = { id: "ROOT", name: "Product", type: "ROOT", children: [
+      { id: "A", name: "A", type: "ATOMIC", description: "Display A." },
+      { id: "B", name: "B", type: "ATOMIC", description: "Display B." },
+    ] };
+    await writeFile(join(requirements, "requirements.yaml"), JSON.stringify(input));
+    await assert.rejects(main([], { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "first-runs") }, async context => {
+      await writeFile(join(project, "server.js"), "partial implementation");
+      await saveImplementationDigests(context.pipelineOptions.progressDir!, context.pipelineOptions.requirementDigests!, ["A", "B"]);
+      throw new Error("manual interruption");
+    }, null, project), /manual interruption/);
+    input.children[1].description = "Display the updated B.";
+    input.children.push({ id: "C", name: "C", type: "ATOMIC", description: "Display C." });
+    await writeFile(join(requirements, "requirements.yaml"), JSON.stringify(input));
+    await writeFile(join(project, "user.txt"), "user modification after exit");
+    assert.equal(await main([], { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "different-runs") }, async context => {
+      assert.equal(context.pipelineOptions.outputDir, project);
+      assert.deepEqual(context.pipelineOptions.resumedRequirementIds, ["A"]);
+      assert.equal(await readFile(join(project, "server.js"), "utf8"), "partial implementation");
+      assert.equal(await readFile(join(project, "user.txt"), "utf8"), "user modification after exit");
+      return { status: "partial", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [] };
+    }, null, project), 2);
+  });
+});
+
+test("Repeated production builds use current files and requirements in place with private checkpoints", { timeout: 90_000 }, async () => {
+  await withTempDir("shallow-entry-continue-", async root => {
+    const source = join(root, "project"), requirements = join(source, "requirements"), runs = join(root, "runs");
+    await mkdir(requirements, { recursive: true });
     await writeFile(join(source, "server.mjs"), `import { createServer } from 'node:http';
 createServer((req,res) => { if(req.url==='/health') return res.end('ok');
 if(req.url==='/web') { res.setHeader('content-type','text/html'); return res.end('<html><body>Ready</body></html>'); }
@@ -29,26 +60,35 @@ res.statusCode=404; res.end('missing'); }).listen(Number(process.env.PORT),'127.
     const requirementFile = join(requirements, "requirements.yaml");
     await writeFile(requirementFile, "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
     const env = { ...gatewayEnv(), SHALLOW_RUN_DIR: runs };
-    assert.equal(await main(["--requirements-dir", requirements, "--project", source], env, undefined, null), 0);
-    const first = join(runs, (await readdir(runs))[0]);
+    assert.equal(await main([], env, undefined, null, source), 0);
+    const first = join(runs, (await readdir(runs)).find(name => !name.startsWith("."))!);
     const record = await loadRunRecord(first);
+    assert.equal(record.outputDir, source);
+    assert.equal(record.sourceProjectDir, undefined);
+    assert.equal(record.checkpointGitDirectory, join(first, "checkpoints.git"));
+    await assert.rejects(access(join(source, ".git")), "controller checkpoints do not create an application repository");
     const originalLedger = await readFile(join(first, "run-ledger.jsonl"), "utf8");
-    await writeFile(join(record.outputDir, "interrupted.txt"), "unaccepted work");
-    assert.equal(await main(["resume", "--run-dir", first], env, undefined, null), 0);
-    await assert.rejects(access(join(record.outputDir, "interrupted.txt")));
-    assert.equal(await readFile(join(first, "run-ledger.jsonl"), "utf8"), originalLedger);
-    const second = join(runs, (await readdir(runs)).find(name => join(runs, name) !== first)!);
-    const resumed = await loadRunRecord(second);
-    assert.equal(resumed.resumedFrom, first);
-    assert.equal(resumed.inputBaseline, record.inputBaseline);
-    assert.equal(await main(["apply", "--run-dir", second], {}, undefined, null), 0);
+    await writeFile(join(source, "interrupted.txt"), "keep current work");
     await writeFile(requirementFile, "id: ROOT\nname: Changed\ntype: ROOT\nchildren: []\n");
-    await assert.rejects(main(["resume", "--run-dir", second], env, undefined, null), /Resume inputs changed/);
-    assert.equal((await readdir(runs)).length, 2);
+    const config = JSON.parse(await readFile(join(source, "shallowcode.config.json"), "utf8"));
+    config.env = { CURRENT_CONTRACT: "changed" };
+    await writeFile(join(source, "shallowcode.config.json"), JSON.stringify(config));
+    assert.equal(await main([], env, undefined, null, source), 0);
+    assert.equal(await readFile(join(source, "interrupted.txt"), "utf8"), "keep current work");
+    assert.equal(await readFile(join(first, "run-ledger.jsonl"), "utf8"), originalLedger);
+    const second = join(runs, (await readdir(runs)).find(name => !name.startsWith(".") && join(runs, name) !== first)!);
+    const continued = await loadRunRecord(second);
+    assert.equal(continued.outputDir, source);
+    assert.equal(continued.resumedFrom, undefined);
+    assert.deepEqual(continued.projectSpec.env, { CURRENT_CONTRACT: "changed" });
+    assert.notEqual(continued.requirementsDigest, record.requirementsDigest);
+    assert.notEqual(continued.contractDigest, record.contractDigest);
+    await assert.rejects(access(join(second, "workspace")));
+    await assert.rejects(access(join(second, "changes.patch")));
   });
 });
 
-test("Existing project entry develops in a separate copy and passes its declared runtime", async () => {
+test("Existing project entry develops in place and passes its current declared runtime", async () => {
   await withTempDir("shallow-entry-project-", async root => {
     const source = join(root, "project"), requirements = join(root, "requirements");
     await mkdir(source); await mkdir(requirements);
@@ -57,15 +97,14 @@ test("Existing project entry develops in a separate copy and passes its declared
       tests: [{ id: "unit", executable: "node", args: ["--test"] }], env: { FLAG: "declared" }, dataPaths: ["storage"] }));
     await writeFile(join(requirements, "requirements.yaml"), "id: ROOT\nname: Demo\ntype: ROOT\nchildren: []\n");
     await main(["--requirements-dir", requirements, "--project", source], { ...gatewayEnv(), SHALLOW_RUN_DIR: join(root, "runs") }, async context => {
-      assert.equal(context.sourceProjectDir, source);
-      assert.notEqual(context.pipelineOptions.outputDir, source);
+      assert.equal(context.pipelineOptions.outputDir, source);
       assert.equal(context.pipelineOptions.stageStartingPoint, "inherited_application");
       assert.deepEqual(context.pipelineOptions.applicationContract.env, { FLAG: "declared" });
       assert.equal(context.pipelineOptions.applicationContract.testTargets?.[0].id, "unit");
       await writeFile(join(context.pipelineOptions.outputDir, "server.js"), "implemented");
       return { status: "delivered", acceptedSha: "sha", verifiedRequirementIds: [], blockedRequirementIds: [] };
     }, null);
-    assert.equal(await (await import("node:fs/promises")).readFile(join(source, "server.js"), "utf8"), "original source");
+    assert.equal(await readFile(join(source, "server.js"), "utf8"), "implemented");
   });
 });
 
@@ -79,7 +118,7 @@ test("An existing Web project without a run declaration reports the missing conf
   });
 });
 
-test("An output directory carrying only requirements metadata starts a blank template run and exports its delivery", async () => {
+test("An output directory carrying only requirements metadata starts a blank template run and writes its report", async () => {
   await withTempDir("shallow-entry-metadata-", async root => {
     const output = join(root, "web2");
     const requirements = join(output, "requirements");
@@ -106,9 +145,8 @@ test("An output directory carrying only requirements metadata starts a blank tem
     assert.equal(received?.pipelineOptions.outputDir, output);
     assert.deepEqual(received?.runRecord.projectSpec, minimalWebProjectSpec(npmExecutable()), "空白目录使用随附模板的运行合同");
     const run = join(root, "runs", (await readdir(join(root, "runs")))[0]);
-    const patch = await readFile(join(run, "changes.patch"), "utf8");
-    assert.match(patch, /app\.txt/);
-    assert.doesNotMatch(patch, /\.requirements-agent/);
+    assert.equal(await readFile(join(output, "app.txt"), "utf8"), "implemented\n");
+    await assert.rejects(access(join(run, "changes.patch")));
     assert.equal(JSON.parse(await readFile(join(run, "result.json"), "utf8")).status, "delivered");
     await access(join(run, "report.md"));
     await access(join(output, ".requirements-agent"));

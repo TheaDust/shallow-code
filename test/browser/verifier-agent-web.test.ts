@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createVerifierAgent } from "../../src/verifier/agent.js";
@@ -7,10 +7,12 @@ import { ArtifactStore } from "../../src/verifier/artifacts.js";
 import { createWebExecutionAdapter } from "../../src/verifier/adapters/web/index.js";
 import { verifierSourceClauses, type AcceptanceContract, type VerifierManifest, type VerifierRequirements } from "../../src/verifier/evidence.js";
 import type { VerifierModel } from "../../src/verifier/model.js";
-import type { CheckJob, EvidenceReceipt } from "../../src/verifier/port.js";
+import type { CheckJob, EvidenceReceipt, ExecutionBindingRef } from "../../src/verifier/port.js";
 import type { ProjectSpec } from "../../src/project-spec.js";
 import { SnapshotStore } from "../../src/snapshot-store.js";
 import { VerifierSourceIndex } from "../../src/verifier/source-index.js";
+import { VerifierProgramCache } from "../../src/verifier/program-cache.js";
+import { requirementDigest } from "../../src/evolution.js";
 import type { AtomicRequirement } from "../../src/types.js";
 import { withTempDir } from "../helpers/temp-dir.js";
 
@@ -41,6 +43,11 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
       snapshot: snapshot.ref, requirements: await artifacts.putJson(input), binding: adapter.binding, initialState,
       requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 180_000 } };
     const clauses = verifierSourceClauses(input, job.requirementIds);
+    const programCache = (store: ArtifactStore, binding: ExecutionBindingRef, baseline: typeof snapshot) => VerifierProgramCache.open({
+      directory: join(root, "program-cache"), artifacts: store, binding,
+      initialData: baseline.manifest.files.filter(file => file.path.startsWith("data/")),
+      requirements: [requirement], requirementDigests: { r1: requirementDigest(requirement) },
+    });
     assert.equal(clauses.length, 3);
     const roles: string[] = [];
     const model: VerifierModel = { async run(request) {
@@ -100,7 +107,8 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
       return { totalTokens: 100 };
     } };
     const sourceIndex = new VerifierSourceIndex(snapshots, spec.dataPaths);
-    const report = await createVerifierAgent({ semanticReview, artifacts, adapter, model, sourceIndex }).check(job, new AbortController().signal);
+    const report = await createVerifierAgent({ semanticReview, artifacts, adapter, model, sourceIndex,
+      programCache: await programCache(artifacts, adapter.binding, snapshot) }).check(job, new AbortController().signal);
     const manifest = await artifacts.getJson<VerifierManifest>(report.manifest);
     assert.deepEqual(manifest.diagnostics, []);
     assert.deepEqual(report.outcomes.map(outcome => outcome.status), mutant ? ["pass", "fail", "pass"] : ["pass", "pass", "pass"]);
@@ -113,5 +121,26 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
     assert.equal(new Set(assertions.map(receipt => receipt.environment.id)).size, mutant ? 2 : 1);
 
     assert.deepEqual(await readdir(workspace), []);
+    if (!semanticReview && !mutant) for (const regression of [false, true]) {
+      if (regression) {
+        const server = join(source, "server.cjs");
+        await writeFile(server, (await readFile(server, "utf8")).replace("seats:5", "seats:4"));
+      }
+      const runId = regression ? "regression-build" : "continued-build";
+      const currentArtifacts = new ArtifactStore(join(root, runId), runId);
+      const currentSnapshot = await snapshots.seal({ sourceDirectory: source, sourceSha: runId, packetId: "packet", dataPaths: ["data"] });
+      const current = await createWebExecutionAdapter({ artifacts: currentArtifacts, snapshots, workspace: join(root, runId + "-workers"), spec,
+        initialDataSnapshot: currentSnapshot.ref });
+      let modelCalls = 0;
+      const currentJob: CheckJob = { ...job, jobId: runId, runId, snapshot: currentSnapshot.ref, binding: current.adapter.binding,
+        requirements: await currentArtifacts.putJson(input), initialState: current.initialState, programs: [], budget: { deadlineAt: Date.now() + 180_000 } };
+      const repeated = await createVerifierAgent({ artifacts: currentArtifacts, adapter: current.adapter,
+        model: { async run() { modelCalls++; throw new Error("Compatible cross-build programs must not start a model"); } },
+        programCache: await programCache(currentArtifacts, current.adapter.binding, currentSnapshot) }).check(currentJob, new AbortController().signal);
+      assert.equal(modelCalls, 0, runId);
+      assert.deepEqual(repeated.outcomes.map(outcome => outcome.status), regression ? ["pass", "fail", "pass"] : ["pass", "pass", "pass"], runId);
+      const currentManifest = await currentArtifacts.getJson<VerifierManifest>(repeated.manifest);
+      for (const ref of currentManifest.receipts) await currentArtifacts.validateReceipt(currentJob, await currentArtifacts.getJson<EvidenceReceipt>(ref));
+    }
   });
 });

@@ -27,7 +27,7 @@ test("credential smoke uses real Pi Builder and Verifier with independent Web ev
     }] }));
     const code = await main(["--requirements-dir", requirements, "--output-dir", output], { ...process.env, SHALLOW_RUN_DIR: runs }, undefined, null);
     assert.equal(code, 0);
-    const result = JSON.parse(await readFile(join(runs, (await readdir(runs))[0], "result.json"), "utf8"));
+    const result = JSON.parse(await readFile(join(runs, (await readdir(runs)).find(name => !name.startsWith("."))!, "result.json"), "utf8"));
     assert.deepEqual(result.verifiedRequirementIds, ["PROFILE"]);
     assert.equal(result.verifier.mode, "active");
   });

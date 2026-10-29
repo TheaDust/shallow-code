@@ -1,17 +1,17 @@
-import { access, copyFile, cp, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { agentEnv } from "./src/agent-config.js";
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
 import { VisionCapability } from "./src/builder/vision-probe.js";
 import { PiWorkerClient } from "./src/builder/pi-worker-client.js";
-import { discoverRequirementsDir, parseInvocation, type CliOptions } from "./src/cli.js";
+import { discoverRequirementsDir, parseCliArgs } from "./src/cli.js";
 import { SnapshotStore } from "./src/snapshot-store.js";
 import { VerifierSourceIndex, verifierSourceExclusions } from "./src/verifier/source-index.js";
+import { VerifierProgramCache } from "./src/verifier/program-cache.js";
 import { ArtifactStore, atomicWrite } from "./src/verifier/artifacts.js";
 import type { ContentRef } from "./src/verifier/port.js";
 import { createVerifierAgent, createPiVerifierModel, type VerifierModelUsage } from "./src/verifier/agent.js";
@@ -44,24 +44,21 @@ import {
   type GatewayConfig,
 } from "./src/runtime-config.js";
 import { loadProjectSpec, type ProjectSpec } from "./src/project-spec.js";
-import { initializeProject, readProjectIntent, selectInitializationPath, type InitializationResult } from "./src/project-initialization.js";
+import { initializeProject, readProjectIntent, type InitializationResult } from "./src/project-initialization.js";
 import { verifyInitializedWebProject } from "./src/adapters/web/initialization.js";
 import { RunStateStore } from "./src/run-state.js";
 import { applications } from "./src/adapters/index.js";
 import { verifierAdapters } from "./src/adapters/verifier.js";
-import { copyProjectWorkspace, hasProjectFiles, writeProjectPatch } from "./src/project-workspace.js";
-import { applyRun, digest, loadPendingInitialization, loadRunRecord, lockWorkspace, readResumeCheckpoint,
-  savePendingInitialization, saveRunRecord, snapshotFiles, writeRunReport, type PendingInitialization, type RunRecord } from "./src/run-record.js";
+import { hasProjectFiles } from "./src/project-workspace.js";
+import { digest, lockWorkspace, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
 import { loadRequirementCatalog } from "./src/catalog.js";
-import { readHistoricalRequirementIds, requirementDigest, saveRequirementDigests } from "./src/evolution.js";
+import { readHistoricalRequirementIds, readImplementationDigests, requirementDigest, saveRequirementDigests } from "./src/evolution.js";
 
 export interface AgentExecutionContext {
   tui?: BuildTui;
   runRecord: RunRecord;
   /** 本轮输入需求树；交互终端据此展示子树完成状态。 */
   requirementTree?: RequirementNode;
-  resumeCheckpointSha?: string;
-  sourceProjectDir?: string;
   /** Builder 侧网关（SHALLOW_BUILDER_* 覆盖，缺省公共网关）。 */
   builderGateway: GatewayConfig;
   /** Verifier 侧网关（SHALLOW_VERIFIER_* 覆盖，缺省公共网关）。 */
@@ -101,51 +98,16 @@ export async function main(
   envFile: string | null = defaultEnvFile(),
   cwd: string = process.cwd(),
 ): Promise<number> {
-  // 结果卡总耗时从命令开始计时，覆盖输入准备、工作区复制与整轮执行。
   const startedAtMs = Date.now();
-  // 需求输入缺省在当前目录子树中查找唯一的 requirements.yaml；找不到或有多个
-  // 候选时要求显式 --requirements-dir。输出目录缺省为当前目录。
-  const invocation = parseInvocation(argv, {
+  const cli = parseCliArgs(argv[0] === "run" ? argv.slice(1) : argv, {
     defaultOutputDir: cwd,
     defaultRequirementsDir: () => discoverRequirementsDir(cwd),
   });
-  if (invocation.command === "apply") {
-    const directory = await applyRun(invocation.runDirectory, invocation.allowPartial);
-    process.stderr.write(`[ShallowCode] 已应用项目改动：${directory}\n`);
-    return 0;
-  }
-  let pending = invocation.command === "resume" ? await loadPendingInitialization(invocation.runDirectory) : null;
-  let prior: RunRecord | undefined;
-  if (invocation.command === "resume") {
-    if (pending) {
-      // A crash can leave the pending marker behind after Verifier binding was saved.
-      try {
-        const frozen = await loadRunRecord(invocation.runDirectory);
-        if (frozen.bindingDigest) { prior = frozen; pending = null; }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-      }
-    } else prior = await loadRunRecord(invocation.runDirectory);
-  }
-  const cli: CliOptions = invocation.command === "run" ? invocation.options : {
-    requirementsDir: pending?.requirementsDir ?? prior!.requirementsDir,
-    outputDir: pending?.sourceProjectDir ?? pending?.outputDir ?? prior!.outputDir,
-    budgetMs: invocation.budgetMs,
-  };
   const mergedEnv = await mergeGatewayEnv(env, envFile);
-  const requestedVerifier = parseVerifierConfig(mergedEnv);
-  if (prior?.verifier && ((agentEnv(mergedEnv, "verifier", "MODE") !== undefined && requestedVerifier.mode !== prior.verifier.mode) ||
-    (agentEnv(mergedEnv, "verifier", "CONCURRENCY") !== undefined && requestedVerifier.concurrency !== prior.verifier.concurrency) ||
-    (agentEnv(mergedEnv, "verifier", "SEMANTIC_REVIEW") !== undefined && requestedVerifier.semanticReview !== prior.verifier.semanticReview) ||
-    (agentEnv(mergedEnv, "verifier", "REPLAY") !== undefined && requestedVerifier.replay !== prior.verifier.replay))) {
-    throw new Error("Resume Verifier settings changed; start a new run for the updated settings");
-  }
-  const verifier = prior?.verifier ?? requestedVerifier;
+  const verifier = parseVerifierConfig(mergedEnv);
   const builderGateway = readGatewayConfig(mergedEnv, "builder");
   const verifierGateway = readGatewayConfig(mergedEnv, "verifier");
   const grouperGateway = readGatewayConfig(mergedEnv, "grouper");
-  // 单价来自内置模型目录，可被 MODEL_COST_* / SHALLOW_BUILDER_COST_* /
-  // SHALLOW_VERIFIER_COST_* / SHALLOW_GROUPER_COST_* 按字段覆盖；缺失时只统计 token。
   const builderModelCost = resolveModelRates(builderGateway.baseUrl, builderGateway.model,
     { agent: "builder", env: mergedEnv });
   const verifierModelCost = resolveModelRates(verifierGateway.baseUrl, verifierGateway.model,
@@ -153,211 +115,144 @@ export async function main(
   const grouperModelCost = resolveModelRates(grouperGateway.baseUrl, grouperGateway.model,
     { agent: "grouper", env: mergedEnv });
   const requirementsFile = join(cli.requirementsDir, "requirements.yaml");
-  try {
-    await access(requirementsFile);
-  } catch {
-    throw new Error(`requirements.yaml is not readable at ${requirementsFile}`);
-  }
+  try { await access(requirementsFile); }
+  catch { throw new Error(`requirements.yaml is not readable at ${requirementsFile}`); }
   if (cli.projectDir) await access(cli.projectDir);
   await mkdir(cli.outputDir, { recursive: true });
+  const workingDirectory = cli.outputDir;
+  const runId = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const runDirectory = join(parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs"), runId);
+  await assertPrivateRunDirectory(workingDirectory, runDirectory);
+  await assertPrivateRunDirectory(cli.requirementsDir, runDirectory);
   const requirementFiles = await snapshotFiles(cli.requirementsDir);
   const requirementsDigest = digest(JSON.stringify(requirementFiles));
-  if (prior && prior.requirementsDigest !== requirementsDigest) {
-    throw new Error("Resume inputs changed (requirements); start a new run for the updated inputs");
-  }
-  if (pending && pending.requirementsDigest !== requirementsDigest) {
-    throw new Error("Resume requirements changed during initialization; start a new run");
-  }
-  const runId = `${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`;
-  const runDir = pending && invocation.command === "resume" ? dirname(invocation.runDirectory)
-    : parseRunDirOverride(mergedEnv) ?? join(tmpdir(), "shallowcode-runs");
-  const runDirectory = pending && invocation.command === "resume" ? invocation.runDirectory : join(runDir, runId);
-  await assertPrivateRunDirectory(cli.outputDir, runDirectory);
-  await assertPrivateRunDirectory(cli.requirementsDir, runDirectory);
   const requirementSnapshot = join(runDirectory, "requirements");
-  if (!pending) for (const path of Object.keys(requirementFiles)) {
+  for (const path of Object.keys(requirementFiles)) {
     const destination = join(requirementSnapshot, path);
     await mkdir(dirname(destination), { recursive: true });
     await copyFile(join(cli.requirementsDir, path), destination);
   }
-  if (digest(JSON.stringify(await snapshotFiles(requirementSnapshot))) !== requirementsDigest) throw new Error("Requirements changed while copying the run inputs");
-  const intent = await readProjectIntent(requirementSnapshot);
-  const inheritedProject = pending ? pending.sourceProjectDir !== undefined : prior
-    ? prior.sourceProjectDir !== undefined || prior.stageStartingPoint === "inherited_application"
-    : cli.projectDir !== undefined || await hasProjectFiles(cli.outputDir);
-  // Preserve injected entry tests: production alone owns project initialization.
-  // No provisional default contract is constructed for a custom project.
-  let initialSpec: ProjectSpec | undefined = prior?.projectSpec;
-  if (!initialSpec && !pending) {
-    try { initialSpec = await loadProjectSpec(cli.outputDir, undefined, (raw, origin) =>
-      applications.get((raw as { adapter?: string })?.adapter ?? "web").parseSpec(raw, origin)); }
-    catch (error) {
-      if (!(error instanceof Error) || !error.message.startsWith("Missing project run configuration:")) {
-        throw error;
-      }
-    }
+  if (digest(JSON.stringify(await snapshotFiles(requirementSnapshot))) !== requirementsDigest) {
+    throw new Error("Requirements changed while copying the run inputs");
   }
-  const sourceInputFiles = pending?.inputFiles ?? (inheritedProject && !prior
-    ? await snapshotFiles(cli.outputDir, initialSpec?.generatedPaths) : undefined);
-  const workingDirectory = pending?.outputDir ?? (inheritedProject && !prior
-    ? await copyProjectWorkspace(cli.outputDir, join(runDirectory, "workspace"), initialSpec?.generatedPaths,
-      initialSpec?.dataPaths)
-    : cli.outputDir);
+  const inheritedProject = cli.projectDir !== undefined || await hasProjectFiles(workingDirectory);
+  const intent = await readProjectIntent(requirementSnapshot);
+  let initialSpec: ProjectSpec | undefined;
+  try {
+    initialSpec = await loadProjectSpec(workingDirectory, undefined, (raw, origin) =>
+      applications.get((raw as { adapter?: string })?.adapter ?? "web").parseSpec(raw, origin));
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.startsWith("Missing project run configuration:")) throw error;
+  }
   const requirementsContext = await readFile(join(requirementSnapshot, "requirements.yaml"), "utf8");
   const inputCatalog = await loadRequirementCatalog(join(requirementSnapshot, "requirements.yaml"), { inheritedApplication: inheritedProject });
   const requirementDigests = Object.fromEntries(inputCatalog.requirements.map(r => [r.id, requirementDigest(r, requirementFiles)]));
-  const initializationTui = execute === executeProduction && !prior && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb"
+  const progressDir = join(workingDirectory, PROGRESS_DIR_NAME);
+  const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(progressDir) : undefined;
+  const historicalRequirements = sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined;
+  const previousImplementations = inheritedProject ? await readImplementationDigests(progressDir) : {};
+  const resumedRequirementIds = Object.keys(requirementDigests).filter(id => previousImplementations[id] === requirementDigests[id]);
+  const initializationTui = execute === executeProduction && process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb"
     ? new BuildTui({ requirementIds: Object.keys(requirementDigests), requirementTree: inputCatalog.tree,
       requirementsText: requirementsContext,
       models: { grouper: grouperGateway.model, builder: builderGateway.model, verifier: verifierGateway.model },
       onInterrupt: () => { process.kill(process.pid, "SIGINT"); } }) : undefined;
-  // executeProduction 在 resume 等路径自行创建 TUI 时，通过上下文交回同一个句柄。
   let activeTui = initializationTui;
-  let initialization: InitializationResult | undefined;
-  let initializationBaseline: string | undefined = pending?.inputBaseline;
-  if (execute === executeProduction && !prior) {
-    initializationTui?.start();
-    await initializationTui?.waitForStart();
-    let release: (() => Promise<void>) | undefined;
-    try {
-      const git = await GitCliOps.open(workingDirectory, { allowExisting: Boolean(pending) || inheritedProject || initialSpec !== undefined,
-        generatedPaths: initialSpec?.generatedPaths ?? [] });
+  let release: (() => Promise<void>) | undefined;
+  try {
+    let initialization: InitializationResult | undefined;
+    let initializationBaseline: string | undefined;
+    let inputFiles: Record<string, string> | undefined;
+    const checkpointGitDirectory = join(runDirectory, "checkpoints.git");
+    if (execute === executeProduction) {
+      initializationTui?.start();
+      await initializationTui?.waitForStart();
       release = await lockWorkspace(workingDirectory);
-      initializationBaseline ??= await git.captureAccepted("shallow: input before initialization");
-      const pendingRecord: PendingInitialization = pending ?? {
-        version: 1, requirementsDir: cli.requirementsDir, requirementsDigest,
-        outputDir: workingDirectory,
-        ...(inheritedProject ? { sourceProjectDir: cli.outputDir } : {}),
-        inputBaseline: initializationBaseline, inputFiles: sourceInputFiles ?? {},
-        path: selectInitializationPath(await hasProjectFiles(workingDirectory), initialSpec !== undefined, intent), modelUsage: [],
-        ...(initialSpec ? { existingConfigContent: await readFile(join(workingDirectory, "shallowcode.config.json"), "utf8") } : {}),
-      };
-      await savePendingInitialization(runDirectory, pendingRecord);
+      inputFiles = await snapshotFiles(workingDirectory, initialSpec?.generatedPaths);
+      const git = await GitCliOps.open(workingDirectory, {
+        checkpointDirectory: checkpointGitDirectory, generatedPaths: initialSpec?.generatedPaths ?? [],
+      });
+      initializationBaseline = await git.captureAccepted("shallow: input before initialization");
       const initState = new RunStateStore({ statusByRequirementId: {}, acceptedSha: initializationBaseline,
         startedAtMs, totalBudgetMs: cli.budgetMs }, join(runDirectory, "run-ledger.jsonl"),
         createRunLogSink(join(runDirectory, "run-log.txt"), undefined, process.stderr,
           initializationTui ? (raw, line) => initializationTui.record(raw, line) : undefined),
         gatewaySecrets(builderGateway, verifierGateway, grouperGateway));
-      initialization = await initializeProject({ outputDir: workingDirectory, privateDir: runDirectory,
-        verify: verifyInitializedWebProject,
-        requirementsContext, intent,
-        resumePath: pendingRecord.path, previousUsage: pendingRecord.modelUsage,
-        existingConfigContent: pendingRecord.existingConfigContent,
-        env: mergedEnv, startedAtMs, budgetMs: cli.budgetMs, applications,
+      initialization = await initializeProject({
+        outputDir: workingDirectory, privateDir: runDirectory, verify: verifyInitializedWebProject,
+        requirementsContext, intent, env: mergedEnv, startedAtMs, budgetMs: cli.budgetMs, applications,
         diagnosticSecrets: gatewaySecrets(builderGateway, verifierGateway, grouperGateway),
         createBuilder: () => new PiWorkerClient(builderGateway, join(runDirectory, "pi-sessions"), undefined,
           { ...(builderModelCost ? { modelCost: builderModelCost } : {}), applications }),
         onEvent: (type, detail) => initState.record({ at: new Date().toISOString(), type, detail } as import("./src/types.js").RunEvent),
         onUsage: async usage => {
-          pendingRecord.modelUsage = [...usage];
-          await savePendingInitialization(runDirectory, pendingRecord);
           const item = usage.at(-1);
           if (item) await initState.record({ at: new Date().toISOString(), type: "builder_usage", packetId: "initialization",
             detail: { ...item, total: item.input + item.output + item.cacheRead + item.cacheWrite } });
         },
       });
-      const initializedSha = await git.captureAccepted("shallow: runnable initialization baseline");
-      initState.setAcceptedSha(initializedSha);
+      initState.setAcceptedSha(await git.captureAccepted("shallow: runnable initialization baseline"));
       await initState.record({ at: new Date().toISOString(), type: "initialization_finished",
         detail: { path: initialization.path, adapterId: initialization.contract.adapterId } });
-    } catch (error) { initializationTui?.stop(); throw error; }
-    finally { await release?.(); }
-  }
-  try {
-    const spec = initialization?.spec ?? prior?.projectSpec ?? await loadProjectSpecOrDefault(cli.outputDir);
-    const contractDigest = await controllerContractDigest(spec);
-    if (prior && (prior.requirementsDigest !== requirementsDigest || prior.contractDigest !== contractDigest)) {
-      throw new Error("Resume inputs changed (requirements, project contract, prompts or engine); start a new run for the updated inputs");
     }
-    const checkpoint = prior && invocation.command === "resume" ? await readResumeCheckpoint(invocation.runDirectory, prior) : undefined;
+    const spec = initialization?.spec ?? await loadProjectSpecOrDefault(workingDirectory);
+    const contractDigest = await controllerContractDigest(spec);
     const applicationContract = initialization?.contract ?? await applications.get(spec.adapter ?? "web").configure(spec, mergedEnv);
-    const sseCaptureDir = resolveSseCaptureDir(mergedEnv, join(runDirectory, "sse-capture"));
-    const referenceImages = referenceImagesEnabled(mergedEnv);
-    const sourceHistory = inheritedProject ? await readHistoricalRequirementIds(join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME)) : undefined;
-    const historicalRequirements = prior?.historicalRequirements ?? (sourceHistory ? { ...sourceHistory, requirementIds: [...sourceHistory.requirementIds] } : undefined);
     const pipelineOptions: PipelineOptions = {
-      verifier,
-      requirementDigests,
-      historicalRequirements,
+      verifier, requirementDigests, historicalRequirements,
       requirementsFile: join(requirementSnapshot, "requirements.yaml"),
-      outputDir: workingDirectory,
-      ledgerFile: join(runDirectory, "run-ledger.jsonl"),
-      totalBudgetMs: cli.budgetMs,
-      startedAtMs,
-      initializationUsage: initialization?.modelUsage,
-      ...(initialization || prior?.initializationPath ? { initialization: {
-        path: initialization?.path ?? prior!.initializationPath!, intent,
-      } } : {}),
-      applicationContract,
-      progressDir: join(workingDirectory, PROGRESS_DIR_NAME),
-      ...(inheritedProject ? { historicalProgressDir: join(prior?.sourceProjectDir ?? cli.outputDir, PROGRESS_DIR_NAME), stageStartingPoint: "inherited_application" as const } : {}),
-      auditInheritedRequirements: prior?.auditInheritedRequirements ?? parseEvolutionAuditInherited(mergedEnv),
-      ...(checkpoint ? { resumedRequirementIds: checkpoint.requirementIds } : {}),
+      outputDir: workingDirectory, ledgerFile: join(runDirectory, "run-ledger.jsonl"),
+      totalBudgetMs: cli.budgetMs, startedAtMs, initializationUsage: initialization?.modelUsage,
+      ...(initialization ? { initialization: { path: initialization.path, intent } } : {}),
+      applicationContract, progressDir,
+      ...(inheritedProject ? { historicalProgressDir: progressDir, stageStartingPoint: "inherited_application" as const } : {}),
+      auditInheritedRequirements: parseEvolutionAuditInherited(mergedEnv),
+      ...(Object.keys(previousImplementations).length ? { resumedRequirementIds } : {}),
     };
     const runRecord: RunRecord = {
-      version: 4, verifier,
-      verifierRunId: prior?.verifierRunId ?? runId,
-      ...(prior?.bindingDigest ? { bindingDigest: prior.bindingDigest } : {}),
+      version: 4, verifier, verifierRunId: runId,
       requirementsDir: cli.requirementsDir, requirementsDigest, contractDigest, projectSpec: spec,
-      ...(initialization ? { initializationPath: initialization.path }
-        : prior?.initializationPath ? { initializationPath: prior.initializationPath } : {}),
-      outputDir: workingDirectory,
-      ...(prior?.sourceProjectDir ? { sourceProjectDir: prior.sourceProjectDir } : inheritedProject && !prior ? { sourceProjectDir: cli.outputDir } : {}),
-      inputFiles: prior?.inputFiles ?? sourceInputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
-      requirementDigests,
-      historicalRequirements,
-      ...(prior ? { inputBaseline: prior.inputBaseline, stageStartingPoint: prior.stageStartingPoint, resumedFrom: invocation.command === "resume" ? invocation.runDirectory : undefined } : {}),
+      ...(initialization ? { initializationPath: initialization.path } : {}),
+      outputDir: workingDirectory, inputFiles: inputFiles ?? await snapshotFiles(workingDirectory, spec.generatedPaths),
+      requirementDigests, historicalRequirements,
       auditInheritedRequirements: pipelineOptions.auditInheritedRequirements ?? false,
+      ...(initializationBaseline ? { inputBaseline: initializationBaseline, checkpointGitDirectory } : {}),
+      stageStartingPoint: inheritedProject ? "inherited_application"
+        : initialization?.path === "default_scaffold" ? "blank_template" : "unknown",
     };
-    if (initializationBaseline) runRecord.inputBaseline = initializationBaseline;
-    if (initialization) runRecord.stageStartingPoint = initialization.path === "default_scaffold" ? "blank_template"
-      : initialization.path === "existing" || initialization.path === "complete_existing" ? "inherited_application" : "unknown";
     await saveRunRecord(runDirectory, runRecord);
-    if (invocation.command === "resume" && prior) {
-      await cp(join(invocation.runDirectory, "verifier"), join(runDirectory, "verifier"), { recursive: true,
-        filter: path => !["workers", "sessions"].includes(path.split(/[\\/]/).at(-1)!) });
-    }
-    // TUI 已接管终端时直接写 stderr 会破坏主屏的差量重绘定位。
     if (!initializationTui) process.stderr.write(`[ShallowCode] 运行目录：${runDirectory}\n`);
     const context: AgentExecutionContext = {
       ...(initializationTui ? { tui: initializationTui } : {}),
-      runRecord, requirementTree: inputCatalog.tree, ...(checkpoint ? { resumeCheckpointSha: checkpoint.sha } : {}),
-      ...(runRecord.sourceProjectDir ? { sourceProjectDir: runRecord.sourceProjectDir } : {}),
-      builderGateway,
-      verifierGateway,
-      grouperGateway,
-      builderModelCost,
-      verifierModelCost,
-      grouperModelCost,
-      pipelineOptions,
-      modelTimeouts: deriveModelTimeouts(cli.budgetMs),
+      runRecord, requirementTree: inputCatalog.tree,
+      builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost,
+      pipelineOptions, modelTimeouts: deriveModelTimeouts(cli.budgetMs),
       builderContextWindow: parseBuilderContextWindow(mergedEnv),
-      sseCaptureDir,
-      referenceImages,
+      sseCaptureDir: resolveSseCaptureDir(mergedEnv, join(runDirectory, "sse-capture")),
+      referenceImages: referenceImagesEnabled(mergedEnv),
     };
     const summary = await execute(context).catch((error: unknown) => {
       throw new Error(sanitizeDiagnosticText(error instanceof Error ? error.message : String(error), gatewaySecrets(builderGateway, verifierGateway, grouperGateway)));
     });
     activeTui = context.tui ?? activeTui;
-    const patch = runRecord.inputBaseline ? await writeProjectPatch(workingDirectory, runRecord.inputBaseline, runDirectory) : undefined;
-    await saveRequirementDigests(join(workingDirectory, PROGRESS_DIR_NAME), requirementDigests,
+    await saveRequirementDigests(progressDir, requirementDigests,
       [...summary.verifiedRequirementIds, ...(summary.skippedRequirementIds ?? [])]);
-    if (patch && !activeTui) process.stderr.write(`[ShallowCode] 项目改动补丁：${patch}\n`);
-    await writeRunReport(runDirectory, summary, patch);
+    await writeRunReport(runDirectory, summary);
+    await release?.();
+    release = undefined;
     const elapsedMs = Date.now() - startedAtMs;
     if (activeTui) {
-      // 完成后保留交互页面，用户可继续查看花费、需求树与日志，按 Ctrl+C 主动退出。
-      activeTui.complete({ status: summary.status, runDirectory,
-        projectDirectory: runRecord.sourceProjectDir ?? workingDirectory, elapsedMs,
-        ...(patch ? { patch } : {}) });
+      activeTui.complete({ status: summary.status, runDirectory, projectDirectory: workingDirectory, elapsedMs });
       await activeTui.waitForExit();
     } else {
-      process.stderr.write(buildResult(summary, runDirectory, patch, runRecord.sourceProjectDir ?? workingDirectory,
-        elapsedMs,
+      process.stderr.write(buildResult(summary, runDirectory, undefined, workingDirectory, elapsedMs,
         Boolean(process.stderr.isTTY) && mergedEnv.NO_COLOR === undefined && mergedEnv.TERM !== "dumb", process.stderr.columns ?? 80));
     }
     return summary.status === "failed" ? 1 : summary.status === "partial" ? 2 : 0;
-  } finally { activeTui?.stop(); }
+  } finally {
+    activeTui?.stop();
+    await release?.();
+  }
 }
 
 async function controllerContractDigest(spec: ProjectSpec): Promise<string> {
@@ -407,7 +302,7 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages, sourceProjectDir } = context;
+  const { builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   // Builder, Grouper and Verifier share one cooldown so a gateway outage pauses
   // every client instead of letting each one discover it independently.
@@ -415,7 +310,6 @@ async function executeProduction(
   await assertPrivateRunDirectory(pipelineOptions.outputDir, dirname(runLogFile));
   const applicationAdapter = applications.get(pipelineOptions.applicationContract.adapterId);
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
-  let releaseWorkspace: (() => Promise<void>) | undefined;
   let tui: BuildTui | undefined = context.tui;
   let keepTui = false;
   try {
@@ -453,24 +347,13 @@ async function executeProduction(
       ...(builderModelCost ? { modelCost: builderModelCost } : {}),
     });
     const git = await GitCliOps.open(pipelineOptions.outputDir, {
-      allowExisting: sourceProjectDir !== undefined || context.resumeCheckpointSha !== undefined, generatedPaths: pipelineOptions.applicationContract.generatedPaths,
+      checkpointDirectory: context.runRecord.checkpointGitDirectory,
+      generatedPaths: pipelineOptions.applicationContract.generatedPaths,
     });
-    releaseWorkspace = await lockWorkspace(pipelineOptions.outputDir);
-    if (context.resumeCheckpointSha) {
-      if (await git.hasApplicationChanges(context.resumeCheckpointSha)) await git.captureAccepted("shallow: interrupted work before resume");
-      await git.restoreAccepted(context.resumeCheckpointSha);
-      const actualSpec = await loadProjectSpecOrDefault(pipelineOptions.outputDir);
-      if (await controllerContractDigest(actualSpec) !== context.runRecord.contractDigest) throw new Error("Checkpoint project configuration changed; start a new run using that project configuration");
-    }
     const inputBaseline = context.runRecord.inputBaseline ?? await git.captureAccepted("shallow: input baseline");
     context.runRecord.inputBaseline = inputBaseline;
     await saveRunRecord(dirname(runLogFile), context.runRecord);
-    if (sourceProjectDir) {
-      await writeFile(join(dirname(runLogFile), "workspace.json"), JSON.stringify({
-        sourceDirectory: sourceProjectDir, directory: pipelineOptions.outputDir, baseline: inputBaseline,
-      }, null, 2) + "\n", "utf8");
-      if (!tui) process.stderr.write(`[ShallowCode] 开发副本：${pipelineOptions.outputDir}\n`);
-    }
+    if (!tui) process.stderr.write(`[ShallowCode] 开发目录：${pipelineOptions.outputDir}\n`);
     // Initialization already chose and validated the project shape. Legacy runs
     // retain the previous scaffold behavior when they have no initialization path.
     const starterScaffold = context.runRecord.initializationPath
@@ -480,12 +363,12 @@ async function executeProduction(
       : await applicationAdapter.installScaffold(pipelineOptions.outputDir, pipelineOptions.applicationContract);
     const stageStartingPoint = context.runRecord.stageStartingPoint
       ? context.runRecord.stageStartingPoint
-      : sourceProjectDir !== undefined ? "inherited_application" as const : starterScaffold.status === "skipped_existing_application"
+      : starterScaffold.status === "skipped_existing_application"
       ? "inherited_application" as const
       : starterScaffold.status === "installed"
         ? "blank_template" as const
         : "unknown" as const;
-    context.runRecord.stageStartingPoint = context.resumeCheckpointSha ? context.runRecord.stageStartingPoint : stageStartingPoint;
+    context.runRecord.stageStartingPoint = stageStartingPoint;
     await saveRunRecord(dirname(runLogFile), context.runRecord);
     if (!tui) process.stderr.write(`[ShallowCode] 通用脚手架：${starterScaffold.status}（${starterScaffold.reason}）\n`);
     const promptDir = new URL("./prompts/", import.meta.url);
@@ -516,7 +399,6 @@ async function executeProduction(
       if (context.runRecord.bindingDigest && context.runRecord.bindingDigest !== execution.adapter.binding.digest) throw new Error("Verifier execution binding changed; start a new run");
       context.runRecord.bindingDigest = execution.adapter.binding.digest;
       await saveRunRecord(dirname(runLogFile), context.runRecord);
-      await rm(join(dirname(runLogFile), "initialization.json"), { force: true });
       let recordUsage: (item: VerifierModelUsage) => void = () => {};
       let recordUsageProgress: (item: VerifierModelUsage) => void = () => {};
       const model = createPiVerifierModel({ gateway: verifierGateway, sessionDir: join(directory, "sessions"),
@@ -524,8 +406,17 @@ async function executeProduction(
         ...(verifierModelCost ? { modelCost: verifierModelCost } : {}), onUsage: item => recordUsage(item),
         onProgress: item => recordUsageProgress(item) });
       const sourceIndex = new VerifierSourceIndex(snapshots, verifierSourceExclusions(pipelineOptions.applicationContract));
+      const projectPath = await realpath(pipelineOptions.outputDir);
+      const programCacheDirectory = join(dirname(dirname(runLogFile)), ".verifier-programs",
+        digest(process.platform === "win32" ? projectPath.toLowerCase() : projectPath));
+      await assertPrivateRunDirectory(pipelineOptions.outputDir, programCacheDirectory);
+      const baseline = await snapshots.open(initialDataSnapshot);
+      const programCache = await VerifierProgramCache.open({ directory: programCacheDirectory, artifacts, binding: execution.adapter.binding,
+        initialData: baseline.manifest.files.filter(file => pipelineOptions.applicationContract.dataPaths?.some(path => file.path === path || file.path.startsWith(path + "/"))),
+        requirements: (await loadRequirementCatalog(pipelineOptions.requirementsFile, { inheritedApplication: stageStartingPoint === "inherited_application" })).requirements,
+        requirementDigests: pipelineOptions.requirementDigests ?? {} });
       verifierRuntime = { directory, artifacts, snapshots, verifier: createVerifierAgent({ artifacts, adapter: execution.adapter, model, sourceIndex,
-        semanticReview: pipelineOptions.verifier.semanticReview === true }),
+        semanticReview: pipelineOptions.verifier.semanticReview === true, programCache }),
         binding: execution.adapter.binding, initialState: execution.initialState, resourceKeys: execution.declaration.resourceKeys,
         setUsageRecorder: recorder => { recordUsage = recorder; },
         setUsageProgressRecorder: recorder => { recordUsageProgress = recorder; },
@@ -565,7 +456,6 @@ async function executeProduction(
     return summary;
   } finally {
     if (!keepTui) tui?.stop();
-    await releaseWorkspace?.();
   }
 }
 

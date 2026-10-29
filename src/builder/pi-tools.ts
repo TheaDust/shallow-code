@@ -48,7 +48,7 @@ export async function assertToolReadPath(root: string, input: string, skillFiles
 
 export function assertToolCommand(command: string, privateDirectory?: string, workspaceDirectory?: string): void {
   // Defense in depth, not an OS sandbox. Deployment controls filesystem visibility.
-  if (/\.arc|run-ledger|run-log|shallow-progress|\/workspace\/tests|\.codex|\.pi[\\/]|(?:^|[\s"'\\/])\.\.[\\/]/i.test(command)) {
+  if (/\.arc|run-ledger|run-log|shallow-progress|\.verifier-programs|\/workspace\/tests|\.codex|\.pi[\\/]|(?:^|[\s"'\\/])\.\.[\\/]/i.test(command)) {
     throw new Error("Command accesses controller/private or external paths");
   }
   if (privateDirectory && workspaceDirectory) {

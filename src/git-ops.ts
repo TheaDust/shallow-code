@@ -29,14 +29,25 @@ const cleanExcludes = (names: readonly string[]): string[] => names.flatMap(name
 const GITIGNORE_CONTENT = ["node_modules/", "dist/", "build/", ".next/", ".env", ...IGNORED_METADATA_RULES, ""].join("\n");
 
 export class GitCliOps implements GitOps {
-  private constructor(private readonly repositoryRoot: string) {}
+  private constructor(private readonly repositoryRoot: string, private readonly environment?: NodeJS.ProcessEnv) {}
 
   static async open(outputDirectory: string, options: {
     allowExisting?: boolean; generatedPaths?: readonly string[];
+    /** Keep controller history and index outside the application repository. */
+    checkpointDirectory?: string;
   } = {}): Promise<GitCliOps> {
     const requested = resolve(outputDirectory);
     await mkdir(requested, { recursive: true });
     const canonical = await realpath(requested);
+    if (options.checkpointDirectory) {
+      const gitDirectory = resolve(options.checkpointDirectory);
+      await mkdir(gitDirectory, { recursive: true });
+      await requireGit(canonical, ["init", "--bare", gitDirectory]);
+      const environment = { GIT_DIR: gitDirectory, GIT_WORK_TREE: canonical };
+      await requireGit(canonical, ["config", "core.autocrlf", "false"], environment);
+      await ensureLocalExclude(canonical, options.generatedPaths ?? [], environment);
+      return new GitCliOps(canonical, environment);
+    }
     const rootResult = await runGit(canonical, ["rev-parse", "--show-toplevel"], true);
     const existingRoot = rootResult.code === 0 ? await realpath(rootResult.stdout.trim()) : undefined;
     const hadRepository = existingRoot !== undefined && samePath(existingRoot, canonical);
@@ -64,20 +75,18 @@ export class GitCliOps implements GitOps {
     // packages it (it only filters gitignored paths) without it entering history.
     // 被忽略的元数据目录不能出现在 exclude 路径规格里（git add 会因此报错），
     // 它们由 .gitignore / 本地 exclude 规则排除。
-    await requireGit(this.repositoryRoot, ["add", "-A", "--", ".", `:(top,exclude)${PROGRESS_DIR_NAME}`]);
-    const head = await runGit(
-      this.repositoryRoot,
+    await this.require(["add", "-A", "--", ".", `:(top,exclude)${PROGRESS_DIR_NAME}`]);
+    const head = await this.run(
       ["rev-parse", "--verify", "HEAD"],
       true,
     );
-    const staged = await runGit(
-      this.repositoryRoot,
+    const staged = await this.run(
       ["diff", "--cached", "--quiet"],
       true,
     );
     if (head.code === 0 && staged.code === 0) return head.stdout.trim();
 
-    await requireGit(this.repositoryRoot, [
+    await this.require([
       "-c",
       "user.name=ShallowCode",
       "-c",
@@ -87,7 +96,7 @@ export class GitCliOps implements GitOps {
       "-m",
       message,
     ]);
-    return (await requireGit(this.repositoryRoot, ["rev-parse", "HEAD"])).stdout.trim();
+    return (await this.require(["rev-parse", "HEAD"])).stdout.trim();
   }
 
   async hasApplicationChanges(sinceSha: string): Promise<boolean> {
@@ -95,8 +104,8 @@ export class GitCliOps implements GitOps {
     if (!/^[0-9a-f]{40,64}$/i.test(sinceSha)) throw new Error("Invalid application baseline SHA");
     const paths = ["--", ".", ...pathspecExcludes(EXCLUDED_METADATA_NAMES)];
     const [changed, untracked] = await Promise.all([
-      requireGit(this.repositoryRoot, ["diff", "--name-only", sinceSha, ...paths]),
-      requireGit(this.repositoryRoot, ["ls-files", "--others", "--exclude-standard", ...paths]),
+      this.require(["diff", "--name-only", sinceSha, ...paths]),
+      this.require(["ls-files", "--others", "--exclude-standard", ...paths]),
     ]);
     return Boolean(changed.stdout.trim() || untracked.stdout.trim());
   }
@@ -106,8 +115,7 @@ export class GitCliOps implements GitOps {
     if (!/^[0-9a-f]{40,64}$/i.test(sha)) {
       throw new Error(`${sha} is not a commit in the output repository`);
     }
-    const commit = await runGit(
-      this.repositoryRoot,
+    const commit = await this.run(
       ["cat-file", "-e", `${sha}^{commit}`],
       true,
     );
@@ -118,12 +126,12 @@ export class GitCliOps implements GitOps {
     // accepted tree (excluding .arc, which holds run-wide audit records), then
     // record the rewind as a forward-moving recovery commit instead of
     // deleting history.
-    await requireGit(this.repositoryRoot, [
+    await this.require([
       "restore", "--source", sha, "--staged", "--worktree", "--", ".",
       ...pathspecExcludes(EXCLUDED_METADATA_NAMES),
     ]);
-    await requireGit(this.repositoryRoot, ["clean", "-fd", ...cleanExcludes(EXCLUDED_METADATA_NAMES)]);
-    await requireGit(this.repositoryRoot, [
+    await this.require(["clean", "-fd", ...cleanExcludes(EXCLUDED_METADATA_NAMES)]);
+    await this.require([
       "-c",
       "user.name=ShallowCode",
       "-c",
@@ -137,16 +145,24 @@ export class GitCliOps implements GitOps {
 
   private async validateRoot(): Promise<void> {
     const canonical = await realpath(this.repositoryRoot);
-    const root = await requireGit(canonical, ["rev-parse", "--show-toplevel"]);
+    const root = await this.require(["rev-parse", "--show-toplevel"]);
     const actualRoot = await realpath(root.stdout.trim());
     if (!samePath(canonical, actualRoot)) {
       throw new Error("Output repository root changed after GitOps initialization");
     }
   }
+
+  private run(args: string[], allowFailure: boolean): Promise<CommandResult> {
+    return runGit(this.repositoryRoot, args, allowFailure, GIT_TIMEOUT_MS, this.environment);
+  }
+
+  private require(args: string[]): Promise<CommandResult> {
+    return requireGit(this.repositoryRoot, args, this.environment);
+  }
 }
 
-async function requireGit(cwd: string, args: string[]): Promise<CommandResult> {
-  const result = await runGit(cwd, args, true);
+async function requireGit(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<CommandResult> {
+  const result = await runGit(cwd, args, true, GIT_TIMEOUT_MS, env);
   if (result.code !== 0) {
     throw new Error(`git ${args.join(" ")} failed: ${result.stderr.trim()}`);
   }
@@ -255,8 +271,8 @@ const LOCAL_EXCLUDE_RULES = ["node_modules/", ".env", ...IGNORED_METADATA_RULES]
 
 /** Keep dependency and build output out of the base commit without rewriting
  * the template's own .gitignore, which its author still owns. */
-async function ensureLocalExclude(root: string, generatedPaths: readonly string[] = []): Promise<void> {
-  const gitPath = await requireGit(root, ["rev-parse", "--git-path", "info/exclude"]);
+async function ensureLocalExclude(root: string, generatedPaths: readonly string[] = [], env?: NodeJS.ProcessEnv): Promise<void> {
+  const gitPath = await requireGit(root, ["rev-parse", "--git-path", "info/exclude"], env);
   const excludeFile = resolve(root, gitPath.stdout.trim());
   await mkdir(dirname(excludeFile), { recursive: true });
   let content = "";

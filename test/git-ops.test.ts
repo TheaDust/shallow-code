@@ -11,6 +11,51 @@ import { withTempDir } from "./helpers/temp-dir.js";
 
 const execFileAsync = promisify(execFile);
 
+test("Private checkpoints preserve the user's branch and index through capture and rollback", async () => {
+  await withTempDir("shallow-private-git-", async root => {
+    const project = join(root, "project"), checkpoints = join(root, "run", "checkpoints.git");
+    await mkdir(project);
+    await initRepoWithRootCommit(project, "user baseline");
+    await writeFile(join(project, "app.txt"), "staged user change");
+    await runGit(project, ["add", "app.txt"], false);
+    await writeFile(join(project, "app.txt"), "current working change");
+    await writeFile(join(project, "untracked.txt"), "current untracked input");
+    const head = (await runGit(project, ["rev-parse", "HEAD"], false)).stdout;
+    const index = await readFile(join(project, ".git", "index"));
+    const git = await GitCliOps.open(project, { checkpointDirectory: checkpoints, generatedPaths: ["output"] });
+    const baseline = await git.captureAccepted("current input");
+    await writeFile(join(project, "app.txt"), "builder change");
+    await writeFile(join(project, "extra.txt"), "builder file");
+    await git.captureAccepted("builder attempt");
+    await git.restoreAccepted(baseline);
+    assert.equal(await readFile(join(project, "app.txt"), "utf8"), "current working change");
+    assert.equal(await readFile(join(project, "untracked.txt"), "utf8"), "current untracked input");
+    await assert.rejects(access(join(project, "extra.txt")));
+    assert.equal((await runGit(project, ["rev-parse", "HEAD"], false)).stdout, head);
+    assert.deepEqual(await readFile(join(project, ".git", "index")), index);
+    assert.equal((await runGit(project, ["show", ":app.txt"], false)).stdout, "staged user change");
+    const reopened = await GitCliOps.open(project, { checkpointDirectory: checkpoints });
+    assert.equal(await reopened.hasApplicationChanges(baseline), false);
+    assert.notEqual((await runGit(project, ["rev-parse", "HEAD"], false)).stdout.trim(), baseline);
+  });
+});
+
+test("Private checkpoints work without initializing or cleaning an application repository", async () => {
+  await withTempDir("shallow-private-empty-git-", async root => {
+    const project = join(root, "project");
+    await mkdir(project);
+    await writeFile(join(project, "app.txt"), "input");
+    const git = await GitCliOps.open(project, { checkpointDirectory: join(root, "checkpoints.git") });
+    const baseline = await git.captureAccepted("input");
+    await writeFile(join(project, "app.txt"), "attempt");
+    await git.captureAccepted("attempt");
+    await git.restoreAccepted(baseline);
+    assert.equal(await readFile(join(project, "app.txt"), "utf8"), "input");
+    await assert.rejects(access(join(project, ".git")));
+    await assert.rejects(access(join(project, ".gitignore")));
+  });
+});
+
 test("GitOps captures an empty baseline and returns HEAD when nothing changed", async () => {
   await withTempDir("shallow-git-", async (directory) => {
     const git = await GitCliOps.open(directory);

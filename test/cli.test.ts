@@ -3,19 +3,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import { discoverRequirementsDir, parseCliArgs, parseInvocation } from "../src/cli.js";
+import { discoverRequirementsDir, parseCliArgs } from "../src/cli.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-test("Resume and apply have separate inputs and reject unrelated run flags", () => {
-  assert.deepEqual(parseInvocation(["resume", "--run-dir", "run", "--budget-ms", "1000"]), {
-    command: "resume", runDirectory: resolve("run"), budgetMs: 1000,
-  });
-  assert.deepEqual(parseInvocation(["apply", "--run-dir", "run", "--allow-partial"]), {
-    command: "apply", runDirectory: resolve("run"), allowPartial: true,
-  });
-  assert.throws(() => parseInvocation(["apply", "--run-dir", "run", "--budget-ms", "10"]), /Unknown/);
-  assert.throws(() => parseInvocation(["resume", "--run-dir", "run", "--requirements-dir", "new"]), /Unknown/);
-  assert.throws(() => parseInvocation(["resume", "--run-dir", "run", "--budget-ms", "-1"]), /non-negative/);
+test("Build is the only development command", () => {
+  for (const command of ["resume", "apply"]) {
+    assert.throws(() => parseCliArgs([command]), /Unknown argument/);
+  }
 });
 
 test("CLI resolves required paths and parses a positive budget", () => {

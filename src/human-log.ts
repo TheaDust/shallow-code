@@ -6,7 +6,7 @@ import type { VerifierProgress } from "./verifier/port.js";
 export function verifierProgressLabel(progress: VerifierProgress): string {
   const labels: Record<VerifierProgress["stage"], string> = {
     prepare: "准备隔离环境", exploration: "探索并编写验收程序", rediscovery: "按拒绝原因修正验收程序",
-    replay: "独立重放当前版本", semantic_review: "独立语义复核", review_approved: "验收程序复核通过",
+    replay: progress.cached ? "复用已有程序，独立检查当前版本" : "独立重放当前版本", semantic_review: "独立语义复核", review_approved: "验收程序复核通过",
     review_rejected: progress.cached ? "跳过已被拒绝的程序" : "验收程序复核未通过",
     review_cached: "复用已批准复核，跳过该程序的 LLM 复核", confirmation: "在第二个独立环境复现失败",
     diagnostic: "检查遇到问题，保留诊断", cleanup: "释放本次隔离环境",
@@ -92,7 +92,7 @@ function describe(event: RunEvent): string | null {
       return tokens.length ? `Verifier ${label} 进行中用量；tokens ${tokens.join(" / ")}${costSuffix(detail)}` : null;
     }
     case "run_resumed":
-      return `恢复可运行实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
+      return `沿用当前项目已有实现；重新独立验收：${strings(detail?.requirementIds).join("、")}`;
     case "initialization_started":
       return `开始初始化工程；路径 ${pickString(detail, "path")}；技术意图${detail?.intentPresent ? "已指定" : "未指定"}`;
     case "initialization_attempt":

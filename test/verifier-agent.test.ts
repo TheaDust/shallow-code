@@ -14,14 +14,16 @@ import type { AdapterDeclaration, VerifierProgress, CheckJob, ContentRef, Eviden
 import type { AtomicRequirement } from "../src/types.js";
 import { VerifierSourceIndex } from "../src/verifier/source-index.js";
 import { SnapshotStore } from "../src/snapshot-store.js";
+import { VerifierProgramCache } from "../src/verifier/program-cache.js";
+import { requirementDigest } from "../src/evolution.js";
 
-async function fixture(config: { failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean; sourceTools?: boolean; emptySource?: boolean } = {}) {
+async function fixture(config: { initialState?: unknown; failures?: number[]; omitSecond?: boolean; rejectReview?: boolean; source?: string; forgeInput?: boolean; dependencies?: string[]; omitSetup?: boolean; omitDependency?: boolean; failPrecondition?: boolean; conditionWhen?: boolean; omitActionReceipt?: boolean; stringifyToolArguments?: boolean; sourceTools?: boolean; emptySource?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "verifier-agent-"));
   const store = new ArtifactStore(directory, "run-1");
   const schema = await store.putJson(Type.Unknown());
   const inputSchema = await store.putJson(Type.Object({}, { additionalProperties: true }));
   const typed = (value: unknown) => store.putTypedJson(value, schema);
-  const initialState = await typed({ mode: "empty" });
+  const initialState = await typed(config.initialState ?? { mode: "empty" });
   const executor = { id: "fake-host", version: "1", digest: "host-v1" };
   const declaration: AdapterDeclaration = { schemaVersion: 1, id: "fake", version: "1", implementation: executor,
     execution: await typed({}), initialStates: [initialState], resourceKeys: [], capabilities: [{ id: "inspect", version: "1", description: "observe", inputSchema, outputSchema: schema }],
@@ -136,6 +138,193 @@ async function fixture(config: { failures?: number[]; omitSecond?: boolean; reje
     verifier: createVerifierAgent({ semanticReview: true, artifacts: store, adapter, model, sourceIndex }), sourceIndex,
     cleanup: () => rm(directory, { recursive: true, force: true }) };
 }
+
+async function cachedAgent(f: Awaited<ReturnType<typeof fixture>>, directory: string,
+  options: { initialData?: unknown; semanticReview?: boolean; model?: VerifierModel } = {}) {
+  const input = await f.store.getJson<VerifierRequirements>(f.job.requirements);
+  const requirements = [...input.requirements, ...input.prerequisites ?? []];
+  const cache = await VerifierProgramCache.open({ directory, artifacts: f.store, binding: f.job.binding,
+    initialData: options.initialData ?? [], requirements,
+    requirementDigests: Object.fromEntries(requirements.map(requirement => [requirement.id, requirementDigest(requirement)])) });
+  return { cache, verifier: createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model: options.model ?? f.model,
+    semanticReview: options.semanticReview, programCache: cache }) };
+}
+
+test("Cross-build programs bind fresh tasks and states, execute again and avoid exploration", async () => {
+  const first = await fixture({ initialState: { run: "first" } });
+  const next = await fixture({ initialState: { run: "next" } });
+  try {
+    const cacheDirectory = join(first.directory, "cache");
+    const saved = await (await cachedAgent(first, cacheDirectory)).verifier.check(first.job, new AbortController().signal);
+    const input = await next.store.getJson<VerifierRequirements>(next.job.requirements);
+    next.job.requirements = await next.store.putJson({ ...input, regrouped: true });
+    next.job.jobId = "next-build-job";
+    next.job.snapshot = await next.store.putJson({ sha: "user-modified-source" });
+    const progress: VerifierProgress[] = [];
+    const repeated = await (await cachedAgent(next, cacheDirectory)).verifier.check(next.job, new AbortController().signal,
+      async detail => { progress.push(detail); });
+    assert.deepEqual(first.roles, ["exploration"]);
+    assert.deepEqual(next.roles, []);
+    assert.equal(next.replays, 1);
+    assert.deepEqual(repeated.outcomes.map(outcome => outcome.status), ["pass", "pass"]);
+    assert.notDeepEqual(repeated.programs, saved.programs, "program references are rebound to the current task and initial state");
+    const manifest = await next.store.getJson<VerifierManifest>(repeated.manifest);
+    for (const ref of manifest.receipts) await next.store.validateReceipt(next.job, await next.store.getJson<EvidenceReceipt>(ref));
+    assert(progress.some(detail => detail.stage === "replay" && detail.cached));
+    assert.deepEqual(await readdir(join(next.directory, "reviews")).catch(() => []), []);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("An added requirement only explores its missing checks while existing programs are reused", async () => {
+  const first = await fixture();
+  const next = await fixture();
+  try {
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    const input = await next.store.getJson<VerifierRequirements>(next.job.requirements);
+    input.requirements.push({ ...input.requirements[0]!, id: "r2", declarationIndex: 1 });
+    next.job.requirements = await next.store.putJson(input);
+    next.job.requirementIds = ["r1", "r2"];
+    const report = await (await cachedAgent(next, directory)).verifier.check(next.job, new AbortController().signal);
+    assert.deepEqual(next.roles, ["exploration"]);
+    assert(JSON.parse(next.explorationPrompts[0]!).sourceClauses.every((clause: SourceClause) => clause.requirementId === "r2"));
+    assert.equal(next.replays, 2);
+    assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "pass", "pass", "pass"]);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("A program survives interruption after check_program before the model submits finish", async () => {
+  const first = await fixture();
+  const next = await fixture();
+  try {
+    const directory = join(first.directory, "cache");
+    const interrupted: VerifierModel = { run: request => first.model.run({ ...request,
+      tools: request.tools.map(tool => tool.name === "finish" ? { ...tool, execute: async () => { throw new Error("manual interruption before finish"); } } : tool) }) };
+    await (await cachedAgent(first, directory, { model: interrupted })).verifier.check(first.job, new AbortController().signal);
+    const report = await (await cachedAgent(next, directory)).verifier.check(next.job, new AbortController().signal);
+    assert.deepEqual(next.roles, []);
+    assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "pass"]);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("A reused program reports a reproduced current regression without rediscovering or inheriting its old pass", async () => {
+  const first = await fixture();
+  const next = await fixture({ failures: [0, 1] });
+  try {
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    const report = await (await cachedAgent(next, directory)).verifier.check(next.job, new AbortController().signal);
+    assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "fail"]);
+    assert.deepEqual(next.roles, []);
+    assert.equal(next.replays, 2, "the behavior failure is confirmed in a separate environment");
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("Only incompatible requirement, dependency, initial-data or execution contexts invalidate cross-build reuse", async () => {
+  const first = await fixture();
+  try {
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    for (const change of ["requirement", "data", "execution", "dependency"]) {
+      const next = await fixture();
+      try {
+        if (change === "requirement" || change === "dependency") {
+          const input = await next.store.getJson<VerifierRequirements>(next.job.requirements);
+          if (change === "requirement") input.requirements[0]!.text += " Include the latest cancellation policy.";
+          else input.requirements[0]!.dependencyIds = ["new-prerequisite"];
+          next.job.requirements = await next.store.putJson(input);
+        }
+        if (change === "execution") {
+          const binding = await next.store.validateBinding(next.job.binding);
+          next.job.binding = { ...await next.store.putJson({ ...binding, promptDigest: "updated-prompts" }), executor: binding.executor };
+        }
+        const { cache } = await cachedAgent(next, directory, { initialData: change === "data" ? ["updated-seed"] : [] });
+        const programs = await cache.load(next.job, await next.store.getJson<VerifierRequirements>(next.job.requirements));
+        assert.deepEqual(programs, [], change);
+      } finally { await next.cleanup(); }
+    }
+  } finally { await first.cleanup(); }
+});
+
+test("A cached program that cannot execute refreshes only its missing checks", async () => {
+  const first = await fixture({ source: "old-selector" });
+  const next = await fixture({ source: "new-selector" });
+  try {
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    const prepare = next.adapter.prepare.bind(next.adapter);
+    next.adapter.prepare = async (job, signal) => {
+      const session = await prepare(job, signal);
+      const replay = session.replay.bind(session);
+      session.replay = async (program, replaySignal) => {
+        const descriptor = await next.store.readTypedJson<{ source: ContentRef }>(program.descriptor);
+        if ((await next.store.getBytes(descriptor.source)).toString("utf8") === "old-selector") throw new Error("Locator no longer exists");
+        return replay(program, replaySignal);
+      };
+      return session;
+    };
+    const report = await (await cachedAgent(next, directory)).verifier.check(next.job, new AbortController().signal);
+    assert.deepEqual(next.roles, ["exploration"]);
+    assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "pass"]);
+    assert.match(next.explorationPrompts[0]!, /Locator no longer exists/);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("Changes to an upstream prerequisite invalidate its dependent program even when that requirement is unchanged", async () => {
+  const first = await fixture({ dependencies: ["prerequisite"] });
+  const next = await fixture({ dependencies: ["prerequisite"] });
+  try {
+    for (const f of [first, next]) {
+      const input = await f.store.getJson<VerifierRequirements>(f.job.requirements);
+      input.prerequisites = [{ ...input.requirements[0]!, id: "prerequisite", dependencyIds: [], text: f === first ? "Old upstream contract." : "New upstream contract." }];
+      input.implementedRequirementIds = ["prerequisite"];
+      f.job.requirements = await f.store.putJson(input);
+    }
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    const { cache } = await cachedAgent(next, directory);
+    assert.deepEqual(await cache.load(next.job, await next.store.getJson<VerifierRequirements>(next.job.requirements)), []);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("A rejected review removes the cached program instead of resurrecting it in a new build", async () => {
+  const first = await fixture({ rejectReview: true });
+  const next = await fixture();
+  try {
+    const directory = join(first.directory, "cache");
+    const rejected = await (await cachedAgent(first, directory, { semanticReview: true })).verifier.check(first.job, new AbortController().signal);
+    assert(rejected.outcomes.every(outcome => outcome.status === "inconclusive"));
+    const { cache } = await cachedAgent(next, directory);
+    assert.deepEqual(await cache.load(next.job, await next.store.getJson<VerifierRequirements>(next.job.requirements)), []);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("Cross-build reuse avoids exploration but still performs explicitly enabled semantic review", async () => {
+  const first = await fixture();
+  const next = await fixture();
+  try {
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    const report = await (await cachedAgent(next, directory, { semanticReview: true })).verifier.check(next.job, new AbortController().signal);
+    assert.deepEqual(next.roles, ["semantic_review"]);
+    assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "pass"]);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
+
+test("A corrupt optional cache cannot prevent fresh verification from succeeding", async () => {
+  const first = await fixture();
+  const next = await fixture();
+  try {
+    const directory = join(first.directory, "cache");
+    await (await cachedAgent(first, directory)).verifier.check(first.job, new AbortController().signal);
+    const objects = await readdir(join(directory, "objects"));
+    assert.equal(objects.length, 1);
+    await writeFile(join(directory, "objects", objects[0]!), "corrupt cache entry");
+    const report = await (await cachedAgent(next, directory)).verifier.check(next.job, new AbortController().signal);
+    assert.deepEqual(next.roles, ["exploration"]);
+    assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "pass"]);
+  } finally { await first.cleanup(); await next.cleanup(); }
+});
 
 test("semantic review defaults off, leaves no approval cache and remains independently switchable", async () => {
   const f = await fixture({ rejectReview: true });

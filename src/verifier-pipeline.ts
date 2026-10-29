@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { BuilderRequest, BuilderResult } from "./builder/port.js";
 import type { BuilderProjectContext, BuilderShadowObservation } from "./builder/prompt-input.js";
 import { loadRequirementCatalog } from "./catalog.js";
-import { evolutionImplementationCatalog, readHistoricalRequirementIds, selectEvolutionScope } from "./evolution.js";
+import { evolutionImplementationCatalog, readHistoricalRequirementIds, saveImplementationDigests, selectEvolutionScope } from "./evolution.js";
 import { ExecutionFault } from "./execution-fault.js";
 import { GatewayRequestError } from "./gateway-failure.js";
 import { GatewayRecovery } from "./gateway-recovery.js";
@@ -83,6 +83,9 @@ export class VerifierCoordinator {
       parent: parent?.snapshot, generatedPaths: this.options.applicationContract.generatedPaths, dataPaths: this.options.applicationContract.dataPaths });
     const head = await this.checkpoints.produced({ snapshot: sealed.ref, sourceSha,
       ...(parent ? { parentSnapshotId: parent.snapshot.id } : {}), implementedRequirementIds: [...implemented] });
+    if (this.options.progressDir && this.options.requirementDigests) {
+      await saveImplementationDigests(this.options.progressDir, this.options.requirementDigests, [...implemented]);
+    }
     await this.emit({ at: now(), type: "snapshot_sealed", packetId: packet.id, detail: { snapshotId: head.snapshot.id,
       sourceSha, parentSnapshotId: head.parentSnapshotId, requirementIds: packet.requirementIds,
       implementedRequirementIds: head.implementedRequirementIds, sequence: head.ordinal, authoritative: true } });
@@ -235,7 +238,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     satisfiedDependencies: (packet.prerequisites ?? []).filter(item => implemented.has(item.id)).map(item => ({ id: item.id, name: item.name, contract: item.text })),
     ...(packet.requirements[0].product.evolution ? { evolution: { startingPoint: options.stageStartingPoint ?? "unknown",
       externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [], changesOnly: true as const,
-      ...(!options.auditInheritedRequirements ? { auditInheritedRequirements: false as const } : {}) } }
+      ...(options.resumedRequirementIds === undefined && !options.auditInheritedRequirements ? { auditInheritedRequirements: false as const } : {}) } }
       : packet.requirements[0].product.stage ? { progressiveStage: { ...packet.requirements[0].product.stage,
         startingPoint: options.stageStartingPoint ?? "unknown", externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [] } } : {}) });
   const build = async (request: BuilderRequest, phase: PipelinePhase, resumeInterrupted = false): Promise<BuilderResult> => {
@@ -418,9 +421,11 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       totalBudgetMs: options.totalBudgetMs, adapterId: options.applicationContract.adapterId, ...deps.runMetadata } });
     // 恢复运行时先把已实现范围交给展示层；验收结果仍由后续独立检查确定。
     if (implemented.size) await state.record({ at: now(), type: "run_resumed", detail: { requirementIds: [...implemented] } });
-    if (options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution) {
+    // Local implementation records take precedence over legacy stage provenance.
+    if (options.resumedRequirementIds === undefined && options.stageStartingPoint === "inherited_application" && catalog.requirements[0]?.product.evolution) {
       const history = options.historicalRequirements ?? await readHistoricalRequirementIds(options.historicalProgressDir ?? options.progressDir ?? join(options.outputDir, "shallow-progress"));
       const selection = selectEvolutionScope(catalog, new Set(history.requirementIds), history.requirementDigests, options.requirementDigests);
+      for (const id of [...selection.addedRequirementIds, ...selection.changedRequirementIds]) implemented.delete(id);
       for (const id of selection.inheritedRequirementIds) { inherited.add(id); implemented.add(id); if (!options.auditInheritedRequirements) skipped.add(id); }
       implementationCatalog = evolutionImplementationCatalog(catalog, inherited);
       await state.record({ at: now(), type: "evolution_scope_selected", detail: {
@@ -429,6 +434,9 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         historicalCheckpointSupplementCount: history.checkpointSupplementCount, historicalRequirementCount: new Set(history.requirementIds).size,
         implementationRequirementIds: implementationCatalog.requirements.map(item => item.id),
         auditRequirementIds: catalog.requirements.filter(item => !skipped.has(item.id)).map(item => item.id), skippedRequirementIds: [...skipped] } });
+    }
+    if (!recoveredHead && options.resumedRequirementIds !== undefined) {
+      implementationCatalog = evolutionImplementationCatalog(catalog, implemented);
     }
     const savedGroups = coordinator.checkpoints.snapshot.featureGroups;
     let grouping = savedGroups ? featureGroupingFromIds(implementationCatalog, savedGroups) : featureGroupPackets(implementationCatalog);
@@ -448,7 +456,17 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     }
     if (!savedGroups) await coordinator.checkpoints.setFeatureGroups(grouping.packets.map(packet => packet.requirementIds));
     auditGroups = grouping.packets.map(packet => packetFor(packet.id, packet.requirementIds.map(id => byId.get(id)!)));
-    if (coordinator.checkpoints.snapshot.producedHead) {
+    if (!coordinator.checkpoints.snapshot.producedHead && options.resumedRequirementIds?.length) {
+      const continued = catalog.requirements.filter(item => implemented.has(item.id) && !skipped.has(item.id));
+      if (continued.length) {
+        const head = await coordinator.seal(packetFor("continue", continued), implemented);
+        for (const group of auditPackets({ requirements: continued, statusById: catalog.statusById })) {
+          await coordinator.submit(head, packetFor(group.id, group.requirements), "discover", checkBudget());
+        }
+        for (const module of new Set(continued.map(moduleId))) await boundary(module);
+      }
+    }
+    if (recoveredHead) {
       const head = coordinator.checkpoints.snapshot.producedHead!;
       const packet = packetFor("resume", catalog.requirements.filter(item => implemented.has(item.id)));
       if (packet.requirements.length) {
@@ -582,6 +600,9 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         producedHead: coordinator.checkpoints.snapshot.producedHead,
         verifiedSnapshotId: delivery.ok && replay ? head?.snapshot.id : undefined, outcomes: [...currentResults.values()].flat() },
       scenarioResults: scenarioResults(selected, [...currentResults.values()].flat(), implemented) };
+    if (options.progressDir && options.requirementDigests) {
+      await saveImplementationDigests(options.progressDir, options.requirementDigests, [...implemented]);
+    }
     await state.record({ at: now(), type: "pipeline_finished", detail: { ...summary, pendingRequirementIds: ids("todo"),
       scenarioCoverage: scenarioCoverage(selected, [...currentResults.values()].flat(), implemented) } });
     return summary;

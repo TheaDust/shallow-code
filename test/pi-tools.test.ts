@@ -9,6 +9,7 @@ test("Shell guards use the actual private run directory while allowing absolute 
     assert.throws(() => assertToolCommand(`type "${join(run, "run.json")}"`, run, workspace), /private/);
     assert.throws(() => assertToolCommand(`type "${join(run, "plans/case.json")}"`, run, workspace), /private/);
     assert.throws(() => assertToolCommand(`type "${workspace}/../run.json"`, run, workspace), /private/);
+    assert.throws(() => assertToolCommand('type "E:/private-root/.verifier-programs/project/objects/program"', run, workspace), /private/);
     assert.doesNotThrow(() => assertToolCommand(`node "${join(workspace, "server.mjs")}"`, run, workspace));
     assert.doesNotThrow(() => assertToolCommand("npm run build", run, workspace));
   });

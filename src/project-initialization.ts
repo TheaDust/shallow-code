@@ -117,7 +117,7 @@ export async function initializeProject(options: InitializationOptions): Promise
     if ((path === "existing" || path === "declared_empty") && options.intent) {
       builder = options.createBuilder();
       const remaining = options.budgetMs <= 0 ? 180_000 : options.startedAtMs + options.budgetMs - Date.now();
-      if (remaining <= 0) throw new Error("Project initialization budget exhausted; resume this run to continue");
+      if (remaining <= 0) throw new Error("Project initialization budget exhausted; run shallow build again to continue");
       const inspection = await builder.run({
         systemPrompt: await readFile(new URL("../prompts/builder/project-intent-inspection.md", import.meta.url), "utf8"),
         taskPrompt: `用户技术要求：\n${options.intent}`,
@@ -145,7 +145,7 @@ export async function initializeProject(options: InitializationOptions): Promise
     }
     for (let attempt = 1; attempt <= 4; attempt++) {
       const remaining = options.budgetMs <= 0 ? 900_000 : options.startedAtMs + options.budgetMs - Date.now();
-      if (remaining <= 0) throw new Error("Project initialization budget exhausted; resume this run to continue");
+      if (remaining <= 0) throw new Error("Project initialization budget exhausted; run shallow build again to continue");
       await options.onEvent?.("initialization_attempt", { path, attempt });
       verificationAttempt = attempt;
       builder ??= options.createBuilder();

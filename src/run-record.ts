@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { appendFile, lstat, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { NON_APPLICATION_METADATA } from "./controller-metadata.js";
 import type { ProjectSpec } from "./project-spec.js";
@@ -23,6 +24,7 @@ export interface RunRecord {
   outputDir: string;
   sourceProjectDir?: string;
   inputBaseline?: string;
+  checkpointGitDirectory?: string;
   inputFiles: Record<string, string>;
   requirementDigests?: Record<string, string>;
   historicalRequirements?: HistoricalRequirements;
@@ -105,14 +107,19 @@ export async function loadRunRecord(runDirectory: string): Promise<RunRecord> {
     !record.inputBaseline || !/^[0-9a-f]{40,64}$/i.test(record.inputBaseline)) throw new Error("Run format is unsupported; start a new Verifier run");
   if (!record.verifier || !record.verifierRunId || record.verifier.mode !== "active") throw new Error("Verifier run is missing its execution settings");
   record.projectSpec = parseProjectSpec(record.projectSpec, "run.json.projectSpec");
-  const root = await runGit(record.outputDir, ["rev-parse", "--show-toplevel"], false);
+  const gitEnv = record.checkpointGitDirectory ? { GIT_DIR: record.checkpointGitDirectory, GIT_WORK_TREE: record.outputDir } : undefined;
+  const root = await runGit(record.outputDir, ["rev-parse", "--show-toplevel"], false, 30_000, gitEnv);
   if (await realpath(root.stdout.trim()) !== await realpath(record.outputDir)) throw new Error("Recorded workspace is not a repository root");
   return record;
 }
 
 /** A stale owner can be recovered after a crash; a live owner keeps its workspace. */
 export async function lockWorkspace(directory: string): Promise<() => Promise<void>> {
-  const file = join(directory, ".git", "shallowcode-owner.json");
+  const root = await realpath(directory);
+  const key = digest(process.platform === "win32" ? root.toLowerCase() : root);
+  const lockDirectory = join(tmpdir(), "shallowcode-locks");
+  await mkdir(lockDirectory, { recursive: true });
+  const file = join(lockDirectory, key + ".json");
   try { await writeFile(file, JSON.stringify({ pid: process.pid }), { flag: "wx", mode: 0o600 }); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

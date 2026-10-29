@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-test("Resume logs distinguish restored implementation from new behavior evidence", () => {
+test("Continuation logs distinguish existing implementation from new behavior evidence", () => {
   const line = formatLine(new HumanRunFormatter(), eventLine("2026-10-10T00:00:00Z", "run_resumed", { detail: { requirementIds: ["A", "B"] } }));
-  assert.match(line, /恢复可运行实现/);
+  assert.match(line, /沿用当前项目已有实现/);
   assert.match(line, /重新独立验收：A、B/);
 });
 
@@ -388,4 +388,7 @@ test("Human logs explain Verifier stages, cache reuse and rejection feedback", (
     packetId: "p", detail: { stage: "review_rejected", cached: true, archived: true, reason: "Assertion ignores the required actor" },
   }));
   assert.match(cached, /跳过已被拒绝的程序.*历史任务.*原因：Assertion ignores/);
+  assert.match(formatLine(formatter, eventLine("2026-10-18T00:00:00Z", "check_progress", {
+    packetId: "p", detail: { stage: "replay", cached: true },
+  })), /复用已有程序，独立检查当前版本/);
 });

@@ -13,6 +13,8 @@ import { HumanRunFormatter } from "../src/human-log.js";
 import { BuildView } from "../src/terminal/build-tui.js";
 import { terminalTheme } from "../src/terminal/theme.js";
 import { withModulePipeline, type PipelineFixture } from "./helpers/module-pipeline.js";
+import { loadRequirementCatalog } from "../src/catalog.js";
+import { readImplementationDigests, requirementDigest } from "../src/evolution.js";
 
 async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSignal) => Promise<void>,
   status?: (job: CheckJob) => Promise<CheckOutcome["status"]>): Promise<VerifierRuntime> {
@@ -55,6 +57,68 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   f.deps.grouper = { async group(catalog) { return { groups: catalog.requirements.map(item => ({ requirementIds: [item.id], purpose: "Separate groups" })) }; } };
   return runtime;
 }
+
+test("Fresh builds continue interrupted or completed work in place and reimplement changed requirements", async () => {
+  for (const interrupted of [true, false]) await withModulePipeline(async f => {
+    await attach(f);
+    f.options.verifier.replay = false;
+    f.options.progressDir = join(f.options.outputDir, "shallow-progress");
+    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
+    f.options.requirementDigests = Object.fromEntries(catalog.requirements.map(r => [r.id, requirementDigest(r)]));
+    const runBuilder = f.builder.run.bind(f.builder);
+    f.deps.builder = { close: () => f.builder.close(), async run(request, options) {
+      if (interrupted && request.mode === "implement" && request.packet.requirementIds.includes("C")) throw new Error("manual interruption");
+      return runBuilder(request, options);
+    } };
+    if (interrupted) await assert.rejects(f.run(), /manual interruption/);
+    else assert.equal((await f.run()).status, "delivered");
+    const previous = await readImplementationDigests(f.options.progressDir);
+    assert.deepEqual(Object.keys(previous), interrupted ? ["A", "B"] : ["A", "B", "C"]);
+    await writeFile(join(f.options.outputDir, "user-edit.txt"), "current user code");
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    input.children[0].children[1].description = "Display the updated workspace and current user selection.";
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    const updated = await loadRequirementCatalog(f.options.requirementsFile);
+    f.options.requirementDigests = Object.fromEntries(updated.requirements.map(r => [r.id, requirementDigest(r)]));
+    f.options.resumedRequirementIds = Object.keys(previous).filter(id => previous[id] === f.options.requirementDigests![id]);
+    f.options.stageStartingPoint = "inherited_application";
+    f.options.ledgerFile = join(dirname(f.options.ledgerFile), "next-build", "ledger.jsonl");
+    const jobs: CheckJob[] = [];
+    await attach(f, async job => { jobs.push(job); });
+    f.options.verifier.replay = false;
+    f.deps.builder = f.builder;
+    const requestCount = f.builder.requests.length;
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    assert.deepEqual(new Set(result.verifiedRequirementIds), new Set(["A", "B", "C"]));
+    assert.deepEqual(f.builder.requests.slice(requestCount).filter(r => r.mode === "implement").map(r => r.packet.requirementIds),
+      interrupted ? [["B"], ["C"]] : [["B"]]);
+    assert(f.builder.requests.slice(requestCount).filter(r => "projectContext" in r).every(r =>
+      "projectContext" in r && r.projectContext.evolution?.auditInheritedRequirements !== false),
+    "Builder context agrees that continued work is included in current verification");
+    assert(jobs.some(job => job.mode === "discover" && job.requirementIds.includes("A")), "continued implementations receive fresh behavior checks even with replay disabled");
+    assert.equal(await readFile(join(f.options.outputDir, "user-edit.txt"), "utf8"), "current user code");
+    assert.deepEqual(await readImplementationDigests(f.options.progressDir), f.options.requirementDigests);
+  });
+});
+
+test("Continued implementations do not inherit a passing verdict when current verification fails", async () => {
+  await withModulePipeline(async f => {
+    await mkdir(f.options.outputDir, { recursive: true });
+    await writeFile(join(f.options.outputDir, "app.txt"), "current code");
+    await attach(f, undefined, async () => "fail");
+    f.options.verifier.replay = false;
+    f.options.resumedRequirementIds = ["A", "B", "C"];
+    let groupingCalls = 0;
+    f.deps.grouper = { async group() { groupingCalls++; return { groups: [] }; } };
+    const result = await f.run();
+    assert.deepEqual(result.verifiedRequirementIds, []);
+    assert.notEqual(result.status, "delivered");
+    assert.equal(f.builder.requests.filter(r => r.mode === "implement").length, 0);
+    assert.equal(groupingCalls, 0, "a build with no implementation work does not call the Grouper");
+    assert(f.builder.requests.some(r => r.mode === "repair" || r.mode === "root_cause_repair"));
+  });
+});
 
 test("Verifier configuration declares migration mode and bounded concurrency", () => {
   assert.deepEqual(parseVerifierConfig({}), { mode: "active", concurrency: 2, semanticReview: false, replay: false });
