@@ -24,12 +24,8 @@ export interface CheckJob {
   /** Only discover may explore or request semantic reviews; replay/confirm require cached approval when review is enabled. */
   mode: "prepare" | "discover" | "replay" | "confirm";
   programs: ProgramRef[];
-  budget: {
-    /** Absolute run limit, including queue admission. */
-    deadlineAt: number;
-    /** Execution allowance starting when the queue grants a slot. */
-    timeoutMs?: number;
-  };
+  /** Fixed execution limit starting when the queue grants a slot. */
+  timeoutMs: number;
 }
 export interface EvidenceReceipt {
   id: string;

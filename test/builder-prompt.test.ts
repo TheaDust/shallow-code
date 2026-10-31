@@ -103,7 +103,7 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.taskPrompt, /PORT/);
   assert.match(compiled.taskPrompt, /同源相对路径/);
   assert.doesNotMatch(compiled.taskPrompt, /SECRET-OTHER-REQ/);
-  assert.doesNotMatch(compiled.taskPrompt, /acceptedSha|global budget|\/workspace\/tests/i);
+  assert.doesNotMatch(compiled.taskPrompt, /acceptedSha|\/workspace\/tests/i);
   // 技术栈缺省（React+Vite）只出现在固定系统合同里；任务模板不向既有项目推销换栈
   assert.doesNotMatch(compiled.taskPrompt, /use React|use Vue/i);
   assert.match(compiled.taskPrompt, /结果：完成 \| 阻塞/);

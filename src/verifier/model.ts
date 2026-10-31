@@ -58,9 +58,7 @@ export function createPiVerifierModel(options: {
   return {
     async run(request) {
       request.signal.throwIfAborted();
-      if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Verifier model deadline exhausted");
-      const timeoutMs = Math.max(1, Math.min(2_147_483_647,
-        request.job.budget.timeoutMs ?? Infinity, request.job.budget.deadlineAt - Date.now()));
+      const timeoutMs = Math.max(1, Math.min(2_147_483_647, request.job.timeoutMs));
       const signal = AbortSignal.any([request.signal, AbortSignal.timeout(timeoutMs)]);
       return runSession({ ...request, signal });
     },
@@ -68,18 +66,17 @@ export function createPiVerifierModel(options: {
 
   async function runSession(request: VerifierModelRequest): Promise<VerifierModelResult> {
     request.signal.throwIfAborted();
-    if (Date.now() >= request.job.budget.deadlineAt) throw new Error("Verifier model deadline exhausted");
+    const deadlineAt = Date.now() + request.job.timeoutMs;
     const cwd = join(options.sessionDir, randomUUID());
     const agentDir = join(cwd, "config");
     await mkdir(agentDir, { recursive: true, mode: 0o700 });
     const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
-    // The model's 256k context window is the only per-call token bound; there is no cumulative token budget.
+    // The model context window bounds each call's token input.
     runtime.registerProvider("verifier-gateway", { baseUrl: options.gateway.baseUrl, api: "openai-completions", apiKey: "VERIFIER_RUNTIME_CREDENTIAL",
       models: [piProviderModel(options.gateway.model, options.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
         opencodeSessionHeaders(options.gateway.baseUrl, randomUUID()), options.modelCost)] });
     await runtime.setRuntimeApiKey("verifier-gateway", options.gateway.apiKey);
-    const settingsManager = piGatewaySettings(Math.min(request.job.budget.timeoutMs ?? Infinity,
-      request.job.budget.deadlineAt - Date.now()));
+    const settingsManager = piGatewaySettings(request.job.timeoutMs);
     const resources = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true,
       disabledBuiltinExtensions: ["mcp"], noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
       systemPrompt: request.systemPrompt });
@@ -131,7 +128,7 @@ export function createPiVerifierModel(options: {
     let reminders = 0;
     try {
       return await recovery.run("verifier", request.job.packetId,
-        () => Math.max(0, request.job.budget.deadlineAt - Date.now()), async () => {
+        () => Math.max(0, deadlineAt - Date.now()), async () => {
           for (;;) {
             request.signal.throwIfAborted();
             const nextPrompt = prompt;

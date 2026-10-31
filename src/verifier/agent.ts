@@ -112,7 +112,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
     }
   };
   return { async check(job, parentSignal, onProgress) {
-    const limit = Math.min(job.budget.deadlineAt, Date.now() + (job.budget.timeoutMs ?? Infinity));
+    const limit = Date.now() + job.timeoutMs;
     // Finish work before queue expiry so cleanup and a partial report can still commit.
     const deadlineAt = limit - Math.min(5_000, Math.max(0, Math.floor((limit - Date.now()) / 10)));
     const signal = AbortSignal.any([parentSignal, AbortSignal.timeout(Math.max(1,

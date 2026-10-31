@@ -2,7 +2,7 @@ import type { AgentRole } from "./agent-config.js";
 import type { VerifierProgress } from "./verifier/port.js";
 
 export type RequirementStatus = "todo" | "verified" | "blocked" | "failed" | "inconclusive";
-export type InconclusiveKind = "planning" | "coverage" | "preparation" | "locator" | "execution" | "review" | "gateway" | "budget" | "unreproduced";
+export type InconclusiveKind = "planning" | "coverage" | "preparation" | "locator" | "execution" | "review" | "gateway" | "unreproduced";
 
 export interface RunScenarioResult {
   requirementId: string;
@@ -162,7 +162,7 @@ interface RunEventDetails {
   implementation_continued: { reason: string; timeoutMs: number };
   implementation_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
   implementation_stopped: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
-  phase_started: { phase: "implementation" | "audit" | "repair" | "delivery"; remainingMs?: number; round?: number; memory?: Record<string, unknown> };
+  phase_started: { phase: "implementation" | "audit" | "repair" | "delivery"; round?: number; memory?: Record<string, unknown> };
   checkpoint_saved: { requirementIds: string[]; reason: string; candidate?: CandidateEvidence };
   run_resumed: { requirementIds: string[] };
   module_failed: { requirementIds: string[]; reason: string };
@@ -173,7 +173,7 @@ interface RunEventDetails {
     scenarioResults?: RunScenarioResult[]; scenarioCoverage?: ScenarioCoverageCounts };
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
 
-  pipeline_started: { requirements?: number; totalBudgetMs?: number; adapterId?: string; model?: string;
+  pipeline_started: { requirements?: number; adapterId?: string; model?: string;
     verifierModel?: string; grouperModel?: string;
     builderTimeoutMs?: number; builderContextWindow?: number;
     promptSha256?: string;

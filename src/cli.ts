@@ -8,7 +8,6 @@ export interface CliOptions {
    * existing Web project passed with `--project`.
    */
   outputDir: string;
-  budgetMs: number;
   /** Root of an existing Web project, when the run takes one over. */
   projectDir?: string;
 }
@@ -23,7 +22,6 @@ const KNOWN_OPTIONS = new Set([
   "--requirements-dir",
   "--output-dir",
   "--project",
-  "--budget-ms",
 ]);
 
 export function parseCliArgs(
@@ -57,16 +55,10 @@ export function parseCliArgs(
   if (projectDir !== undefined && values.get("--output-dir") !== undefined) {
     throw new Error("--project already names the directory this run develops in; pass either --project or --output-dir, not both");
   }
-  const budgetText = values.get("--budget-ms") ?? "0";
-  const budgetMs = Number(budgetText);
-  if (!Number.isSafeInteger(budgetMs) || budgetMs < 0) {
-    throw new Error(`--budget-ms must be a non-negative integer, received: ${budgetText}`);
-  }
 
   return {
     requirementsDir: resolve(requirementsDir),
     outputDir: resolve(outputDir),
-    budgetMs,
     ...(projectDir === undefined ? {} : { projectDir: resolve(projectDir) }),
   };
 }

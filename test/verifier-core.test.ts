@@ -21,7 +21,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const snapshot = await artifacts.putJson({ snapshot: 1 });
   const requirements = await artifacts.putJson({ text: "input" });
   const job = (id: string, patch: Partial<CheckJob> = {}): CheckJob => ({ jobId: id, runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
-    snapshot, requirements, binding, initialState: input, requirementIds: ["r1"], mode: "prepare", programs: [], budget: { deadlineAt: Date.now() + 60_000 }, ...patch });
+    snapshot, requirements, binding, initialState: input, requirementIds: ["r1"], mode: "prepare", programs: [], timeoutMs: 60_000, ...patch });
   const report = async (job: CheckJob): Promise<CheckReport> => ({ job: await artifacts.putJson(job), snapshot: job.snapshot, binding: job.binding,
     manifest: await artifacts.putJson({ receipts: [] }), programs: [], outcomes: [] });
   return { root, artifacts, schema, input, binding, job, report };
@@ -62,7 +62,7 @@ test("queue caps concurrency, excludes opaque shared resources and commits fixed
   const started: string[] = [];
   const queue = await VerifierQueue.open({ directory: join(f.root, "queue"), artifacts: f.artifacts, concurrency: 2,
     resourceKeys: job => job.packetId === "shared" ? ["resource:shared"] : [], verifier: { async check(job) {
-      assert.ok(Object.isFrozen(job)); assert.ok(Object.isFrozen(job.budget)); assert.ok(Object.isFrozen(job.requirementIds));
+      assert.ok(Object.isFrozen(job)); assert.ok(Object.isFrozen(job.requirementIds));
       const state = JSON.parse(await readFile(join(f.root, "queue", "state.json"), "utf8"));
       assert.equal(state.records.find((record: { job: CheckJob }) => record.job.jobId === job.jobId).status, "running");
       started.push(job.jobId); maximum = Math.max(maximum, ++running);
@@ -104,8 +104,9 @@ test("cancellation waits for cleanup and late reports never publish", { timeout:
   } finally { cleanup.resolve(); await queue.cancel(job.jobId).catch(() => {}); }
 });
 
-test("the absolute run limit includes queue time and cancellation retains the resource lease through cleanup", { timeout: 30_000 }, async t => {
+test("execution timeout retains the resource lease through cleanup", { timeout: 30_000 }, async t => {
   const f = await fixture(t), started = deferred(), cleaned = deferred();
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   const order: string[] = [];
   const aborted = deferred();
   const queue = await VerifierQueue.open({ directory: join(f.root, "queue"), artifacts: f.artifacts, resourceKeys: () => ["singleton"], verifier: { async check(job, signal) {
@@ -116,19 +117,19 @@ test("the absolute run limit includes queue time and cancellation retains the re
     return f.report(job);
   } } });
   try {
-  await queue.enqueue(f.job("slow", { budget: { deadlineAt: Date.now() + 5_000 } }));
+  await queue.enqueue(f.job("slow", { timeoutMs: 5_000 }));
   await awaitStarted(queue, "slow", started.promise, t.signal);
-  await queue.enqueue(f.job("waiting"));
-  await queue.enqueue(f.job("expired", { budget: { deadlineAt: Date.now() - 1 } }));
+  await queue.enqueue(f.job("waiting", { timeoutMs: 1_000 }));
+  t.mock.timers.tick(5_000);
   await awaitStarted(queue, "slow", aborted.promise, t.signal); assert.deepEqual(order, ["slow"]);
   cleaned.resolve(); await queue.drain(t.signal);
   assert.deepEqual(order, ["slow", "waiting"]);
   assert.equal(queue.records().find(record => record.job.jobId === "slow")?.status, "cancelled");
-  assert.equal(queue.records().find(record => record.job.jobId === "expired")?.status, "cancelled");
+  assert.equal(queue.records().find(record => record.job.jobId === "waiting")?.status, "completed");
   } finally { cleaned.resolve(); await queue.cancel("slow").catch(() => {}); await queue.drain(t.signal).catch(() => {}); }
 });
 
-test("queued work receives its full execution allowance after slot and resource admission", { timeout: 30_000 }, async t => {
+test("queued work receives its full execution limit after slot and resource admission", { timeout: 30_000 }, async t => {
   const f = await fixture(t), began = deferred(), release = deferred(), waiting = deferred();
   t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
   let executionSignal: AbortSignal | undefined;
@@ -145,7 +146,7 @@ test("queued work receives its full execution allowance after slot and resource 
   try {
     await queue.enqueue(f.job("busy"));
     await awaitStarted(queue, "busy", began.promise, t.signal);
-    const job = f.job("waiting", { budget: { deadlineAt: Date.now() + 60_000, timeoutMs: 1_000 } });
+    const job = f.job("waiting", { timeoutMs: 1_000 });
     await queue.enqueue(job);
     t.mock.timers.tick(5_000);
     assert.equal(queue.records().find(record => record.job.jobId === "waiting")?.status, "queued");

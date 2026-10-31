@@ -135,21 +135,21 @@ test("An unknown vision result keeps images eligible and is probed only once", a
 });
 
 test("Preflight time is deducted from the Builder call and exhaustion prevents dispatch", async () => {
-  const probeBudgets: number[] = [];
-  const probe = { supports: async (budgetMs: number) => {
-    probeBudgets.push(budgetMs);
+  const probeTimeouts: number[] = [];
+  const probe = { supports: async (timeoutMs: number) => {
+    probeTimeouts.push(timeoutMs);
     await new Promise(resolve => setTimeout(resolve, 25));
     return "unknown";
   } } as unknown as VisionCapability;
   const f = await fixture([completed], { referenceImages: true, visionProbe: probe, timeoutMs: 200 });
   assert.equal((await f.builder.run(f.request)).outcome, "completed");
   assert.ok(f.calls[0].timeoutMs > 0 && f.calls[0].timeoutMs < 200);
-  assert.ok(probeBudgets[0] > 0 && probeBudgets[0] <= 20);
+  assert.ok(probeTimeouts[0] > 0 && probeTimeouts[0] <= 20);
 
   const expired = await fixture([completed], { referenceImages: true, visionProbe: probe, timeoutMs: 10 });
   assert.equal((await expired.builder.run(expired.request)).outcome, "timed_out");
   assert.equal(expired.calls.length, 0);
-  assert.ok(probeBudgets[1] <= 1);
+  assert.ok(probeTimeouts[1] <= 1);
 });
 
 test("A disabled switch never probes the gateway", async () => {

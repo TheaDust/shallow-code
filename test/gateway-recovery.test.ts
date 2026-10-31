@@ -175,7 +175,7 @@ test("Builder authentication failures still stop all new calls", async () => {
   assert.equal(calls, 0);
 });
 
-test("Retry-After and stage budgets bound one call's recovery window", async () => {
+test("Retry-After and stage timeouts bound one call's recovery window", async () => {
   const f = fixture();
   let calls = 0;
   await assert.rejects(f.recovery.run("builder", "a", () => 60_000 - f.now(), async () => {

@@ -34,7 +34,7 @@ test("a custom single-process Web project passes real runtime and browser initia
     };
     const result = await initializeProject({ outputDir, privateDir: join(root, "private"),
       requirementsContext: "A Web app", intent: "使用不含默认模板的单进程服务", env: {},
-      startedAtMs: Date.now(), budgetMs: 180_000, applications, createBuilder: () => builder,
+      applications, createBuilder: () => builder,
       verify: verifyInitializedWebProject });
     assert.equal(result.path, "custom");
     assert.equal(result.contract.startCommand.cwd, "output");

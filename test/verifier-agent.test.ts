@@ -37,7 +37,7 @@ async function fixture(config: { initialState?: unknown; failures?: number[]; om
   const input: VerifierRequirements = { requirements: [requirement], implementedRequirementIds: [] };
   const job: CheckJob = { jobId: "job-1", runId: store.runId, moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
     snapshot: await store.putJson({ sha: "source-1" }), requirements: await store.putJson(input), binding, initialState,
-    requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 30_000 } };
+    requirementIds: ["r1"], mode: "discover", programs: [], timeoutMs: 30_000 };
   let sourceIndex: VerifierSourceIndex | undefined;
   if (config.sourceTools) {
     const source = join(directory, "application"); await mkdir(source);
@@ -1248,7 +1248,7 @@ test("discovery exhaustion preserves verified siblings and saved candidates for 
       } } : tool) });
     } } });
     const report = await verifier.check({ ...job, jobId: "partial-discovery", programs: [original.programs[0]!],
-      budget: { deadlineAt: Date.now() + 30_000, timeoutMs: 2_000 } }, new AbortController().signal);
+      timeoutMs: 2_000 }, new AbortController().signal);
     assert.deepEqual(report.outcomes.map(outcome => outcome.status), ["pass", "pass", "inconclusive", "inconclusive"]);
     assert.equal(report.programs.length, 2, "saved candidates survive without granting unreviewed results");
     assert(report.outcomes.slice(2).every(outcome => /timeout|aborted/i.test(outcome.reason!)));

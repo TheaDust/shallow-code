@@ -27,7 +27,6 @@ export interface PipelineOptions {
   requirementsFile: string;
   outputDir: string;
   ledgerFile: string;
-  totalBudgetMs: number;
   /** Command start, including initialization and input preparation. */
   startedAtMs?: number;
   initializationUsage?: import("./model-usage.js").TokenUsage[];

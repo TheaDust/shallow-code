@@ -176,8 +176,6 @@ test("Agent entry validates paths and passes bounded production context", async 
         requirementsDir,
         "--output-dir",
         outputDir,
-        "--budget-ms",
-        "600000",
       ],
       { ...gatewayEnv(), SHALLOW_PROBE_PORT: "3100", SHALLOW_BUILDER_CONTEXT_WINDOW: "400000" },
       execute,
@@ -191,7 +189,6 @@ test("Agent entry validates paths and passes bounded production context", async 
     assert.equal(received?.pipelineOptions.requirementsFile, join(dirname(received!.pipelineOptions.ledgerFile), "requirements", "requirements.yaml"));
     assert.equal(await readFile(received!.pipelineOptions.requirementsFile, "utf8"), await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
     assert.equal(received?.pipelineOptions.outputDir, outputDir);
-    assert.equal(received?.pipelineOptions.totalBudgetMs, 600_000);
     assert.equal(webRuntimeConfig(received?.pipelineOptions.applicationContract!).port, 3100);
     assert.equal(received?.builderContextWindow, 400_000);
     assert.equal(received?.requirementTree?.id, "ROOT");
@@ -225,8 +222,6 @@ test("Agent entry picks a non-3000 probe port when the override is absent", asyn
         requirementsDir,
         "--output-dir",
         outputDir,
-        "--budget-ms",
-        "0",
       ],
       gatewayEnv(),
       execute,
@@ -256,7 +251,7 @@ test("Agent entry honors SHALLOW_EVAL_PORT and keeps the probe port off it", asy
     };
 
     await main(
-      ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output"), "--budget-ms", "0"],
+      ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output")],
       { ...gatewayEnv(), SHALLOW_EVAL_PORT: "43100" },
       execute,
       null,
@@ -279,7 +274,7 @@ test("Agent entry rejects a probe port equal to the evaluation port", async () =
     );
     await assert.rejects(
       main(
-        ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output"), "--budget-ms", "0"],
+        ["--requirements-dir", requirementsDir, "--output-dir", join(directory, "output")],
         { ...gatewayEnv(), SHALLOW_EVAL_PORT: "43100", SHALLOW_PROBE_PORT: "43100" },
         async () => { throw new Error("must not execute"); },
         null,
@@ -304,8 +299,6 @@ test("Agent entry rejects a missing requirements.yaml before execution", async (
           join(directory, "missing"),
           "--output-dir",
           join(directory, "output"),
-          "--budget-ms",
-          "600000",
         ],
         gatewayEnv(),
         execute,
@@ -338,8 +331,6 @@ test("Agent entry returns a non-zero exit code when final delivery fails", async
         requirementsDir,
         "--output-dir",
         join(directory, "output"),
-        "--budget-ms",
-        "600000",
       ],
         gatewayEnv(),
         execute,
@@ -394,8 +385,7 @@ test("Agent entry loads the gateway from an env file with real env winning", asy
       requirementsDir,
       "--output-dir",
       join(directory, "output"),
-      "--budget-ms",
-      "0",
+
     ];
 
     await main(argv, {}, execute, join(directory, "gateway.env"));
@@ -449,8 +439,6 @@ test("Agent entry places run artifacts under SHALLOW_RUN_DIR when set", async ()
         requirementsDir,
         "--output-dir",
         outputDir,
-        "--budget-ms",
-        "0",
       ],
       { ...gatewayEnv(), SHALLOW_RUN_DIR: runDir },
       execute,
@@ -587,8 +575,6 @@ test("Agent entry keeps default run artifacts under the temp shallowcode-runs di
         requirementsDir,
         "--output-dir",
         join(directory, "output"),
-        "--budget-ms",
-        "0",
       ],
       gatewayEnv(),
       execute,

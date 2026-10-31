@@ -470,7 +470,7 @@ test("Group checks overlap Builder while the next module waits for current-versi
     assert(groupJobs.every(job => job.mode === "discover"));
     assert.equal(groupJobs[0]!.snapshot.id, checkpoint!.snapshots[0].snapshot.id);
     assert.equal(groupJobs[1]!.snapshot.id, checkpoint!.snapshots[1].snapshot.id);
-    assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.budget.timeoutMs === 3_600_000));
+    assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.timeoutMs === 3_600_000));
     const firstModuleJobs = jobs.filter(job => job.moduleEpoch === 1 && job.moduleId === "FIRST");
     assert.equal(firstModuleJobs.length, 3);
     assert(firstModuleJobs.filter(job => job.mode !== "prepare").every(job => job.mode === "replay"), "boundary jobs remain replay even when no programs were produced");
@@ -727,7 +727,7 @@ test("Repair retains partial improvement and checks each packet once per round f
     assert.ok(result.verifiedRequirementIds.includes("B"));
     assert.ok((await f.events()).some(item => item.type === "repair_batch_finished" && item.detail?.retained === true));
     assert.ok(jobs.every(job => job.initialState.id === runtime.initialState.id));
-    assert.ok(jobs.every(job => job.budget.timeoutMs === 3_600_000));
+    assert.ok(jobs.every(job => job.timeoutMs === 3_600_000));
     const audit = jobs.filter(job => job.mode !== "prepare");
     for (const epoch of new Set(audit.map(job => job.moduleEpoch))) {
       const round = audit.filter(job => job.moduleEpoch === epoch);
@@ -736,15 +736,43 @@ test("Repair retains partial improvement and checks each packet once per round f
   });
 });
 
-test("Verifier execution allowances are independent of queue time and share only the total run limit", async () => {
+test("Verifier jobs use the fixed execution limit across all stages", async () => {
   await withModulePipeline(async f => {
     const jobs: CheckJob[] = [];
     await attach(f, async job => { jobs.push(job); });
-    f.options.totalBudgetMs = 7_200_000;
     assert.equal((await f.run()).status, "delivered");
     assert.ok(jobs.length > 0);
-    assert.ok(jobs.every(job => job.budget.timeoutMs === 3_600_000));
-    assert.ok(jobs.every(job => job.budget.deadlineAt - Date.now() > 3_600_000));
+    assert.ok(jobs.every(job => job.timeoutMs === 3_600_000));
+  });
+});
+
+test("Elapsed run time does not shorten grouping, implementation, continuation or verification", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    await attach(f, async job => { jobs.push(job); });
+    let clock = 7 * 24 * 3_600_000;
+    f.options.startedAtMs = 0;
+    f.deps.clock.nowMs = () => clock;
+    f.deps.grouper = { async group(catalog, options) {
+      assert.equal(options.timeoutMs, 720_000);
+      return { groups: catalog.requirements.map(item => ({ requirementIds: [item.id], purpose: "Separate groups" })) };
+    } };
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      clock += 4 * 3_600_000;
+      const result = await build(request, options);
+      return f.builder.requests.length === 1 ? { ...result, outcome: "timed_out" } : result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    assert.deepEqual(result.verifiedRequirementIds, ["A", "B", "C"]);
+    assert.equal(f.builder.runOptions.length, 4);
+    for (const options of f.builder.runOptions) {
+      const limit = options?.resumeInterrupted ? 2_700_000 : 5_400_000;
+      assert.ok(options!.timeoutMs! > limit - 60_000 && options!.timeoutMs! <= limit);
+    }
+    assert.equal(f.builder.runOptions[1]?.resumeInterrupted, true);
+    assert.ok(jobs.length > 0 && jobs.every(job => job.timeoutMs === 3_600_000));
   });
 });
 

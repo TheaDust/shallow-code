@@ -24,7 +24,7 @@ test("blank project without technical intent installs the shipped scaffold witho
     await mkdir(outputDir);
     let calls = 0;
     const result = await initializeProject({ outputDir, privateDir: join(root, "private"),
-      requirementsContext: "minimal", intent: null, env: {}, startedAtMs: Date.now(), budgetMs: 0,
+      requirementsContext: "minimal", intent: null, env: {},
       applications, createBuilder: () => { calls++; throw new Error("unexpected model call"); },
       verify: async () => {}, });
     assert.equal(result.path, "default_scaffold");
@@ -33,7 +33,8 @@ test("blank project without technical intent installs the shipped scaffold witho
   });
 });
 
-test("explicit stack initializes without copying the default scaffold and retries configuration failures", async () => {
+test("explicit stack initializes without copying the default scaffold and retries configuration failures", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   await withTempDir("shallow-init-", async root => {
     const outputDir = join(root, "app");
     await mkdir(outputDir);
@@ -41,6 +42,7 @@ test("explicit stack initializes without copying the default scaffold and retrie
     const fake: CodingAgentPort = {
       async run(input): Promise<CodingAgentResult> {
         seen.push(input);
+        t.mock.timers.tick(900_000);
         if (seen.length === 1) await writeFile(join(outputDir, "shallowcode.config.json"), "{}");
         else {
           await writeFile(join(outputDir, "shallowcode.config.json"), JSON.stringify({
@@ -53,10 +55,11 @@ test("explicit stack initializes without copying the default scaffold and retrie
       async close() {},
     };
     const result = await initializeProject({ outputDir, privateDir: join(root, "private"),
-      requirementsContext: "a Web app", intent: "使用 Python 后端", env: {}, startedAtMs: Date.now(), budgetMs: 0,
+      requirementsContext: "a Web app", intent: "使用 Python 后端", env: {},
       applications, createBuilder: () => fake, verify: async () => {}, });
     assert.equal(result.path, "custom");
     assert.equal(seen.length, 2);
+    assert.ok(seen.every(request => request.timeoutMs === 900_000));
     assert.match(seen[1].taskPrompt, /上一次控制器验证失败/);
     assert.equal(seen[0].applicationContract, undefined);
     assert.match(seen[0].systemPrompt, /Web 工程.*PORT/);
@@ -81,7 +84,7 @@ test("initialization uses the selected adapter's instructions without imposing W
     };
     let calls = 0;
     const result = await initializeProject({ outputDir, privateDir: join(root, "private"),
-      requirementsContext: "Process an input stream", intent: null, env: {}, startedAtMs: Date.now(), budgetMs: 0,
+      requirementsContext: "Process an input stream", intent: null, env: {},
       applications: new ApplicationRegistry([adapter]), verify: async () => {},
       createBuilder: () => ({ async run(request) {
         calls++;
@@ -103,11 +106,15 @@ test("existing configuration conflict is inspected with read only tools", async 
     await writeFile(join(outputDir, "server.js"), "// existing\n");
     let mode: string | undefined;
     const fake: CodingAgentPort = {
-      async run(input) { mode = input.toolMode; return { sessionId: "fake", outcome: "completed", summary: "CONFLICT: Node backend conflicts with explicit FastAPI requirement" }; },
+      async run(input) {
+        mode = input.toolMode;
+        assert.equal(input.timeoutMs, 180_000);
+        return { sessionId: "fake", outcome: "completed", summary: "CONFLICT: Node backend conflicts with explicit FastAPI requirement" };
+      },
       async close() {},
     };
     await assert.rejects(initializeProject({ outputDir, privateDir: join(root, "private"),
-      requirementsContext: "app", intent: "使用 FastAPI", env: {}, startedAtMs: Date.now(), budgetMs: 0,
+      requirementsContext: "app", intent: "使用 FastAPI", env: {},
       applications, createBuilder: () => fake, verify: async () => {}, }), /CONFLICT:/);
     assert.equal(mode, "read_only");
     assert.equal(await readFile(join(outputDir, "shallowcode.config.json"), "utf8"), config);

@@ -41,7 +41,7 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
     const input: VerifierRequirements = { requirements: [requirement], implementedRequirementIds: ["r1"] };
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
       snapshot: snapshot.ref, requirements: await artifacts.putJson(input), binding: adapter.binding, initialState,
-      requirementIds: ["r1"], mode: "discover", programs: [], budget: { deadlineAt: Date.now() + 180_000 } };
+      requirementIds: ["r1"], mode: "discover", programs: [], timeoutMs: 180_000 };
     const clauses = verifierSourceClauses(input, job.requirementIds);
     const programCache = (store: ArtifactStore, binding: ExecutionBindingRef, baseline: typeof snapshot) => VerifierProgramCache.open({
       directory: join(root, "program-cache"), artifacts: store, binding,
@@ -133,7 +133,7 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
         initialDataSnapshot: currentSnapshot.ref });
       let modelCalls = 0;
       const currentJob: CheckJob = { ...job, jobId: runId, runId, snapshot: currentSnapshot.ref, binding: current.adapter.binding,
-        requirements: await currentArtifacts.putJson(input), initialState: current.initialState, programs: [], budget: { deadlineAt: Date.now() + 180_000 } };
+        requirements: await currentArtifacts.putJson(input), initialState: current.initialState, programs: [], timeoutMs: 180_000 };
       const repeated = await createVerifierAgent({ artifacts: currentArtifacts, adapter: current.adapter,
         model: { async run() { modelCalls++; throw new Error("Compatible cross-build programs must not start a model"); } },
         programCache: await programCache(currentArtifacts, current.adapter.binding, currentSnapshot) }).check(currentJob, new AbortController().signal);

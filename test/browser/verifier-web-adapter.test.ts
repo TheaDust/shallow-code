@@ -45,7 +45,7 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     assert.deepEqual(await artifacts.readTypedJson(initialState), { baseline: baseline.ref });
     const job: CheckJob = { jobId: "job", runId: "run", moduleId: "module", packetId: "packet", attempt: 1, moduleEpoch: 1,
       snapshot: snapshot.ref, requirements: await artifacts.putJson({ requirements: [] }), binding: adapter.binding, initialState,
-      requirementIds: ["r"], mode: "replay", programs: [], budget: { deadlineAt: Date.now() + 90_000 } };
+      requirementIds: ["r"], mode: "replay", programs: [], timeoutMs: 90_000 };
     const contract = await artifacts.putJson({ clauses: [{ id: "r:result", requirementId: "r", scenarioId: "s", checkpointId: "result", expected: { operator: "equal", value: "changed" } }], checkpoints: [
       { id: "initial", kind: "precondition", expected: { operator: "equal", value: "original" } }, { id: "change", kind: "action" }, { id: "result", kind: "assertion" },
     ] });

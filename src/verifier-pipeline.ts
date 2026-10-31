@@ -12,7 +12,7 @@ import { parseFeatureGrouping } from "./feature-grouper.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { ModelUsageTotals } from "./model-usage.js";
 import type { PipelineDeps, PipelineOptions, RunSummary } from "./pipeline.js";
-import { RunBudget, type PipelinePhase } from "./run-budget.js";
+import { BUILDER_TIMEOUT_MS } from "./runtime-config.js";
 import { RunStateStore } from "./run-state.js";
 import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket, requirementModuleId } from "./scheduler.js";
 import type { AtomicRequirement, RequirementCatalog, RequirementStatus, RunEvent, RunScenarioResult,
@@ -38,6 +38,7 @@ export interface VerifierRuntime {
   setUsageProgressRecorder?(recorder: (usage: VerifierModelUsage) => void): void;
   verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<{ report: DeliveryReport; receipts: ContentRef[] }>;
 }
+const VERIFIER_TIMEOUT_MS = 3_600_000;
 type ScopedOutcome = CheckOutcome & { initialState?: TypedRef; snapshotId?: string };
 
 /** Controller-side orchestration; all domain operations are provided by the execution adapter. */
@@ -92,9 +93,9 @@ export class VerifierCoordinator {
     return head;
   }
 
-  async submit(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], budget: CheckJob["budget"],
+  async submit(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], timeoutMs: number,
     options: { epoch?: number; programs?: ProgramRef[]; priority?: number; requirementIds?: string[] } = {}): Promise<CheckJob> {
-    const job = await this.createJob(head, packet, mode, budget, options);
+    const job = await this.createJob(head, packet, mode, timeoutMs, options);
     await this.queue.enqueue(job, { priority: options.priority ?? 3 });
     await this.emit({ at: now(), type: "check_queued", packetId: packet.id, detail: jobDetail(job, head.sourceSha) });
     const monitor = this.monitor(job, head).catch(error => { this.failure = error; });
@@ -103,7 +104,7 @@ export class VerifierCoordinator {
     return job;
   }
 
-  private async createJob(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], budget: CheckJob["budget"],
+  private async createJob(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], timeoutMs: number,
     options: { epoch?: number; programs?: ProgramRef[]; requirementIds?: string[] } = {}): Promise<CheckJob> {
     this.assertHealthy();
     const contextualIds = new Set([...packet.requirementIds, ...(packet.prerequisites ?? []).map(item => item.id)]);
@@ -114,12 +115,12 @@ export class VerifierCoordinator {
     return { jobId: randomUUID(), runId: this.runtime.artifacts.runId, moduleId: moduleId(packet.requirements[0]),
       packetId: packet.id, attempt: packet.attempt, moduleEpoch: options.epoch ?? this.checkpoints.snapshot.epoch, snapshot: head.snapshot, requirements,
       binding: this.runtime.binding, initialState: this.runtime.initialState, requirementIds, mode, programs,
-      budget };
+      timeoutMs };
   }
 
-  async verifyDelivery(head: ProducedSnapshot, packet: WorkPacket, budget: CheckJob["budget"], signal: AbortSignal): Promise<DeliveryReport> {
+  async verifyDelivery(head: ProducedSnapshot, packet: WorkPacket, timeoutMs: number, signal: AbortSignal): Promise<DeliveryReport> {
     await this.drain();
-    const job = await this.createJob(head, packet, "prepare", budget);
+    const job = await this.createJob(head, packet, "prepare", timeoutMs);
     const { report, receipts } = await this.runtime.verifyDelivery(job, signal);
     const ready = await this.acceptReadiness(job, head, receipts);
     const checked = report.ok && !ready ? { ok: false, stage: "readiness" as const, message: "Delivery did not produce current readiness evidence" } : report;
@@ -195,10 +196,9 @@ export class VerifierCoordinator {
 export async function runVerifierPipeline(options: PipelineOptions, deps: PipelineDeps, runtime: VerifierRuntime): Promise<RunSummary> {
   const catalog = await loadRequirementCatalog(options.requirementsFile, { inheritedApplication: options.startingPoint === "inherited_application" });
   const started = options.startedAtMs ?? deps.clock.nowMs();
-  const budget = new RunBudget(options.totalBudgetMs, started, () => deps.clock.nowMs());
   const initialSha = await deps.git.captureAccepted("shallow: initial Verifier state");
   const state = new RunStateStore({ statusByRequirementId: catalog.statusById, acceptedSha: initialSha,
-    startedAtMs: started, totalBudgetMs: options.totalBudgetMs }, options.ledgerFile, deps.logSink ?? null, deps.diagnosticSecrets);
+    startedAtMs: started }, options.ledgerFile, deps.logSink ?? null, deps.diagnosticSecrets);
   const usage = new ModelUsageTotals();
   for (const item of options.initializationUsage ?? []) usage.add("builder", item);
   const gateway = deps.gatewayRecovery ?? new GatewayRecovery();
@@ -225,9 +225,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
   let auditGroups: WorkPacket[] = [];
   const byId = new Map(catalog.requirements.map(item => [item.id, item]));
   let implementationCatalog: RequirementCatalog = catalog;
-  const checkBudget = (): CheckJob["budget"] => ({ timeoutMs: 3_600_000,
-    deadlineAt: Number.isFinite(budget.remaining("delivery")) ? Date.now() + budget.remaining("delivery") : Number.MAX_SAFE_INTEGER });
-  const emitPhase = (phase: PipelinePhase) => state.record({ at: now(), type: "phase_started", detail: { phase, remainingMs: finite(budget.remaining(phase)) } });
+  const emitPhase = (phase: "implementation" | "audit" | "repair" | "delivery") => state.record({ at: now(), type: "phase_started", detail: { phase } });
   const packetFor = (id: string, requirements: AtomicRequirement[], attempt: 1 | 2 | 3 = 1): WorkPacket => ({
     ...makePacket(id, requirements, attempt),
     prerequisites: catalog.requirements.filter(item => !requirements.includes(item) && dependencyClosure(requirements, byId).has(item.id)) });
@@ -236,7 +234,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     satisfiedDependencies: (packet.prerequisites ?? []).filter(item => implemented.has(item.id)).map(item => ({ id: item.id, name: item.name, contract: item.text })),
     startingPoint: options.startingPoint ?? "unknown",
     externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [] });
-  const build = async (request: BuilderRequest, phase: PipelinePhase, resumeInterrupted = false): Promise<BuilderResult> => {
+  const build = async (request: BuilderRequest, resumeInterrupted = false): Promise<BuilderResult> => {
     // Fixed services declared by a project must also be exclusive with Builder self-tests.
     if (runtime.resourceKeys.length) await coordinator.drain();
     const packetId = "packet" in request ? request.packet.id : "delivery";
@@ -247,11 +245,13 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       await state.record({ at: now(), type: "builder_usage", packetId, detail: { ...item, total: item.input + item.output + item.cacheRead + item.cacheWrite } });
     };
     let result: BuilderResult = { outcome: "failed", sessionId: "unavailable", summary: "Builder did not start" };
+    const deadlineAt = Date.now() + (resumeInterrupted ? 2_700_000 : BUILDER_TIMEOUT_MS);
+    const remainingMs = () => Math.max(0, deadlineAt - Date.now());
     try {
-      result = await gateway.run("builder", packetId, () => budget.remaining(phase), async () => {
+      result = await gateway.run("builder", packetId, remainingMs, async () => {
         reported = false;
         result = await deps.builder.run({ ...request, ...(options.initialization ? { initialization: options.initialization } : {}) },
-          { timeoutMs: budget.callTimeout(phase, resumeInterrupted ? 2_700_000 : 5_400_000), resumeInterrupted, onUsage });
+          { timeoutMs: remainingMs(), resumeInterrupted, onUsage });
         try { await deps.assertContractUnchanged?.(); }
         catch (error) {
           await deps.git.restoreAccepted(coordinator.checkpoints.snapshot.accepted.sha);
@@ -303,7 +303,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     const packets = [...auditGroups, ...auditPackets({ requirements: requirements.filter(item => !grouped.has(item.id)), statusById: catalog.statusById })];
     for (const packet of packets.filter(packet => packet.requirementIds.some(id => scope.has(id)))) {
       const full = packetFor(packet.id, packet.requirements);
-      jobs.push(await coordinator.submit(head, full, discover ? "discover" : "replay", checkBudget(), { epoch, priority: 1,
+      jobs.push(await coordinator.submit(head, full, discover ? "discover" : "replay", VERIFIER_TIMEOUT_MS, { epoch, priority: 1,
         ...(discover ? { programs: [] } : {}),
         requirementIds: packet.requirementIds.filter(id => scope.has(id)) }));
     }
@@ -342,14 +342,14 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     await state.record({ at: now(), type: "module_check_started", detail: { moduleId: module, moduleEpoch: epoch,
       snapshotId: head.snapshot.id, requirementIds: scope.map(item => item.id) } });
     const prepare = await coordinator.submit(head, packetFor(`prepare-${module}`, scope.length ? scope : catalog.requirements.slice(0, 1)),
-      "prepare", checkBudget(), { epoch, priority: 0 });
+      "prepare", VERIFIER_TIMEOUT_MS, { epoch, priority: 0 });
     const prepared = await coordinator.report(prepare);
     await coordinator.drain();
     let runnable = coordinator.checkpoints.snapshot.accepted.snapshot?.id === head.snapshot.id;
     const preparationDiagnostics = prepared ? (await runtime.artifacts.getJson<{ diagnostics?: string[] }>(prepared.manifest)).diagnostics ?? [] : ["No readiness report was committed"];
     let outcomes = runnable ? await inspect(head, scope, epoch) : scope.map(item => ({ requirementId: item.id,
       scenarioId: "<readiness>", clauseId: "<readiness>", status: "inconclusive" as const, evidence: [], reason: "Current snapshot readiness failed" }));
-    for (let round = 1; allowRepair && round <= 2 && budget.remaining("repair") > 0; round++) {
+    for (let round = 1; allowRepair && round <= 2; round++) {
       const failedIds = scope.filter(item => outcomes.some(result => result.requirementId === item.id && result.status === "fail")).map(item => item.id);
       if (runnable && !failedIds.length) break;
       const baseline: ProducedSnapshot = head;
@@ -362,12 +362,12 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       const observation = await repairObservation(runtime.artifacts, repairPacket, outcomes, !runnable, deps.diagnosticSecrets,
         preparationDiagnostics.join("; ").replaceAll(runtime.directory, "<execution>"));
       const result = await build({ mode: "repair", packet: repairPacket, projectContext: contextFor(repairPacket),
-        shadowObservation: observation, outputDir: options.outputDir, applicationContract: options.applicationContract }, "repair");
+        shadowObservation: observation, outputDir: options.outputDir, applicationContract: options.applicationContract });
       let retained = false;
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(repairPacket, implemented);
         epoch = await coordinator.checkpoints.nextEpoch();
-        const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", checkBudget(), { epoch, priority: 0 });
+        const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", VERIFIER_TIMEOUT_MS, { epoch, priority: 0 });
         await coordinator.report(readyJob); await coordinator.drain();
         if (coordinator.checkpoints.snapshot.accepted.snapshot?.id === repaired.snapshot.id) {
           const regressionScope = replay ? catalog.requirements.filter(item => implemented.has(item.id) &&
@@ -413,7 +413,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
 
   try {
     await state.record({ at: now(), type: "pipeline_started", detail: { requirements: catalog.requirements.length,
-      totalBudgetMs: options.totalBudgetMs, adapterId: options.applicationContract.adapterId, ...deps.runMetadata } });
+      adapterId: options.applicationContract.adapterId, ...deps.runMetadata } });
     // 恢复运行时先把已实现范围交给展示层；验收结果仍由后续独立检查确定。
     if (implemented.size) await state.record({ at: now(), type: "run_resumed", detail: { requirementIds: [...implemented] } });
     if (!recoveredHead && options.resumedRequirementIds !== undefined) {
@@ -422,13 +422,13 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     const savedGroups = coordinator.checkpoints.snapshot.featureGroups;
     let grouping = savedGroups ? featureGroupingFromIds(implementationCatalog, savedGroups) : featureGroupPackets(implementationCatalog);
     const grouper = deps.grouper;
-    if (!savedGroups && grouper && implementationCatalog.requirements.length && budget.remaining("implementation") > 0) {
+    if (!savedGroups && grouper && implementationCatalog.requirements.length) {
       await state.record({ at: now(), type: "feature_grouping_started", detail: { requirements: implementationCatalog.requirements.length,
         limits: { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20_000 } } });
       const at = Date.now(); let reason: string | undefined; let source: "llm" | "deterministic" = "deterministic";
       try {
         // The grouper owns its Pi session and retries without discarding tool history.
-        const proposal = await grouper.group(implementationCatalog, { timeoutMs: Math.min(720_000, budget.remaining("implementation")),
+        const proposal = await grouper.group(implementationCatalog, { timeoutMs: 720_000,
           onUsage: async item => { usage.add("grouper", item); await state.record({ at: now(), type: "feature_grouping_usage", detail: item }); } });
         grouping = parseFeatureGrouping(proposal, implementationCatalog); source = "llm";
       } catch (error) { reason = message(error); }
@@ -442,7 +442,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       if (continued.length) {
         const head = await coordinator.seal(packetFor("continue", continued), implemented);
         for (const group of auditPackets({ requirements: continued, statusById: catalog.statusById })) {
-          await coordinator.submit(head, packetFor(group.id, group.requirements), "discover", checkBudget());
+          await coordinator.submit(head, packetFor(group.id, group.requirements), "discover", VERIFIER_TIMEOUT_MS);
         }
         for (const module of new Set(continued.map(moduleId))) await boundary(module);
       }
@@ -451,14 +451,13 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       const head = coordinator.checkpoints.snapshot.producedHead!;
       const packet = packetFor("resume", catalog.requirements.filter(item => implemented.has(item.id)));
       if (packet.requirements.length) {
-        const job = await coordinator.submit(head, packet, "prepare", checkBudget(), { priority: 0 });
+        const job = await coordinator.submit(head, packet, "prepare", VERIFIER_TIMEOUT_MS, { priority: 0 });
         await coordinator.report(job); await coordinator.drain();
         if (coordinator.checkpoints.snapshot.accepted.snapshot?.id !== head.snapshot.id) await boundary(moduleId(packet.requirements.at(-1)!));
       }
     }
     let previousModule: string | undefined;
     for (const grouped of grouping.packets) {
-      if (budget.remaining("implementation") <= 0) break;
       const requirements = grouped.requirements.filter(item => !implemented.has(item.id));
       if (!requirements.length) continue;
       const packet = packetFor(grouped.id, requirements);
@@ -476,8 +475,8 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       await emitPhase("implementation");
       await state.record({ at: now(), type: "packet_selected", packetId: packet.id, detail: { requirementIds: packet.requirementIds, names: requirements.map(item => item.name) } });
       const request: BuilderRequest = { mode: "implement", packet, projectContext: contextFor(packet), outputDir: options.outputDir, applicationContract: options.applicationContract };
-      let result = await build(request, "implementation");
-      if (result.outcome !== "completed" && !result.gatewayFailure && budget.remaining("implementation") > 0) result = await build(request, "implementation", true);
+      let result = await build(request);
+      if (result.outcome !== "completed" && !result.gatewayFailure) result = await build(request, true);
       if (result.outcome !== "completed") {
         // Seal partial work for recovery; incomplete feature groups never become implemented.
         await coordinator.seal(packet, implemented);
@@ -487,7 +486,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       }
       for (const id of packet.requirementIds) implemented.add(id);
       const head = await coordinator.seal(packet, implemented);
-      await coordinator.submit(head, auditGroups.find(group => group.id === grouped.id)!, "discover", checkBudget());
+      await coordinator.submit(head, auditGroups.find(group => group.id === grouped.id)!, "discover", VERIFIER_TIMEOUT_MS);
     }
     if (previousModule) await boundary(previousModule);
     if (!coordinator.checkpoints.snapshot.producedHead) await coordinator.seal(packetFor("initial", catalog.requirements), implemented);
@@ -506,18 +505,18 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     let delivery: DeliveryReport = { ok: false, stage: "candidate", message: "No sealed application is available" };
     const verifyDelivery = async (candidate: ProducedSnapshot): Promise<DeliveryReport> => {
       const packet = packetFor("delivery", scope.length ? scope : catalog.requirements.slice(0, 1));
-      const signal = AbortSignal.timeout(Math.max(1, Math.min(720_000, budget.remaining("delivery"))));
+      const signal = AbortSignal.timeout(720_000);
       await state.record({ at: now(), type: "delivery_check_started", detail: { snapshotId: candidate.snapshot.id } });
-      const report = await coordinator.verifyDelivery(candidate, packet, checkBudget(), signal);
+      const report = await coordinator.verifyDelivery(candidate, packet, VERIFIER_TIMEOUT_MS, signal);
       await state.record({ at: now(), type: "delivery_check_finished", detail: { snapshotId: candidate.snapshot.id, ...report } });
       return report;
     };
-    if (head && budget.remaining("delivery") > 0) delivery = await verifyDelivery(head);
-    for (let round = 1; head && !delivery.ok && round <= 3 && budget.remaining("delivery") > 0; round++) {
+    if (head) delivery = await verifyDelivery(head);
+    for (let round = 1; head && !delivery.ok && round <= 3; round++) {
       const baseline = head;
       await state.record({ at: now(), type: "delivery_repair_started", detail: { stage: delivery.stage, message: delivery.message, round } });
       const result = await build({ mode: "delivery_repair", outputDir: options.outputDir, applicationContract: options.applicationContract,
-        deliveryFailure: { stage: delivery.stage, expected: "The application satisfies the declared execution and delivery contract", actual: sanitizeDiagnosticText(delivery.message, deps.diagnosticSecrets) } }, "delivery");
+        deliveryFailure: { stage: delivery.stage, expected: "The application satisfies the declared execution and delivery contract", actual: sanitizeDiagnosticText(delivery.message, deps.diagnosticSecrets) } });
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(packetFor(`delivery-repair-${round}`, scope.length ? scope : catalog.requirements), implemented);
         const checked = await verifyDelivery(repaired);
@@ -550,13 +549,11 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
           { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
         head = fallback;
         implemented.clear(); for (const id of fallback.implementedRequirementIds) implemented.add(id);
-        if (budget.remaining("delivery") > 0) {
-          delivery = await verifyDelivery(fallback);
-          const fallbackScope = scope.filter(item => implemented.has(item.id));
-          const epoch = await coordinator.checkpoints.nextEpoch();
-          const outcomes = await inspect(fallback, fallbackScope, epoch);
-          await publish(fallback, "<fallback>", epoch, outcomes, fallbackScope);
-        }
+        delivery = await verifyDelivery(fallback);
+        const fallbackScope = scope.filter(item => implemented.has(item.id));
+        const epoch = await coordinator.checkpoints.nextEpoch();
+        const outcomes = await inspect(fallback, fallbackScope, epoch);
+        await publish(fallback, "<fallback>", epoch, outcomes, fallbackScope);
       }
     }
     if (head && delivery.ok) {
@@ -666,5 +663,4 @@ async function repairObservation(artifacts: ArtifactStore, packet: WorkPacket, o
     failures, applicationStartupFailed: startup };
 }
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
-function finite(value: number): number | undefined { return Number.isFinite(value) ? value : undefined; }
 function now(): string { return new Date().toISOString(); }

@@ -85,8 +85,8 @@ export class VerifierQueue {
   async setControllerState<T>(value: T): Promise<void> { await this.transaction(state => { state.controller = structuredClone(value); }); }
   async enqueue(job: CheckJob, options: { priority?: number } = {}): Promise<ContentRef> {
     const fixed = immutable(structuredClone(job));
-    if (fixed.runId !== this.options.artifacts.runId || !fixed.jobId || !Number.isFinite(fixed.budget.deadlineAt) ||
-      (fixed.budget.timeoutMs !== undefined && (!Number.isFinite(fixed.budget.timeoutMs) || fixed.budget.timeoutMs <= 0)) || !Number.isInteger(fixed.moduleEpoch) ||
+    if (fixed.runId !== this.options.artifacts.runId || !fixed.jobId || !Number.isFinite(fixed.timeoutMs) ||
+      fixed.timeoutMs <= 0 || !Number.isInteger(fixed.moduleEpoch) ||
       !Array.isArray(fixed.requirementIds) || new Set(fixed.requirementIds).size !== fixed.requirementIds.length) throw new Error("Invalid Verifier job");
     await this.options.artifacts.validateBinding(fixed.binding);
     await this.options.artifacts.getBytes(fixed.requirements);
@@ -205,10 +205,6 @@ export class VerifierQueue {
       const record = this.state.records.filter(record => record.status === "queued" && !record.resourceKeys.some(key => occupied.has(key)))
         .sort((a, b) => a.priority - b.priority || a.ordinal - b.ordinal)[0];
       if (!record) return;
-      if (record.job.budget.deadlineAt <= Date.now()) {
-        await this.transaction(state => { const item = state.records.find(item => item.job.jobId === record.job.jobId)!; item.status = "cancelled"; item.error = "Run budget exhausted before Verifier execution"; item.completedAt = Date.now(); });
-        continue;
-      }
       await this.transaction(state => { const item = state.records.find(item => item.job.jobId === record.job.jobId)!; if (item.status === "queued") { item.status = "running"; item.startedAt = Date.now(); } });
       if (this.failure) return;
       if (this.state.records.find(item => item.job.jobId === record.job.jobId)!.status !== "running") continue;
@@ -223,7 +219,7 @@ export class VerifierQueue {
     }
   }
   private async execute(record: QueueRecord, abort: AbortController): Promise<void> {
-    const deadlineAt = Math.min(record.job.budget.deadlineAt, Date.now() + (record.job.budget.timeoutMs ?? Infinity));
+    const deadlineAt = Date.now() + record.job.timeoutMs;
     const timer = setTimeout(() => abort.abort(new Error("Verifier job deadline exceeded")), Math.min(2_147_483_647,
       Math.max(1, deadlineAt - Date.now())));
     let report: ContentRef | undefined, error: string | undefined, cleanupFailure: unknown;

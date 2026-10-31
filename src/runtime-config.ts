@@ -134,21 +134,7 @@ export function referenceImagesEnabled(env: Record<string, string | undefined>):
   return raw !== undefined && /^(1|true|yes|on)$/i.test(raw);
 }
 
-export function deriveModelTimeouts(totalBudgetMs: number): {
-  builderTimeoutMs: number;
-  verifierTimeoutMs: number;
-} {
-  if (totalBudgetMs <= 0) {
-    return {
-      builderTimeoutMs: 5_400_000,
-      verifierTimeoutMs: 720_000,
-    };
-  }
-  return {
-    builderTimeoutMs: Math.max(30_000, Math.min(5_400_000, totalBudgetMs * 0.4)),
-    verifierTimeoutMs: Math.max(10_000, Math.min(720_000, totalBudgetMs * 0.1)),
-  };
-}
+export const BUILDER_TIMEOUT_MS = 5_400_000;
 
 /** 角色变量优先，公共变量兜底；两者都没有时给出包含两者名称的错误。 */
 function gatewayEnv(

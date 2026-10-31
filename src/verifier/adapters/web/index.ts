@@ -149,7 +149,6 @@ class WebSession implements ExecutionSession {
   async initialize(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     if (this.closed) throw new Error("Web execution session is closed");
-    if (Date.now() >= this.job.budget.deadlineAt) throw new Error("Web execution job deadline expired");
     const root = join(this.options.workspace, "web-" + randomUUID());
     await mkdir(root, { recursive: true, mode: 0o700 });
     this.caseDirectory = root;
@@ -186,7 +185,7 @@ class WebSession implements ExecutionSession {
       const context = await this.browser.newContext({ serviceWorkers: "block" });
       try {
         const page = await context.newPage();
-        const response = await page.goto(new URL(config.browserPath ?? "/", baseUrl).href, { waitUntil: "domcontentloaded", timeout: Math.min(10_000, this.remaining()) });
+        const response = await page.goto(new URL(config.browserPath ?? "/", baseUrl).href, { waitUntil: "domcontentloaded", timeout: 10_000 });
         if (!response?.ok() || !response.headers()["content-type"]?.toLowerCase().includes("text/html")) throw new Error("Web browser readiness must return successful HTML");
       } finally { await context.close(); }
       await app.assertUnchanged?.();
@@ -201,7 +200,6 @@ class WebSession implements ExecutionSession {
       throw error;
     } finally { signal.removeEventListener("abort", onAbort); }
   }
-  private remaining(): number { return Math.max(1, Math.min(30_000, this.job.budget.deadlineAt - Date.now())); }
   private newRuntime(): WebProgramRuntime {
     return new WebProgramRuntime(this.browser!, this.baseUrl, async (event) => {
       if (event.assertion?.result === "violated" || event.kind === "precondition" && event.payload.result === "violated") this.failed = true;
@@ -217,7 +215,7 @@ class WebSession implements ExecutionSession {
       }) });
       this.receiptIds.set(receipt.id, receipt);
       return receipt.id;
-    }, (this.contract?.clauses ?? []).map((clause) => ({ ...clause, clauseId: clause.clauseId ?? clause.id! })), Math.min(5_000, this.remaining()), this.contract?.checkpoints ?? []);
+    }, (this.contract?.clauses ?? []).map((clause) => ({ ...clause, clauseId: clause.clauseId ?? clause.id! })), 5_000, this.contract?.checkpoints ?? []);
   }
   private async record(kind: EvidenceReceipt["kind"], payload: unknown, extra: Partial<EvidenceReceipt> = {}): Promise<ContentRef> {
     const clean = JSON.parse(JSON.stringify(payload)) as unknown;
@@ -263,7 +261,7 @@ class WebSession implements ExecutionSession {
     const onAbort = () => { void this.runtime?.close().catch(() => {}); };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
-      const result = await this.runtime!.run(source, { signal, timeoutMs: this.remaining() });
+      const result = await this.runtime!.run(source, { signal, timeoutMs: 30_000 });
       await this.app?.assertUnchanged?.();
       return result;
     } catch (error) { this.failed = true; throw error; }

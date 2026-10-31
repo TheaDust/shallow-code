@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
 
-import { deriveModelTimeouts, parseBuilderContextWindow, parseRunDirOverride, readEnvFile, readGatewayConfig, resolveSseCaptureDir } from "../src/runtime-config.js";
+import { parseBuilderContextWindow, parseRunDirOverride, readEnvFile, readGatewayConfig, resolveSseCaptureDir } from "../src/runtime-config.js";
 import { parseEvaluationPort, parseProbePortOverride, pickFreePort } from "../src/adapters/web/ports.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
@@ -90,29 +90,6 @@ test("Runtime config supports independent Grouper, Builder and Verifier gateway 
     apiKey: "grouper-key", baseUrl: "https://grouper.example/v1", model: "grouper/model",
   });
 
-});
-
-test("Runtime config bounds model calls by the total budget", () => {
-  assert.deepEqual(deriveModelTimeouts(600_000), {
-    builderTimeoutMs: 240_000,
-    verifierTimeoutMs: 60_000,
-  });
-  assert.deepEqual(deriveModelTimeouts(60_000), {
-    builderTimeoutMs: 30_000,
-    verifierTimeoutMs: 10_000,
-  });
-  assert.deepEqual(deriveModelTimeouts(0), {
-    builderTimeoutMs: 5_400_000,
-    verifierTimeoutMs: 720_000,
-  });
-  assert.deepEqual(deriveModelTimeouts(10_800_000), {
-    builderTimeoutMs: 4_320_000,
-    verifierTimeoutMs: 720_000,
-  });
-  assert.deepEqual(deriveModelTimeouts(3_600_000), {
-    builderTimeoutMs: 1_440_000,
-    verifierTimeoutMs: 360_000,
-  });
 });
 
 test("Runtime config bounds the mainline Builder context window", () => {

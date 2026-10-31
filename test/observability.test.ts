@@ -24,7 +24,7 @@ test("Diagnostics redact known secrets, embedded headers, quoted values and URL 
 test("Gateway wait transport reasons are redacted in both machine and human logs", async () => {
   await withTempDir("shallow-gateway-log-", async directory => {
     const chunks: string[] = [];
-    const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
+    const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { chunks.push(chunk); } }, ["opaque-credential"]);
     await store.record({ at: "2026-09-07T00:00:00Z", type: "gateway_wait", packetId: "p", detail: {
       source: "grouper", retry: 1, delayMs: 30_000, failure: { kind: "unavailable", retryable: true },
@@ -40,7 +40,7 @@ test("Gateway wait transport reasons are redacted in both machine and human logs
 test("Verifier progress redacts rejection reasons and remains separate from requirement outcomes", async () => {
   await withTempDir("shallow-verifier-progress-", async directory => {
     const chunks: string[] = [];
-    const store = new RunStateStore({ statusByRequirementId: { R: "todo" }, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
+    const store = new RunStateStore({ statusByRequirementId: { R: "todo" }, acceptedSha: "sha", startedAtMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { chunks.push(chunk); } }, ["opaque-credential"]);
     await store.record({ at: "2026-10-18T00:00:00Z", type: "check_progress", packetId: "p", detail: {
       jobId: "j", snapshotId: "s", checkedSourceSha: "sha", moduleEpoch: 1, attempt: 1, mode: "replay", requirementIds: ["R"],
@@ -59,7 +59,7 @@ test("Display-only usage reaches the presenter without entering the ledger or ru
   await withTempDir("shallow-live-usage-", async directory => {
     const written: string[] = [];
     const presented: string[] = [];
-    const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0, totalBudgetMs: 0 },
+    const store = new RunStateStore({ statusByRequirementId: {}, acceptedSha: "sha", startedAtMs: 0 },
       join(directory, "ledger.jsonl"), { write: chunk => { written.push(chunk); }, present: chunk => { presented.push(chunk); } });
     await store.record({ at: "2026-10-19T00:00:00Z", type: "phase_started", detail: { phase: "audit" } });
     store.present({ at: "2026-10-19T00:00:01Z", type: "verifier_usage_progress", detail: {
@@ -77,7 +77,7 @@ test("Display-only usage reaches the presenter without entering the ledger or ru
 test("Internal events are correlated; private previews stay out of public logs and usage numbers survive", async () => {
   await withTempDir("shallow-observe-", async (directory) => {
     const chunks: string[] = [];
-    const store = new RunStateStore({ statusByRequirementId: { R: "todo" }, acceptedSha: "sha1", startedAtMs: 0, totalBudgetMs: 0 },
+    const store = new RunStateStore({ statusByRequirementId: { R: "todo" }, acceptedSha: "sha1", startedAtMs: 0 },
       join(directory, "ledger.jsonl"), { write: (chunk) => { chunks.push(chunk); } }, ["opaque-credential"]);
     store.setPacketAttempt("p", 2);
     await store.record({ at: "2026-09-07T00:00:00Z", type: "builder_finished", packetId: "p",

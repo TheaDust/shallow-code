@@ -12,26 +12,23 @@ test("Build is the only development command", () => {
   }
 });
 
-test("CLI resolves required paths and parses a positive budget", () => {
+test("CLI resolves required paths", () => {
   const parsed = parseCliArgs([
     "--requirements-dir",
     "C:/fixture/requirements",
     "--output-dir",
     "C:/fixture/output",
-    "--budget-ms",
-    "600000",
   ]);
 
   assert.deepEqual(parsed, {
     requirementsDir: resolve("C:/fixture/requirements"),
     outputDir: resolve("C:/fixture/output"),
-    budgetMs: 600_000,
   });
 });
 
 test("CLI applies the configured default output directory when --output-dir is omitted", () => {
   const parsed = parseCliArgs(
-    ["--requirements-dir", "C:/fixture/requirements", "--budget-ms", "600000"],
+    ["--requirements-dir", "C:/fixture/requirements"],
     { defaultOutputDir: "C:/fixture/default-output" },
   );
 
@@ -55,54 +52,9 @@ test("CLI prefers an explicit --output-dir over the configured default", () => {
 test("CLI rejects a missing --output-dir when no default is configured", () => {
   assert.throws(
     () =>
-      parseCliArgs(["--requirements-dir", "C:/fixture/requirements", "--budget-ms", "600000"]),
+      parseCliArgs(["--requirements-dir", "C:/fixture/requirements"]),
     /--output-dir/,
   );
-});
-
-test("CLI treats an omitted budget as unlimited", () => {
-  const parsed = parseCliArgs([
-    "--requirements-dir",
-    "C:/fixture/requirements",
-    "--output-dir",
-    "C:/fixture/output",
-  ]);
-
-  assert.deepEqual(parsed, {
-    requirementsDir: resolve("C:/fixture/requirements"),
-    outputDir: resolve("C:/fixture/output"),
-    budgetMs: 0,
-  });
-});
-
-test("CLI accepts an explicit zero budget as unlimited", () => {
-  const parsed = parseCliArgs([
-    "--requirements-dir",
-    "C:/fixture/requirements",
-    "--output-dir",
-    "C:/fixture/output",
-    "--budget-ms",
-    "0",
-  ]);
-
-  assert.equal(parsed.budgetMs, 0);
-});
-
-test("CLI rejects a negative or non-integer budget", () => {
-  for (const budget of ["-1", "2.5", "nope"]) {
-    assert.throws(
-      () =>
-        parseCliArgs([
-          "--requirements-dir",
-          "C:/fixture/requirements",
-          "--output-dir",
-          "C:/fixture/output",
-          "--budget-ms",
-          budget,
-        ]),
-      /--budget-ms/,
-    );
-  }
 });
 
 test("CLI takes over an existing project with --project", () => {
@@ -116,7 +68,6 @@ test("CLI takes over an existing project with --project", () => {
   assert.deepEqual(parsed, {
     requirementsDir: resolve("C:/fixture/requirements"),
     outputDir: resolve("C:/projects/existing-web"),
-    budgetMs: 0,
     projectDir: resolve("C:/projects/existing-web"),
   });
 });
@@ -144,8 +95,6 @@ test("CLI rejects unknown arguments", () => {
         "C:/fixture/requirements",
         "--output-dir",
         "C:/fixture/output",
-        "--budget-ms",
-        "600000",
         "--mystery",
         "value",
       ]),
@@ -163,10 +112,9 @@ test("CLI resolves the requirements directory from the discovery default only wh
     },
   };
 
-  assert.deepEqual(parseCliArgs(["--budget-ms", "0"], options), {
+  assert.deepEqual(parseCliArgs([], options), {
     requirementsDir: resolve("C:/fixture/requirements"),
     outputDir: resolve("C:/fixture/output"),
-    budgetMs: 0,
   });
   assert.equal(discoveries, 1);
 

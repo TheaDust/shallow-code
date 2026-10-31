@@ -42,8 +42,6 @@ export interface InitializationOptions {
   intent: string | null;
   env: Record<string, string | undefined>;
   diagnosticSecrets?: readonly string[];
-  startedAtMs: number;
-  budgetMs: number;
   applications: ApplicationRegistry;
   createBuilder(): CodingAgentPort;
   onEvent?(type: "initialization_started" | "initialization_attempt" | "initialization_verification_started" |
@@ -106,12 +104,10 @@ export async function initializeProject(options: InitializationOptions): Promise
   try {
     if ((path === "existing" || path === "declared_empty") && options.intent) {
       builder = options.createBuilder();
-      const remaining = options.budgetMs <= 0 ? 180_000 : options.startedAtMs + options.budgetMs - Date.now();
-      if (remaining <= 0) throw new Error("Project initialization budget exhausted; run shallow build again to continue");
       const inspection = await builder.run({
         systemPrompt: await readFile(new URL("../prompts/builder/project-intent-inspection.md", import.meta.url), "utf8"),
         taskPrompt: `用户技术要求：\n${options.intent}`,
-        outputDir, timeoutMs: Math.min(remaining, 180_000), sessionKey: "initialization-inspect", toolMode: "read_only",
+        outputDir, timeoutMs: 180_000, sessionKey: "initialization-inspect", toolMode: "read_only",
       });
       if (inspection.execution?.usage.status === "available") {
         usage.push(inspection.execution.usage);
@@ -134,8 +130,6 @@ export async function initializeProject(options: InitializationOptions): Promise
       }
     }
     for (let attempt = 1; attempt <= 4; attempt++) {
-      const remaining = options.budgetMs <= 0 ? 900_000 : options.startedAtMs + options.budgetMs - Date.now();
-      if (remaining <= 0) throw new Error("Project initialization budget exhausted; run shallow build again to continue");
       await options.onEvent?.("initialization_attempt", { path, attempt });
       verificationAttempt = attempt;
       builder ??= options.createBuilder();
@@ -152,7 +146,7 @@ export async function initializeProject(options: InitializationOptions): Promise
             : "已有运行配置：有；保留其中明确的运行要求。",
           feedback ? `上一次控制器验证失败：${feedback}\n请修正并重新检查。` : "",
         ].filter(Boolean).join("\n\n"),
-        outputDir, timeoutMs: Math.min(remaining, 900_000), sessionKey: "project-initialization",
+        outputDir, timeoutMs: 900_000, sessionKey: "project-initialization",
         ...(workingContract ? { applicationContract: workingContract } : {}),
       });
       if (result.execution?.usage.status === "available") {

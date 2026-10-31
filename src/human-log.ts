@@ -106,7 +106,7 @@ function describe(event: RunEvent): string | null {
     case "initialization_finished":
       return `工程可运行基线已保存；路径 ${pickString(detail, "path")}；业务需求尚未验收`;
     case "phase_started":
-      return `进入${({ implementation: "模块实现", audit: "独立验收", repair: "修复", delivery: "最终交付" } as Record<string, string>)[pickString(detail, "phase") ?? ""] ?? "运行"}阶段${detail?.round ? `；第 ${detail.round} 轮` : ""}${typeof detail?.remainingMs === "number" ? `；阶段剩余 ${renderDuration(detail.remainingMs)}` : ""}`;
+      return `进入${({ implementation: "模块实现", audit: "独立验收", repair: "修复", delivery: "最终交付" } as Record<string, string>)[pickString(detail, "phase") ?? ""] ?? "运行"}阶段${detail?.round ? `；第 ${detail.round} 轮` : ""}`;
     case "checkpoint_saved":
       return `保存可运行检查点；${pickString(detail, "reason")}；需求 ${strings(detail?.requirementIds).join("、")}；SHA ${event.acceptedSha ?? ""}（功能验收状态单独记录）`;
     case "module_failed":
@@ -131,7 +131,7 @@ function describe(event: RunEvent): string | null {
       const verifierText = verifierModel && verifierModel !== model ? `；Verifier 模型 ${verifierModel}` : "";
       const grouperModel = pickString(detail, "grouperModel");
       const grouperText = grouperModel && grouperModel !== model ? `；Grouper 模型 ${grouperModel}` : "";
-      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；预算 ${detail.totalBudgetMs === 0 ? "不限时" : renderDuration(pickNumber(detail, "totalBudgetMs") ?? 0)}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${verifierText}${grouperText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}` : ""}`;
+      return `流水线启动${detail ? `；原子需求 ${pickNumber(detail, "requirements") ?? "未知"}；应用适配器 ${pickString(detail, "adapterId") ?? "未知"}${model ? `；模型 ${model}` : ""}${verifierText}${grouperText}${contextWindow !== null ? `；Builder 上下文 ${contextWindow}` : ""}${groups !== null ? `；功能组 ${groups}` : ""}${scaffoldStatus ? `；通用脚手架 ${scaffoldStatus}` : ""}` : ""}`;
     }
     case "packet_selected":
       return `选定需求包 ${packetId}${strings(detail?.names).length ? `：${strings(detail?.names).join("、")}` : ""}`;
@@ -414,5 +414,5 @@ function renderBytes(bytes: number): string {
 
 function inconclusiveKindText(kind: string): string {
   return ({ planning: "计划生成", coverage: "场景覆盖", preparation: "准备失败", locator: "定位歧义或缺口",
-    execution: "执行故障", review: "语义复核", gateway: "模型网关", budget: "预算耗尽", unreproduced: "失败未复现" } as Record<string, string>)[kind] ?? kind;
+    execution: "执行故障", review: "语义复核", gateway: "模型网关", unreproduced: "失败未复现" } as Record<string, string>)[kind] ?? kind;
 }

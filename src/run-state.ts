@@ -14,7 +14,6 @@ export interface RunStateSnapshot {
   attemptsByPacketId: Record<string, number>;
   acceptedSha: string;
   startedAtMs: number;
-  totalBudgetMs: number;
   ledger: RunEvent[];
 }
 
@@ -22,7 +21,6 @@ export interface InitialRunState {
   statusByRequirementId: Record<string, RequirementStatus>;
   acceptedSha: string;
   startedAtMs: number;
-  totalBudgetMs: number;
 }
 
 export interface LogSink {

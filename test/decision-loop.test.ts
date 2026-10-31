@@ -9,7 +9,7 @@ import type { RunEvent } from "../src/types.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
 test("RunState records unverified checkpoints independently from feature verdicts", () => {
-  const state = new RunStateStore({ statusByRequirementId: { REQ: "todo" }, acceptedSha: "initial", startedAtMs: 0, totalBudgetMs: 0 });
+  const state = new RunStateStore({ statusByRequirementId: { REQ: "todo" }, acceptedSha: "initial", startedAtMs: 0 });
   state.setAcceptedSha("runnable");
   assert.equal(state.snapshot.statusByRequirementId.REQ, "todo");
   state.markRequirements(["REQ"], "inconclusive");
@@ -26,7 +26,6 @@ test("RunState records global transitions and writes a redacted JSONL ledger", a
         statusByRequirementId: { REQ: "todo" },
         acceptedSha: "initial",
         startedAtMs: 0,
-        totalBudgetMs: 10_000,
       },
       ledgerFile,
     );
@@ -64,7 +63,6 @@ test("RunState keeps decisions intact when diagnostic sinks fail", async () => {
         statusByRequirementId: { REQ: "todo" },
         acceptedSha: "initial",
         startedAtMs: 0,
-        totalBudgetMs: 10_000,
       },
       blockedLedgerPath,
       {

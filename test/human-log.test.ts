@@ -113,7 +113,7 @@ test("HumanRunFormatter explains dependency gate savings", () => {
 test("HumanRunFormatter records whether the generic starter scaffold was installed", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-09-27T00:00:00Z", "pipeline_started", {
-    detail: { requirements: 2, totalBudgetMs: 0, adapterId: "web",
+    detail: { requirements: 2, adapterId: "web",
       starterScaffold: { status: "installed", reason: "empty output", files: ["frontend/package.json"] } },
   }));
   assert.match(line, /通用脚手架 installed/);
@@ -181,10 +181,10 @@ test("HumanRunFormatter distinguishes bounded infrastructure recovery from Build
 test("HumanRunFormatter renders feature grouping stats at pipeline start", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-09-16T00:00:00.000Z", "pipeline_started", {
-    detail: { requirements: 24, totalBudgetMs: 0, adapterId: "web", builderContextWindow: 256_000,
+    detail: { requirements: 24, adapterId: "web", builderContextWindow: 256_000,
       grouping: { packets: 6, requirements: 24, maxPacketSize: 5, crossModulePackets: 0, cohesionRate: 0.347, thresholdLimitedPackets: 0 } },
   }));
-  assert.match(line, /流水线启动；原子需求 24；预算 不限时；应用适配器 web；Builder 上下文 256000；功能组 6$/);
+  assert.match(line, /流水线启动；原子需求 24；应用适配器 web；Builder 上下文 256000；功能组 6$/);
 });
 
 test("HumanRunFormatter breaks Builder time into model and tool and reports tokens", () => {
@@ -297,8 +297,8 @@ test("Human logs cover Verifier queue, module checks and cancellation", () => {
     detail: { ...job, status: "cancelled" } })),
     /Verifier 任务已结束（g1）；检查范围由模块收口接续$/);
   assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
-    detail: { ...job, status: "cancelled", reason: "Budget exhausted" } })),
-    /Verifier 任务已结束（g1）；Budget exhausted$/);
+    detail: { ...job, status: "cancelled", reason: "Execution timed out" } })),
+    /Verifier 任务已结束（g1）；Execution timed out$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_started",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", requirementIds: ["A"] } })),
     /开始模块集中检查；版本 snap-2；需求 A$/);

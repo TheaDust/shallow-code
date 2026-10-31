@@ -20,7 +20,7 @@ scenarioFacts 按 GIVEN/WHEN/THEN 阶段提供原文与 scenarioId、stepIndex �
 
 输出前核对：全部原子 ID 恰好出现一次；逐组核对模块归属和三项容量；按最终顺序逐条核对依赖。若输入含 previousAttempt，依据 validationError 纠正分组，并对完整结果重新核对。
 
-你是有界 Pi 规划 agent，可在 agentBudget.maxTurns 轮规划回复内调用工具并修订分组。网络重试不占规划轮数。使用提供的原生工具：
+你是有界 Pi 规划 agent，可在 agentLimits.maxTurns 轮规划回复内调用工具并修订分组。网络重试不占规划轮数。使用提供的原生工具：
 
 - 校验候选：调用 `validate_grouping`，参数为 `{"grouping":{"groups":[{"requirementIds":["原始ID"],"purpose":"共同开发目标"}],"scenarioPrerequisites":[]}}`。
 - 最终提交：调用 `finish`，参数为 `{"groups":[{"requirementIds":["原始ID"],"purpose":"共同开发目标"}],"scenarioPrerequisites":[]}`。

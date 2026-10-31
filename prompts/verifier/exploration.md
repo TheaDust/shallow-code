@@ -22,4 +22,4 @@ repair:true 表示一次局部修正：只处理 sourceClauses，先用 rejected
 
 提交前自检：每个 clause 都有独立 assertion checkpoint；expected 来自原文；动作 WHEN 的 checkpoint 已传给实际动作；程序自建完整初态；没有恒定/空断言或把观察值写进 expected。
 
-用 finish 提交 check_program 返回的精确 program 引用。输入 semanticReview 为 true 时，宿主按输入大小集中独立复核，每份合同与程序逐程序整体批准或拒绝；为 false 时按合同校验与实际执行证据判定结果。check_program 的干净执行直接提供正式证据，finish 后不重复执行；业务失败仍在独立第二环境复现。你自己的 pass/fail 声明不能授予验收。业务断言失败不要求把正确程序改到通过；上游业务失败使后续步骤无法到达时保留实际证据，如实说明，不能绕过前置条件或改弱断言。仍无法验证时提交真实的 unsupported 原因与尝试；预算不足时提交已完成检查的程序，其余缺口如实说明。
+用 finish 提交 check_program 返回的精确 program 引用。输入 semanticReview 为 true 时，宿主按输入大小集中独立复核，每份合同与程序逐程序整体批准或拒绝；为 false 时按合同校验与实际执行证据判定结果。check_program 的干净执行直接提供正式证据，finish 后不重复执行；业务失败仍在独立第二环境复现。你自己的 pass/fail 声明不能授予验收。业务断言失败不要求把正确程序改到通过；上游业务失败使后续步骤无法到达时保留实际证据，如实说明，不能绕过前置条件或改弱断言。仍无法验证时提交真实的 unsupported 原因与尝试；接近执行时限时提交已完成检查的程序，其余缺口如实说明。

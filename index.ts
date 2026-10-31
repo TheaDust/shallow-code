@@ -32,7 +32,7 @@ import type { LogSink } from "./src/run-state.js";
 import { sanitizeDiagnosticText } from "./src/diagnostics.js";
 import { resolveModelRates, type ModelRates } from "./src/model-usage.js";
 import {
-  deriveModelTimeouts,
+  BUILDER_TIMEOUT_MS,
   parseBuilderContextWindow,
   parseVerifierConfig,
   parseRunDirOverride,
@@ -69,10 +69,6 @@ export interface AgentExecutionContext {
   verifierModelCost: ModelRates | null;
   grouperModelCost: ModelRates | null;
   pipelineOptions: PipelineOptions;
-  modelTimeouts: {
-    builderTimeoutMs: number;
-    verifierTimeoutMs: number;
-  };
   /** Mainline Pi context ceiling (`SHALLOW_BUILDER_CONTEXT_WINDOW`). */
   builderContextWindow: number;
   /** Opt-in raw SSE capture directory for the Pi worker (`SHALLOW_CAPTURE_SSE`). */
@@ -171,13 +167,13 @@ export async function main(
       });
       initializationBaseline = await git.captureAccepted("shallow: input before initialization");
       const initState = new RunStateStore({ statusByRequirementId: {}, acceptedSha: initializationBaseline,
-        startedAtMs, totalBudgetMs: cli.budgetMs }, join(runDirectory, "run-ledger.jsonl"),
+        startedAtMs }, join(runDirectory, "run-ledger.jsonl"),
         createRunLogSink(join(runDirectory, "run-log.txt"), undefined, process.stderr,
           initializationTui ? (raw, line) => initializationTui.record(raw, line) : undefined),
         gatewaySecrets(builderGateway, verifierGateway, grouperGateway));
       initialization = await initializeProject({
         outputDir: workingDirectory, privateDir: runDirectory, verify: verifyInitializedWebProject,
-        requirementsContext, intent, env: mergedEnv, startedAtMs, budgetMs: cli.budgetMs, applications,
+        requirementsContext, intent, env: mergedEnv, applications,
         diagnosticSecrets: gatewaySecrets(builderGateway, verifierGateway, grouperGateway),
         createBuilder: () => new PiWorkerClient(builderGateway, join(runDirectory, "pi-sessions"), undefined,
           { ...(builderModelCost ? { modelCost: builderModelCost } : {}), applications }),
@@ -199,7 +195,7 @@ export async function main(
       verifier, requirementDigests,
       requirementsFile: join(requirementSnapshot, "requirements.yaml"),
       outputDir: workingDirectory, ledgerFile: join(runDirectory, "run-ledger.jsonl"),
-      totalBudgetMs: cli.budgetMs, startedAtMs, initializationUsage: initialization?.modelUsage,
+      startedAtMs, initializationUsage: initialization?.modelUsage,
       ...(initialization ? { initialization: { path: initialization.path, intent } } : {}),
       applicationContract, progressDir,
       startingPoint: inheritedProject ? "inherited_application" : "blank_template",
@@ -221,7 +217,7 @@ export async function main(
       ...(initializationTui ? { tui: initializationTui } : {}),
       runRecord, requirementTree: inputCatalog.tree,
       builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost,
-      pipelineOptions, modelTimeouts: deriveModelTimeouts(cli.budgetMs),
+      pipelineOptions,
       builderContextWindow: parseBuilderContextWindow(mergedEnv),
       sseCaptureDir: resolveSseCaptureDir(mergedEnv, join(runDirectory, "sse-capture")),
       referenceImages: referenceImagesEnabled(mergedEnv),
@@ -297,7 +293,7 @@ function gatewaySecrets(...gateways: GatewayConfig[]): string[] {
 async function executeProduction(
   context: AgentExecutionContext,
 ): Promise<RunSummary> {
-  const { builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost, pipelineOptions, requirementTree, modelTimeouts, builderContextWindow, sseCaptureDir, referenceImages } = context;
+  const { builderGateway, verifierGateway, grouperGateway, builderModelCost, verifierModelCost, grouperModelCost, pipelineOptions, requirementTree, builderContextWindow, sseCaptureDir, referenceImages } = context;
   const runLogFile = join(dirname(pipelineOptions.ledgerFile), "run-log.txt");
   // Builder, Grouper and Verifier share one cooldown so a gateway outage pauses
   // every client instead of letting each one discover it independently.
@@ -334,7 +330,7 @@ async function executeProduction(
       applications,
       onProgress: progress => { tui?.view.liveUsage(progress); },
     }), {
-      timeoutMs: modelTimeouts.builderTimeoutMs,
+      timeoutMs: BUILDER_TIMEOUT_MS,
       requirementsDir: dirname(pipelineOptions.requirementsFile),
       contextWindow: builderContextWindow,
       referenceImages,
@@ -440,7 +436,7 @@ async function executeProduction(
         }
       },
       runMetadata: { model: builderGateway.model, verifierModel: verifierGateway.model, grouperModel: grouperGateway.model,
-        builderTimeoutMs: modelTimeouts.builderTimeoutMs,
+        builderTimeoutMs: BUILDER_TIMEOUT_MS,
         builderContextWindow,
         starterScaffold,
         promptSha256: promptHash.digest("hex"),
