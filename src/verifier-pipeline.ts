@@ -11,7 +11,7 @@ import type { DeliveryReport } from "./application/port.js";
 import { parseFeatureGrouping } from "./feature-grouper.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
 import { ModelUsageTotals } from "./model-usage.js";
-import type { PipelineDeps, PipelineOptions, RunSummary } from "./pipeline.js";
+import type { PipelineDeps, PipelineOptions, RunCheckOutcome, RunSummary } from "./pipeline.js";
 import { BUILDER_TIMEOUT_MS } from "./runtime-config.js";
 import { RunStateStore } from "./run-state.js";
 import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket, requirementModuleId } from "./scheduler.js";
@@ -21,7 +21,7 @@ import type { ArtifactStore } from "./verifier/artifacts.js";
 import { atomicWrite, canonicalJson, sameRef } from "./verifier/artifacts.js";
 import type { AcceptanceContract, VerifierProgramDescriptor } from "./verifier/evidence.js";
 import { VerifierCheckpoints, type ProducedSnapshot } from "./verifier/checkpoints.js";
-import { VerifierQueue } from "./verifier/queue.js";
+import { VerifierQueue, type QueueRecord } from "./verifier/queue.js";
 import type { CheckJob, VerifierPort, CheckOutcome, CheckReport, ContentRef, EvidenceReceipt, ExecutionBindingRef, ProgramRef, TypedRef } from "./verifier/port.js";
 import type { SnapshotStore } from "./snapshot-store.js";
 import type { VerifierModelUsage } from "./verifier/model.js";
@@ -39,7 +39,12 @@ export interface VerifierRuntime {
   verifyDelivery(job: CheckJob, signal: AbortSignal): Promise<{ report: DeliveryReport; receipts: ContentRef[] }>;
 }
 const VERIFIER_TIMEOUT_MS = 3_600_000;
-type ScopedOutcome = CheckOutcome & { initialState?: TypedRef; snapshotId?: string };
+type ScopedOutcome = RunCheckOutcome;
+
+function checkTrace(record: QueueRecord) {
+  return { jobId: record.job.jobId, job: record.ref, snapshotId: record.job.snapshot.id,
+    initialState: record.job.initialState, ...(record.report ? { report: record.report } : {}) };
+}
 
 /** Controller-side orchestration; all domain operations are provided by the execution adapter. */
 export class VerifierCoordinator {
@@ -118,7 +123,7 @@ export class VerifierCoordinator {
       timeoutMs };
   }
 
-  async verifyDelivery(head: ProducedSnapshot, packet: WorkPacket, timeoutMs: number, signal: AbortSignal): Promise<DeliveryReport> {
+  async verifyDelivery(head: ProducedSnapshot, packet: WorkPacket, timeoutMs: number, signal: AbortSignal): Promise<{ report: DeliveryReport; jobId: string }> {
     await this.drain();
     const job = await this.createJob(head, packet, "prepare", timeoutMs);
     const { report, receipts } = await this.runtime.verifyDelivery(job, signal);
@@ -126,7 +131,7 @@ export class VerifierCoordinator {
     const checked = report.ok && !ready ? { ok: false, stage: "readiness" as const, message: "Delivery did not produce current readiness evidence" } : report;
     await atomicWrite(join(this.runtime.directory, "delivery", job.jobId + ".json"),
       canonicalJson({ job: await this.runtime.artifacts.putJson(job), report: checked, receipts }));
-    return checked;
+    return { report: checked, jobId: job.jobId };
   }
 
   async report(job: CheckJob): Promise<CheckReport | undefined> {
@@ -291,9 +296,11 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         if (report) {
           await runtime.artifacts.validateReport(record!.job, report);
           outcomes.push(...report.outcomes.filter(item => item.requirementId === requirement.id)
-            .map(item => ({ ...item, initialState: record!.job.initialState, snapshotId: record!.job.snapshot.id })));
+            .map(item => ({ ...item, ...checkTrace(record!) })));
         } else outcomes.push({ requirementId: requirement.id, scenarioId: "<execution>", clauseId: "<execution>",
-          status: "inconclusive", evidence: [], reason: "Verifier did not commit a feature-group report" });
+          status: "inconclusive", evidence: [],
+          ...(record ? checkTrace(record) : { snapshotId: head.snapshot.id }),
+          reason: sanitizeDiagnosticText(record?.error ?? "Verifier did not commit a feature-group report", deps.diagnosticSecrets) });
       }
       return outcomes;
     }
@@ -309,14 +316,16 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     }
     const reports = await Promise.all(jobs.map(job => coordinator.report(job)));
     await coordinator.drain();
+    const records = coordinator.queue.records();
     return reports.flatMap((report, index) => {
+      const record = records.find(item => item.job.jobId === jobs[index].jobId)!;
       const outcomes = report?.outcomes ?? jobs[index].requirementIds.map(requirementId => ({
         requirementId, scenarioId: "<execution>", clauseId: "<execution>", status: "inconclusive" as const,
-        evidence: [], reason: "Verifier did not commit a current report" }));
-      return outcomes.map(outcome => ({ ...outcome, initialState: jobs[index].initialState, snapshotId: jobs[index].snapshot.id }));
+        evidence: [], reason: sanitizeDiagnosticText(record.error ?? "Verifier did not commit a current report", deps.diagnosticSecrets) }));
+      return outcomes.map(outcome => ({ ...outcome, ...checkTrace(record) }));
     });
   };
-  const publish = async (head: ProducedSnapshot, module: string, epoch: number, outcomes: CheckOutcome[], scope: AtomicRequirement[]): Promise<void> => {
+  const publish = async (head: ProducedSnapshot, module: string, epoch: number, outcomes: ScopedOutcome[], scope: AtomicRequirement[]): Promise<void> => {
     for (const requirement of scope) {
       const clauses = outcomes.filter(item => item.requirementId === requirement.id);
       currentResults.set(requirement.id, clauses);
@@ -346,9 +355,11 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     const prepared = await coordinator.report(prepare);
     await coordinator.drain();
     let runnable = coordinator.checkpoints.snapshot.accepted.snapshot?.id === head.snapshot.id;
+    const prepareRecord = coordinator.queue.records().find(item => item.job.jobId === prepare.jobId)!;
     const preparationDiagnostics = prepared ? (await runtime.artifacts.getJson<{ diagnostics?: string[] }>(prepared.manifest)).diagnostics ?? [] : ["No readiness report was committed"];
-    let outcomes = runnable ? await inspect(head, scope, epoch) : scope.map(item => ({ requirementId: item.id,
-      scenarioId: "<readiness>", clauseId: "<readiness>", status: "inconclusive" as const, evidence: [], reason: "Current snapshot readiness failed" }));
+    let outcomes: ScopedOutcome[] = runnable ? await inspect(head, scope, epoch) : scope.map(item => ({ requirementId: item.id,
+      scenarioId: "<readiness>", clauseId: "<readiness>", status: "inconclusive", evidence: [], ...checkTrace(prepareRecord),
+      reason: sanitizeDiagnosticText(prepareRecord.error ?? "Current snapshot readiness failed", deps.diagnosticSecrets) }));
     for (let round = 1; allowRepair && round <= 2; round++) {
       const failedIds = scope.filter(item => outcomes.some(result => result.requirementId === item.id && result.status === "fail")).map(item => item.id);
       if (runnable && !failedIds.length) break;
@@ -358,7 +369,10 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       if (!repairRequirements.length) break;
       const repairPacket = packetFor(`verifier-repair-${module}-${round}`, repairRequirements, round === 1 ? 2 : 3);
       await emitPhase("repair");
-      await state.record({ at: now(), type: "repair_batch_started", detail: { round, requirementIds: repairPacket.requirementIds } });
+      await state.record({ at: now(), type: "repair_batch_started", packetId: repairPacket.id,
+        detail: { round, requirementIds: repairPacket.requirementIds, baselineSnapshotId: baseline.snapshot.id } });
+      const firstCheck = coordinator.queue.records().length;
+      let candidateSnapshotId: string | undefined;
       const observation = await repairObservation(runtime.artifacts, repairPacket, outcomes, !runnable, deps.diagnosticSecrets,
         preparationDiagnostics.join("; ").replaceAll(runtime.directory, "<execution>"));
       const result = await build({ mode: "repair", packet: repairPacket, projectContext: contextFor(repairPacket),
@@ -366,6 +380,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       let retained = false;
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(repairPacket, implemented);
+        candidateSnapshotId = repaired.snapshot.id;
         epoch = await coordinator.checkpoints.nextEpoch();
         const readyJob = await coordinator.submit(repaired, repairPacket, "prepare", VERIFIER_TIMEOUT_MS, { epoch, priority: 0 });
         await coordinator.report(readyJob); await coordinator.drain();
@@ -405,7 +420,12 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       const reason = retained
         ? (replay ? "Current-version improvement and regression replay confirmed" : "Repaired feature-group improvement confirmed")
         : "Repair did not establish improvement with the required evidence";
-      await state.record({ at: now(), type: "repair_batch_finished", detail: { round, retained, reason } });
+      await state.record({ at: now(), type: "repair_batch_finished", packetId: repairPacket.id, detail: {
+        round, retained, reason, baselineSnapshotId: baseline.snapshot.id, candidateSnapshotId,
+        retainedSnapshotId: head!.snapshot.id, requirementIds: repairPacket.requirementIds,
+        checkJobIds: coordinator.queue.records().slice(firstCheck)
+          .filter(item => item.job.snapshot.id === candidateSnapshotId).map(item => item.job.jobId),
+      } });
       if (!retained) break;
     }
     await publish(head!, module, epoch, outcomes, scope);
@@ -503,30 +523,44 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     await emitPhase("delivery");
     await state.record({ at: now(), type: "delivery_started" });
     let delivery: DeliveryReport = { ok: false, stage: "candidate", message: "No sealed application is available" };
+    let deliveryJobId: string | undefined;
     const verifyDelivery = async (candidate: ProducedSnapshot): Promise<DeliveryReport> => {
       const packet = packetFor("delivery", scope.length ? scope : catalog.requirements.slice(0, 1));
       const signal = AbortSignal.timeout(720_000);
       await state.record({ at: now(), type: "delivery_check_started", detail: { snapshotId: candidate.snapshot.id } });
-      const report = await coordinator.verifyDelivery(candidate, packet, VERIFIER_TIMEOUT_MS, signal);
-      await state.record({ at: now(), type: "delivery_check_finished", detail: { snapshotId: candidate.snapshot.id, ...report } });
+      const { report, jobId } = await coordinator.verifyDelivery(candidate, packet, VERIFIER_TIMEOUT_MS, signal);
+      deliveryJobId = jobId;
+      await state.record({ at: now(), type: "delivery_check_finished", detail: { snapshotId: candidate.snapshot.id, jobId, ...report } });
       return report;
     };
     if (head) delivery = await verifyDelivery(head);
     for (let round = 1; head && !delivery.ok && round <= 3; round++) {
       const baseline = head;
-      await state.record({ at: now(), type: "delivery_repair_started", detail: { stage: delivery.stage, message: delivery.message, round } });
+      await state.record({ at: now(), type: "delivery_repair_started", detail: {
+        stage: delivery.stage, message: delivery.message, round, baselineSnapshotId: baseline.snapshot.id } });
+      let candidateSnapshotId: string | undefined;
+      let candidateDeliveryJobId: string | undefined;
+      const firstCheck = coordinator.queue.records().length;
       const result = await build({ mode: "delivery_repair", outputDir: options.outputDir, applicationContract: options.applicationContract,
         deliveryFailure: { stage: delivery.stage, expected: "The application satisfies the declared execution and delivery contract", actual: sanitizeDiagnosticText(delivery.message, deps.diagnosticSecrets) } });
       if (result.outcome === "completed") {
         const repaired = await coordinator.seal(packetFor(`delivery-repair-${round}`, scope.length ? scope : catalog.requirements), implemented);
+        candidateSnapshotId = repaired.snapshot.id;
         const checked = await verifyDelivery(repaired);
+        candidateDeliveryJobId = deliveryJobId;
         if (checked.ok) {
           const epoch = await coordinator.checkpoints.nextEpoch();
           const outcomes = await inspect(repaired, scope, epoch);
           const guards = [...currentResults.values()].flat().filter(item => item.status === "pass");
           if (!replay || guards.every(item => outcomes.filter(next => outcomeKey(next) === outcomeKey(item)).length > 0 &&
             outcomes.filter(next => outcomeKey(next) === outcomeKey(item)).every(next => next.status === "pass"))) {
-            head = repaired; delivery = checked; await publish(repaired, "<delivery>", epoch, outcomes, scope); break;
+            head = repaired; delivery = checked; await publish(repaired, "<delivery>", epoch, outcomes, scope);
+            await state.record({ at: now(), type: "delivery_repair_accepted", detail: {
+              round, baselineSnapshotId: baseline.snapshot.id, candidateSnapshotId, retainedSnapshotId: repaired.snapshot.id,
+              deliveryJobId: candidateDeliveryJobId,
+              checkJobIds: coordinator.queue.records().slice(firstCheck).map(item => item.job.jobId),
+            } });
+            break;
           }
         }
       }
@@ -534,7 +568,11 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       await runtime.snapshots.restore(baseline.snapshot, options.outputDir, { generatedPaths: options.applicationContract.generatedPaths, dataPaths: options.applicationContract.dataPaths });
       await coordinator.checkpoints.restore(baseline);
       state.setAcceptedSha(coordinator.checkpoints.snapshot.accepted.sha);
-      await state.record({ at: now(), type: "delivery_repair_restored", detail: { round } });
+      await state.record({ at: now(), type: "delivery_repair_restored", detail: {
+        round, baselineSnapshotId: baseline.snapshot.id, candidateSnapshotId, retainedSnapshotId: baseline.snapshot.id,
+        deliveryJobId: candidateDeliveryJobId,
+        checkJobIds: coordinator.queue.records().slice(firstCheck).map(item => item.job.jobId),
+      } });
       delivery = await verifyDelivery(baseline);
     }
     if (head && !delivery.ok && coordinator.checkpoints.snapshot.accepted.sha !== head.sourceSha) {

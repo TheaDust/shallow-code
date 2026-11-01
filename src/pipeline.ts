@@ -8,6 +8,7 @@ import type { GatewayRecovery } from "./gateway-recovery.js";
 import type { ModelUsageSummary } from "./model-usage.js";
 import type { ApplicationContract, DeliveryReport } from "./application/port.js";
 import type { InconclusiveKind, RunScenarioResult } from "./types.js";
+import type { CheckOutcome, ContentRef, TypedRef } from "./verifier/port.js";
 
 export interface PipelineDeps {
   verifier: VerifierRuntime;
@@ -41,10 +42,19 @@ export interface PipelineOptions {
   requirementDigests?: Record<string, string>;
 }
 
+/** Controller provenance stays outside the Verifier's formal outcome contract. */
+export interface RunCheckOutcome extends CheckOutcome {
+  snapshotId?: string;
+  initialState?: TypedRef;
+  jobId?: string;
+  job?: ContentRef;
+  report?: ContentRef;
+}
+
 export interface RunSummary {
   verifier?: { mode: "active"; producedHead?: import("./verifier/checkpoints.js").ProducedSnapshot;
     semanticReview?: boolean; replay?: boolean;
-    verifiedSnapshotId?: string; outcomes?: Array<import("./verifier/port.js").CheckOutcome & { snapshotId?: string }> };
+    verifiedSnapshotId?: string; outcomes?: RunCheckOutcome[] };
   status: "delivered" | "partial" | "failed";
   verifiedRequirementIds: string[];
   blockedRequirementIds: string[];

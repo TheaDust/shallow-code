@@ -10,7 +10,8 @@ import { runGit } from "./git-ops.js";
 import { formatModelUsageSummary } from "./model-usage.js";
 import type { VerifierConfig } from "./runtime-config.js";
 import { ArtifactStore } from "./verifier/artifacts.js";
-import type { EvidenceReceipt } from "./verifier/port.js";
+import type { CheckJob, ContentRef, EvidenceReceipt } from "./verifier/port.js";
+import { verifierSourceClauses, type VerifierProgramDescriptor, type VerifierRequirements } from "./verifier/evidence.js";
 
 export interface RunRecord {
   version: 4;
@@ -120,7 +121,7 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary):
       "| 需求 / 场景 | 当前状态 | 原因 |", "| --- | --- | --- |",
       ...summary.scenarioResults!.map(s => `| ${s.requirementId} / ${s.scenarioId} | ${s.status} | ${(s.reason ?? "").replace(/[\r\n|]/g, " ")} |`), ""] : []),
     ...(summary.modelUsage ? ["模型用量：", "", ...formatModelUsageSummary(summary.modelUsage).map(line => `- ${line}`), ""] : []),
-    "完整执行记录与失败证据见同目录 run-ledger.jsonl 和 evidence/。", "",
+    "执行事件见 [运行账本](run-ledger.jsonl)，验收任务与原始证据保存在 verifier/。", "",
   ].join("\n"), "utf8");
   if (summary.verifier?.outcomes) await writeVerifierExplanation(runDirectory, summary);
 }
@@ -133,23 +134,43 @@ async function writeVerifierExplanation(runDirectory: string, summary: RunSummar
     ...(summary.verifier!.semanticReview !== undefined ? [`独立语义复核：${summary.verifier!.semanticReview ? "开启" : "关闭"}；历史程序重放：${summary.verifier!.replay ? "开启" : "关闭"}`, ""] : []),
     "每项结果记录需求依据、执行观察与断言；链接指向本次运行保存的原始证据。", ""];
   const quote = (value: unknown): string => String(value).replace(/[\r\n]+/g, " ").replaceAll("|", "\\|");
+  const link = (label: string, ref: ContentRef): string => `[${label}](verifier/objects/${ref.id})`;
   for (const outcome of summary.verifier!.outcomes!) {
     lines.push(`## ${quote(outcome.requirementId)} / ${quote(outcome.scenarioId)} / ${quote(outcome.clauseId)}`, "",
       `结论：${outcome.status}${outcome.reason ? `；${quote(outcome.reason)}` : ""}`, "");
     if (outcome.snapshotId) lines.push(`检查快照：${quote(outcome.snapshotId)}`, "");
+    let basisShown = false;
+    if (outcome.job) {
+      const job = await store.getJson<CheckJob>(outcome.job);
+      const input = await store.getJson<VerifierRequirements>(job.requirements);
+      const basis = verifierSourceClauses(input, [outcome.requirementId]).find(clause => clause.id === outcome.clauseId)?.basis
+        ?? input.requirements.find(item => item.id === outcome.requirementId)?.text;
+      if (basis) { lines.push(`原文依据：${quote(basis)}`, ""); basisShown = true; }
+      lines.push(`验收任务：${quote(job.jobId)}；模式 ${job.mode}；尝试 ${job.attempt}；epoch ${job.moduleEpoch}`, "",
+        [link("任务", outcome.job), link("需求快照", job.requirements), link("执行绑定", job.binding), link("初态", job.initialState),
+          ...(outcome.report ? [link("检查报告", outcome.report)] : [])].join(" · "), "");
+    }
     const seen = new Set<string>();
+    const programs = new Set<string>();
     for (const ref of outcome.evidence) {
       if (seen.has(ref.digest)) continue;
       seen.add(ref.digest);
       const receipt = await store.getJson<EvidenceReceipt>(ref);
-      if (receipt.program && receipt.kind === "assertion") {
+      if (!basisShown && receipt.program && receipt.kind === "assertion") {
         const contract = await store.getJson<{ clauses: Array<{ id: string; basis: string }> }>(receipt.program.contract);
         const clause = contract.clauses.find(item => item.id === outcome.clauseId);
-        if (clause) lines.push(`原文依据：${quote(clause.basis)}`, "");
+        if (clause) { lines.push(`原文依据：${quote(clause.basis)}`, ""); basisShown = true; }
+      }
+      if (receipt.program && !programs.has(receipt.program.descriptor.id)) {
+        programs.add(receipt.program.descriptor.id);
+        const descriptor = await store.readTypedJson<VerifierProgramDescriptor>(receipt.program.descriptor);
+        lines.push([link("验收合同", receipt.program.contract), link("程序描述", receipt.program.descriptor),
+          link("检查程序源码", descriptor.source)].join(" · "), "");
       }
       const payload = await store.readTypedJson(receipt.payload);
-      lines.push(`- ${receipt.kind}${receipt.checkpointId ? ` / ${quote(receipt.checkpointId)}` : ""}；环境 ${receipt.environment.id.slice(0, 12)}；[收据](verifier/objects/${ref.id})`, "",
+      lines.push(`- ${receipt.kind}${receipt.checkpointId ? ` / ${quote(receipt.checkpointId)}` : ""}；环境 ${receipt.environment.id.slice(0, 12)}；${link("收据", ref)}`, "",
         "```json", JSON.stringify(payload, null, 2).replaceAll("```", "\\u0060\\u0060\\u0060"), "```", "");
+      if (receipt.attachments.length) lines.push(receipt.attachments.map((attachment, index) => link(`附件 ${index + 1}`, attachment)).join(" · "), "");
     }
   }
   await writeFile(join(runDirectory, "verifier-report.md"), lines.join("\n"), { encoding: "utf8", mode: 0o600 });

@@ -352,6 +352,15 @@ test("default switches aggregate group snapshots without historical replay, incl
     assert.equal(result.verifier?.verifiedSnapshotId, undefined);
     const first = jobs.find(job => job.mode === "discover" && job.requirementIds.includes("A"))!;
     assert(result.verifier?.outcomes?.filter(item => item.requirementId === "A").every(item => item.snapshotId === first.snapshot.id));
+    for (const outcome of result.verifier!.outcomes!) {
+      assert.ok(outcome.job && outcome.report);
+      const job = await runtime.artifacts.getJson<CheckJob>(outcome.job);
+      const report = await runtime.artifacts.getJson<CheckReport>(outcome.report);
+      assert.equal(outcome.jobId, job.jobId);
+      assert.equal(outcome.snapshotId, job.snapshot.id);
+      assert.equal(report.job.id, outcome.job.id);
+      assert.ok(report.outcomes.some(item => item.clauseId === outcome.clauseId));
+    }
     await writeRunReport(dirname(f.options.ledgerFile), result);
     const report = await readFile(join(dirname(f.options.ledgerFile), "verifier-report.md"), "utf8");
     assert.match(report, /独立语义复核：关闭；历史程序重放：关闭/);
@@ -364,6 +373,34 @@ test("default switches aggregate group snapshots without historical replay, incl
     assert.equal(resumed.status, "delivered");
     assert(jobs.slice(previousJobs).every(job => job.mode === "prepare"));
     assert.deepEqual(resumed.verifier?.outcomes, result.verifier?.outcomes);
+  });
+});
+
+test("Failed Verifier tasks retain their task references and redacted errors with replay enabled or disabled", async () => {
+  for (const replay of [false, true]) await withModulePipeline(async f => {
+    const runtime = await attach(f, async job => {
+      if (job.mode !== "prepare") throw new Error("Verifier connection closed: private-credential");
+    });
+    f.options.verifier.replay = replay;
+    f.deps.diagnosticSecrets = ["private-credential"];
+    const result = await f.run();
+    assert.equal(result.status, "partial");
+    assert.deepEqual(result.inconclusiveRequirementIds?.sort(), ["A", "B", "C"]);
+    for (const outcome of result.verifier!.outcomes!) {
+      assert.equal(outcome.status, "inconclusive");
+      assert.deepEqual(outcome.evidence, []);
+      assert.equal(outcome.report, undefined);
+      assert.ok(outcome.job && outcome.jobId && outcome.snapshotId);
+      const job = await runtime.artifacts.getJson<CheckJob>(outcome.job);
+      assert.equal(outcome.jobId, job.jobId);
+      assert.equal(outcome.snapshotId, job.snapshot.id);
+      assert.match(outcome.reason!, /Verifier connection closed: \[redacted\]/);
+    }
+    await writeRunReport(dirname(f.options.ledgerFile), result);
+    const report = await readFile(join(dirname(f.options.ledgerFile), "verifier-report.md"), "utf8");
+    assert.match(report, /原文依据：/);
+    assert.match(report, /验收任务：/);
+    assert.doesNotMatch(report, /private-credential/);
   });
 });
 
@@ -658,7 +695,16 @@ test("Rejected repair restores the complete module, including B produced after A
     assert.deepEqual(result.failedRequirementIds, ["A"]);
     assert.equal(await readFile(join(f.options.outputDir, "later-B.txt"), "utf8"), "B preserved");
     await assert.rejects(readFile(join(f.options.outputDir, "repaired.txt")));
-    assert.ok((await f.events()).some(item => item.type === "repair_batch_finished" && item.detail?.retained === false));
+    const events = await f.events();
+    const decision = events.find(item => item.type === "repair_batch_finished" && item.detail?.retained === false);
+    assert.ok(decision?.type === "repair_batch_finished" && decision.detail);
+    assert.ok(decision.packetId);
+    assert.notEqual(decision.detail.candidateSnapshotId, decision.detail.baselineSnapshotId);
+    assert.equal(decision.detail.retainedSnapshotId, decision.detail.baselineSnapshotId);
+    assert.ok(decision.detail.checkJobIds!.length > 0);
+    const checks = events.filter(item => item.type === "check_queued" && decision.detail!.checkJobIds!.includes(item.detail!.jobId));
+    assert.equal(checks.length, decision.detail.checkJobIds!.length);
+    assert.ok(checks.every(item => item.type === "check_queued" && item.detail!.snapshotId === decision.detail!.candidateSnapshotId));
   });
 });
 
@@ -725,13 +771,51 @@ test("Repair retains partial improvement and checks each packet once per round f
     const result = await f.run();
     assert.equal(result.status, "partial"); assert.deepEqual(result.failedRequirementIds, ["A"]);
     assert.ok(result.verifiedRequirementIds.includes("B"));
-    assert.ok((await f.events()).some(item => item.type === "repair_batch_finished" && item.detail?.retained === true));
+    const decision = (await f.events()).find(item => item.type === "repair_batch_finished" && item.detail?.retained === true);
+    assert.ok(decision?.type === "repair_batch_finished" && decision.detail);
+    assert.notEqual(decision.detail.baselineSnapshotId, decision.detail.candidateSnapshotId);
+    assert.equal(decision.detail.retainedSnapshotId, decision.detail.candidateSnapshotId);
+    assert.ok(decision.detail.checkJobIds!.length > 0);
     assert.ok(jobs.every(job => job.initialState.id === runtime.initialState.id));
     assert.ok(jobs.every(job => job.timeoutMs === 3_600_000));
     const audit = jobs.filter(job => job.mode !== "prepare");
     for (const epoch of new Set(audit.map(job => job.moduleEpoch))) {
       const round = audit.filter(job => job.moduleEpoch === epoch);
       assert.equal(new Set(round.map(job => job.packetId)).size, round.length);
+    }
+  });
+});
+
+test("Delivery repair decisions link retained versions and their persisted delivery checks", async () => {
+  for (const retained of [false, true]) await withModulePipeline(async f => {
+    const runtime = await attach(f);
+    const verify = runtime.verifyDelivery.bind(runtime);
+    runtime.verifyDelivery = async (job, signal) => {
+      const snapshot = await runtime.snapshots.open(job.snapshot);
+      const fixed = await readFile(join(snapshot.sourceDirectory, "delivery-fixed.txt")).then(() => true, () => false);
+      return retained && fixed ? verify(job, signal)
+        : { report: { ok: false, stage: "readiness", message: "Delivery needs repair" }, receipts: [] };
+    };
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      if (request.mode === "delivery_repair") await writeFile(join(f.options.outputDir, "delivery-fixed.txt"), "fixed");
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, retained ? "delivered" : "failed");
+    const decisions = (await f.events()).filter(item => item.type === "delivery_repair_accepted" || item.type === "delivery_repair_restored");
+    assert.equal(decisions.length, retained ? 1 : 3);
+    for (const decision of decisions) {
+      assert.ok(decision.type === "delivery_repair_accepted" || decision.type === "delivery_repair_restored");
+      const detail = decision.detail!;
+      assert.notEqual(detail.candidateSnapshotId, detail.baselineSnapshotId);
+      assert.equal(detail.retainedSnapshotId, retained ? detail.candidateSnapshotId : detail.baselineSnapshotId);
+      assert.ok(detail.deliveryJobId);
+      const check = JSON.parse(await readFile(join(runtime.directory, "delivery", `${detail.deliveryJobId}.json`), "utf8"));
+      const job = await runtime.artifacts.getJson<CheckJob>(check.job);
+      assert.equal(job.snapshot.id, detail.candidateSnapshotId);
+      assert.equal(check.report.ok, retained);
     }
   });
 });

@@ -167,8 +167,10 @@ interface RunEventDetails {
   run_resumed: { requirementIds: string[] };
   module_failed: { requirementIds: string[]; reason: string };
   module_rescued: { requirementIds: string[]; reason: string };
-  repair_batch_started: { round: number; requirementIds: string[] };
+  repair_batch_started: { round: number; requirementIds: string[]; baselineSnapshotId?: string };
   repair_batch_finished: { round: number; retained: boolean; reason: string; improvedCases?: number; resolvedGaps?: number;
+    baselineSnapshotId?: string; candidateSnapshotId?: string; retainedSnapshotId?: string;
+    requirementIds?: string[]; checkJobIds?: string[];
     requirementResults?: Record<string, "verified" | "failed" | "inconclusive">;
     scenarioResults?: RunScenarioResult[]; scenarioCoverage?: ScenarioCoverageCounts };
   repair_paused: { requirementIds: string[]; failure: import("./gateway-failure.js").GatewayFailure };
@@ -201,10 +203,12 @@ interface RunEventDetails {
   execution_fault: DiagnosticDetail;
   delivery_started: Record<string, never>;
   delivery_check_started: { snapshotId: string };
-  delivery_check_finished: { snapshotId: string; ok: boolean; stage: string; message: string };
-  delivery_repair_started: { stage: string; message: string; round?: number };
-  delivery_repair_accepted: { candidate?: CandidateEvidence };
-  delivery_repair_restored: { round?: number };
+  delivery_check_finished: { snapshotId: string; ok: boolean; stage: string; message: string; jobId?: string };
+  delivery_repair_started: { stage: string; message: string; round?: number; baselineSnapshotId?: string };
+  delivery_repair_accepted: { candidate?: CandidateEvidence; round?: number;
+    baselineSnapshotId?: string; candidateSnapshotId?: string; retainedSnapshotId?: string; checkJobIds?: string[]; deliveryJobId?: string };
+  delivery_repair_restored: { round?: number;
+    baselineSnapshotId?: string; candidateSnapshotId?: string; retainedSnapshotId?: string; checkJobIds?: string[]; deliveryJobId?: string };
   delivery_finished: { ok: boolean; stage: string; message: string };
   pipeline_finished: { status: "delivered" | "partial" | "failed"; verifiedRequirementIds: string[];
     blockedRequirementIds: string[]; implementedRequirementIds?: string[]; failedRequirementIds?: string[]; inconclusiveRequirementIds?: string[]; pendingRequirementIds: string[]; acceptedSha: string; memory?: Record<string, unknown>;

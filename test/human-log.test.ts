@@ -69,6 +69,20 @@ test("Repair logs distinguish case improvement from a fully verified requirement
   assert.match(line, /新增通过用例 1，已解决准备\/控件缺口 2/);
 });
 
+test("Repair logs identify the candidate and retained snapshots", () => {
+  const formatter = new HumanRunFormatter();
+  const at = "2026-11-01T00:00:00Z";
+  assert.match(formatLine(formatter, eventLine(at, "repair_batch_finished", { detail: {
+    round: 1, retained: false, baselineSnapshotId: "base", candidateSnapshotId: "candidate", retainedSnapshotId: "base",
+  } })), /基线 base；候选 candidate；保留 base/);
+  assert.match(formatLine(formatter, eventLine(at, "delivery_repair_accepted", { detail: {
+    baselineSnapshotId: "base", candidateSnapshotId: "candidate", retainedSnapshotId: "candidate",
+  } })), /交付修复验收通过；基线 base；保留 candidate/);
+  assert.match(formatLine(formatter, eventLine(at, "delivery_repair_restored", { detail: {
+    round: 1, baselineSnapshotId: "base", retainedSnapshotId: "base",
+  } })), /候选 未封存；保留 base/);
+});
+
 test("Gateway recovery logs distinguish saved code from completed requirements", () => {
   const formatter = new HumanRunFormatter();
   const at = "2026-09-20T00:00:00Z";

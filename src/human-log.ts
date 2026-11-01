@@ -116,7 +116,7 @@ function describe(event: RunEvent): string | null {
     case "repair_batch_started":
       return `开始第 ${detail?.round} 轮修复；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "repair_batch_finished":
-      return `第 ${detail?.round} 轮修复${detail?.retained ? "已保存" : "已恢复原检查点"}${detail?.retained && (detail.improvedCases || detail.resolvedGaps) ? `；新增通过用例 ${detail.improvedCases ?? 0}，已解决准备/控件缺口 ${detail.resolvedGaps ?? 0}` : ""}${scenarioCoverageText(detail)}${reason ? `；${reason}` : ""}`;
+      return `第 ${detail?.round} 轮修复${detail?.retained ? "已保存" : "已恢复原检查点"}${detail?.retained && (detail.improvedCases || detail.resolvedGaps) ? `；新增通过用例 ${detail.improvedCases ?? 0}，已解决准备/控件缺口 ${detail.resolvedGaps ?? 0}` : ""}${scenarioCoverageText(detail)}${detail?.baselineSnapshotId ? `；基线 ${pickString(detail, "baselineSnapshotId")}；候选 ${pickString(detail, "candidateSnapshotId") || "未封存"}；保留 ${pickString(detail, "retainedSnapshotId")}` : ""}${reason ? `；${reason}` : ""}`;
     case "repair_paused":
       return `模型网关故障，暂停本轮修复并等待恢复后重试（${packetId}）；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "pipeline_started": {
@@ -196,15 +196,15 @@ function describe(event: RunEvent): string | null {
     case "delivery_check_started":
       return `检查交付运行合同；版本 ${pickString(detail, "snapshotId")}`;
     case "delivery_check_finished":
-      return `交付运行合同检查${detail?.ok ? "通过" : "未通过"}；版本 ${pickString(detail, "snapshotId")}${message ? `；${message}` : ""}`;
+      return `交付运行合同检查${detail?.ok ? "通过" : "未通过"}；版本 ${pickString(detail, "snapshotId")}${detail?.jobId ? `；任务 ${pickString(detail, "jobId")}` : ""}${message ? `；${message}` : ""}`;
     case "delivery_repair_started":
       return `最终验收未通过（${pickString(detail, "stage")}），启动交付修复${
         pickNumber(detail, "round") ? `第 ${pickNumber(detail, "round")} 轮` : ""
       }${message ? `：${message}` : ""}`;
     case "delivery_repair_accepted":
-      return "交付修复验收通过";
+      return `交付修复验收通过${detail?.retainedSnapshotId ? `；基线 ${pickString(detail, "baselineSnapshotId")}；保留 ${pickString(detail, "retainedSnapshotId")}` : ""}`;
     case "delivery_repair_restored":
-      return `交付修复未被接受，已恢复最后接受状态${pickNumber(detail, "round") ? `（第 ${pickNumber(detail, "round")} 轮）` : ""}`;
+      return `交付修复未被接受，已恢复最后接受状态${pickNumber(detail, "round") ? `（第 ${pickNumber(detail, "round")} 轮）` : ""}${detail?.baselineSnapshotId ? `；候选 ${pickString(detail, "candidateSnapshotId") || "未封存"}；保留 ${pickString(detail, "retainedSnapshotId")}` : ""}`;
     case "pipeline_failed":
       return `流水线异常退出，已回滚${message ? `：${message}` : ""}`;
     case "delivery_finished": {
