@@ -2,7 +2,7 @@ import { access, copyFile, mkdir, readFile, readdir, realpath } from "node:fs/pr
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve, relative, isAbsolute } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { PromptBuilder } from "./src/builder/prompt-builder.js";
@@ -49,7 +49,8 @@ import { RunStateStore } from "./src/run-state.js";
 import { applications } from "./src/adapters/index.js";
 import { verifierAdapters } from "./src/adapters/verifier.js";
 import { hasProjectFiles } from "./src/project-workspace.js";
-import { digest, lockWorkspace, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
+import { assertPrivateRunDirectory, digest, lockWorkspace, saveRunRecord, snapshotFiles, writeRunReport, type RunRecord } from "./src/run-record.js";
+export { assertPrivateRunDirectory } from "./src/run-record.js";
 import { loadRequirementCatalog } from "./src/catalog.js";
 import { readImplementationDigests, requirementDigest, saveRequirementDigests } from "./src/requirement-progress.js";
 
@@ -448,16 +449,6 @@ async function executeProduction(
   } finally {
     if (!keepTui) tui?.stop();
   }
-}
-
-export async function assertPrivateRunDirectory(outputDir: string, runDir: string): Promise<void> {
-  const contained = (candidate: string, controller: string): boolean => {
-    const path = relative(candidate, controller);
-    return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith("..\\") && !path.startsWith("../"));
-  };
-  if (contained(resolve(outputDir), resolve(runDir))) throw new Error("Run diagnostics directory must be outside the candidate output directory");
-  await mkdir(runDir, { recursive: true, mode: 0o700 });
-  if (contained(await realpath(outputDir), await realpath(runDir))) throw new Error("Run diagnostics directory resolves inside the candidate output directory");
 }
 
 /** 完整文本日志持续写入文件；交互终端可将同一事件投影为摘要。 */

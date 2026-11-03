@@ -153,4 +153,21 @@ Windows 下将配置中的 `npm` 换成 `npm.cmd`。`start` 必填，命令的 `
 
 ## 开发
 
+### Builder 自检 baseline
+
+实验对照使用同一个 Pi 编码 Agent，一次接收完整需求，自主实现、测试并根据自检修复。它复用工程初始化、Builder 模型配置、工具、技能和项目运行合同，开发阶段由一个会话完成。
+
+```powershell
+npm.cmd run baseline -- --requirements-dir <需求目录> --output-dir <新项目目录>
+npm.cmd run baseline -- --requirements-dir <需求目录> --project <已有项目目录> --timeout-ms 5400000
+```
+
+默认读取仓库 `.env`，进程环境变量优先；使用 `SHALLOW_BUILDER_*` 模型、网关、单价及上下文配置。`--timeout-ms` 为整段开发会话的时间上限，默认 90 分钟，包含参考图片预检及降级重试；初始化与最终技术检查单独计时，总耗时包含所有阶段。参考图片沿用 `SHALLOW_REFERENCE_IMAGES`。
+
+私有记录位于 `SHALLOW_RUN_DIR` 或临时目录的 `shallowcode-runs/baseline-*`：`baseline.json` 保存模型配置、需求摘要、初始化前后的文件摘要和运行合同，`prompt.json` 保存开发提示词，`self-check.md` 保存 Agent 自检回复，`result.json` 保存状态、模型用量、最终文件摘要与耗时，Pi 会话保存在同一运行目录。初始化和图片预检的已知用量计入总量；`usageComplete: false` 表示有执行用量缺失，费用仅为已知部分。
+
+退出码 0 表示 Agent 正常结束且最终技术检查通过；退出码 1 包括执行失败、超时、运行配置改变或技术检查失败。技术检查在独立副本中安装、构建并打开应用入口，不向 Agent 反馈。需求满足率须由另行准备的隐藏测试在最终版本评估。对照实验使用相同输入和初始工程、固定模型及配置，记录各方法实际总投入；此入口自身不保证与完整 Shallow 管线等预算。
+
+ARC 两组实验使用 `npm.cmd run experiment -- <list|plan|prepare|run|summarize>`，默认输入为相邻的 `../arc-bench`。任务筛选、统一生成时限、独立评分、断点续跑与结果汇总见 [实验说明](EXPERIMENTS.md)。
+
 源码索引、修改约定与局部验证入口见 [AGENTS.md](AGENTS.md)。完整检查使用 `npm.cmd run test:all`；真实网关冒烟需设置 `RUN_CREDENTIAL_SMOKE=1` 并提供凭证，默认跳过。

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { NON_APPLICATION_METADATA } from "./controller-metadata.js";
 import type { ProjectSpec } from "./project-spec.js";
 import { parseProjectSpec } from "./project-spec.js";
@@ -33,6 +33,16 @@ export interface RunRecord {
 
 export function digest(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
+}
+
+export async function assertPrivateRunDirectory(outputDir: string, runDir: string): Promise<void> {
+  const contained = (candidate: string, controller: string): boolean => {
+    const path = relative(candidate, controller);
+    return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith("..\\") && !path.startsWith("../"));
+  };
+  if (contained(resolve(outputDir), resolve(runDir))) throw new Error("Run diagnostics directory must be outside the candidate output directory");
+  await mkdir(runDir, { recursive: true, mode: 0o700 });
+  if (contained(await realpath(outputDir), await realpath(runDir))) throw new Error("Run diagnostics directory resolves inside the candidate output directory");
 }
 
 /** Hash bytes rather than Git state: an input may contain staged and untracked edits. */
