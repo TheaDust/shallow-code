@@ -74,7 +74,7 @@ function describe(event: RunEvent): string | null {
     case "check_completed":
       return `Verifier 检查${detail?.status === "failed" || detail?.status === "interrupted" ? "未完成" : "完成"}（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
     case "check_cancelled":
-      return `Verifier 任务已结束（${packetId}）；${reason ?? "检查范围由模块收口接续"}`;
+      return `Verifier 任务已结束（${packetId}）；${reason ?? "检查范围由最终验收接续"}`;
     case "module_check_started":
       return `开始最终范围检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "module_check_finished":
