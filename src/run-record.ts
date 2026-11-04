@@ -116,8 +116,8 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary):
   await writeFile(join(runDirectory, "report.md"), [
     `运行结果：${summary.status}`, ``, `可运行检查点：${summary.acceptedSha}`, ``,
     ...(summary.verifier?.semanticReview !== undefined ? [
-      `Verifier 设置：独立语义复核${summary.verifier.semanticReview ? "开启" : "关闭"}；历史程序重放${summary.verifier.replay ? "开启" : "关闭"}。`, "",
-      ...(summary.verifier.replay === false ? ["验收结果按各功能组原检查快照汇总，逐项快照见 Verifier 验收证据。", ""] : []),
+      `Verifier 设置：独立语义复核${summary.verifier.semanticReview ? "开启" : "关闭"}；最终全量重放${summary.verifier.replay ? "开启" : "关闭"}。`, "",
+      ...(summary.verifier.replay === false ? ["验收结果按各功能组及局部修复的原检查快照汇总，逐项快照见 Verifier 验收证据；不代表最终版本全量验收。", ""] : []),
     ] : []),
     ...(summary.delivery ? [`交付检查：${summary.delivery.stage} — ${summary.delivery.message}`, ``] : []),
     "| 需求 | 当前状态 |", "| --- | --- |", ...rows, "",
@@ -138,10 +138,10 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary):
 
 async function writeVerifierExplanation(runDirectory: string, summary: RunSummary): Promise<void> {
   const store = new ArtifactStore(join(runDirectory, "verifier"), "report-reader");
-  const checkedVersion = summary.verifier!.verifiedSnapshotId
-    ?? (summary.verifier!.replay === false ? "按功能组原检查快照汇总" : "尚未确认");
+  const checkedVersion = summary.verifier!.checkedSnapshotId ?? summary.verifier!.verifiedSnapshotId
+    ?? (summary.verifier!.replay === false ? "按功能组及局部修复检查快照汇总" : "尚未确认");
   const lines = ["# Verifier 验收证据", "", `当前检查版本：${checkedVersion}`, "",
-    ...(summary.verifier!.semanticReview !== undefined ? [`独立语义复核：${summary.verifier!.semanticReview ? "开启" : "关闭"}；历史程序重放：${summary.verifier!.replay ? "开启" : "关闭"}`, ""] : []),
+    ...(summary.verifier!.semanticReview !== undefined ? [`独立语义复核：${summary.verifier!.semanticReview ? "开启" : "关闭"}；最终全量重放：${summary.verifier!.replay ? "开启" : "关闭"}`, ""] : []),
     "每项结果记录需求依据、执行观察与断言；链接指向本次运行保存的原始证据。", ""];
   const quote = (value: unknown): string => String(value).replace(/[\r\n]+/g, " ").replaceAll("|", "\\|");
   const link = (label: string, ref: ContentRef): string => `[${label}](verifier/objects/${ref.id})`;

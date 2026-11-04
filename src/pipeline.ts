@@ -54,6 +54,7 @@ export interface RunCheckOutcome extends CheckOutcome {
 export interface RunSummary {
   verifier?: { mode: "active"; producedHead?: import("./verifier/checkpoints.js").ProducedSnapshot;
     semanticReview?: boolean; replay?: boolean;
+    checkedSnapshotId?: string;
     verifiedSnapshotId?: string; outcomes?: RunCheckOutcome[] };
   status: "delivered" | "partial" | "failed";
   verifiedRequirementIds: string[];

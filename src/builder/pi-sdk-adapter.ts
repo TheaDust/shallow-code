@@ -18,6 +18,7 @@ import { GatewayRequestError, providerErrorMessage, type GatewayFailure } from "
 import { createPiGateway, piGatewaySettings } from "../pi-gateway.js";
 import type { BuilderCapabilityPack } from "../application/port.js";
 import type { ModelRates } from "../model-usage.js";
+import { createRepairDiffTool } from "./repair-diff.js";
 
 type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | "timeoutMs" | "contextWindow" | "applicationContract" | "toolMode"> & {
   gateway: GatewayConfig;
@@ -25,6 +26,7 @@ type PiSessionOptions = Pick<CodingAgentRequest, "outputDir" | "systemPrompt" | 
   sessionFile?: string;
   /** 控制器解析出的单价（USD / 百万 token）；注册后 SDK 负责换算会话花费。 */
   modelCost?: ModelRates;
+  repairDiffAvailable?: boolean;
 };
 
 export interface PiSessionSnapshot extends ExecutionSummary {
@@ -75,7 +77,8 @@ function createTools(input: PiSessionOptions, skillFiles: readonly string[], cap
   const shell = createBashToolDefinition(cwd, { operations: { exec: createShellExecutor(cwd, contract, privateDirectory) } });
   shell.name = "shell";
   shell.description = `Run a short ${process.platform === "win32" ? "PowerShell" : "Bash"} command in the application. Use this for file searches, builds and type checks; run tests with the run_tests tool instead. ${contract ? "Use the app tool to manage application checks." : "Do not leave persistent application processes running."}`;
-  const tools: PiTool[] = [...files, shell, ...[...createBuilderTools(cwd, Boolean(contract), contract), ...(capabilities?.tools ?? [])].map(toPiTool)];
+  const tools: PiTool[] = [...files, shell, ...[...createBuilderTools(cwd, Boolean(contract), contract),
+    ...(input.repairDiffAvailable ? [createRepairDiffTool()] : []), ...(capabilities?.tools ?? [])].map(toPiTool)];
   return tools;
 }
 

@@ -598,19 +598,24 @@ export class BuildView implements Component {
       case "initialization_validation_failed": this.phase = "验证运行"; return "工程运行验证失败，准备修正";
       case "initialization_verified": this.phase = "验证运行"; return "工程运行验证通过，保存基线";
       case "initialization_finished": this.phase = "开始功能开发"; return "工程可运行，准备功能分组与独立验收";
-      case "snapshot_sealed": return "源码已封存，Builder 继续下一功能组";
-      case "module_check_started": return "Verifier · 模块集中重放与确认";
-      case "module_check_finished": return detail?.moduleId === "<final>" ? "当前交付范围验收完成" : "模块当前版本检查完成";
+      case "snapshot_sealed": return "源码已封存，等待独立检查";
+      case "module_check_started": return "Verifier · 最终范围全量重放";
+      case "module_check_finished":
+        if (detail?.moduleId === "<diagnosis>") return "Verifier · 失败场景局部处理完成";
+        if (detail?.moduleId === "<repair>") return "Verifier · 修复目标检查完成";
+        if (detail?.replay === false) return detail?.moduleId === "<final>" ? "历史与局部检查结果已汇总" : "模块原快照结果已汇总";
+        return "最终范围检查完成";
       case "feature_grouping_started": return "Grouper · 整理功能分组";
       case "feature_grouping_finished": return "功能分组完成，准备实现";
       case "phase_started": this.phase = PHASES[String(detail?.phase)] ?? "运行中"; return this.phase;
       case "packet_selected": return "已选择需求包，准备 Builder";
-      case "builder_started": return `Builder · 实现当前模块${detail?.attempt ? ` · 第 ${detail.attempt} 次尝试` : ""}`;
+      case "builder_started": return detail?.mode === "repair" ? "Builder · 集中修复业务" : detail?.mode === "delivery_repair"
+        ? "Builder · 修复交付运行合同" : `Builder · 实现当前模块${detail?.attempt ? ` · 第 ${detail.attempt} 次尝试` : ""}`;
       case "builder_finished": return this.verifierActivity() ?? (detail?.outcome === "completed" ? "Builder 本轮完成，等待运行检查" : "Builder 本轮结束，检查候选与检查点");
       case "candidate_prepared": return "候选构建完成，准备独立验收";
       case "gateway_wait": return `${detail?.source === "builder" ? "Builder" : detail?.source === "verifier" ? "Verifier" : "Grouper"} · 等待模型网关恢复`;
       case "repair_batch_started": return `Builder · 第 ${detail?.round ?? 1} 轮修复`;
-      case "delivery_started": this.phase = "最终交付"; return "重新验收当前范围，检查交付入口";
+      case "delivery_started": this.phase = "最终交付"; return "检查交付运行合同，准备最终验收";
       case "delivery_check_started": return "检查交付运行合同";
       case "delivery_check_finished": return detail?.ok ? "交付运行合同检查通过" : "交付运行合同未通过，准备修复";
       case "delivery_repair_restored": return "交付修复未保留，已恢复检查点";

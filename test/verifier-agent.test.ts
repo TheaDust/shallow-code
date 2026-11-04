@@ -525,7 +525,7 @@ test("Verifier tool schemas keep an object root because the gateway rejects a ro
     }
     const save = f.toolSchemas.find(item => item.name === "check_program")!;
     assert.deepEqual(Object.keys((save.parameters as { properties: Record<string, unknown> }).properties).sort(),
-      ["contract", "source"]);
+      ["basisExplanation", "contract", "source"]);
     assert.deepEqual((save.parameters as { required: string[] }).required, ["contract", "source"]);
     const invoke = f.toolSchemas.find(item => item.name === "invoke")!;
     assert.equal(((invoke.parameters as { properties: Record<string, { type?: string }> }).properties.input.type), "object");
@@ -1566,3 +1566,57 @@ for (const failure of ["reset", "rate_limit", "truncated"] as const) {
     }
   });
 }
+
+
+test("Local diagnosis re-establishes a failed scenario with review off and retains its faithful business counterexample", async () => {
+  const f = await fixture({ failures: [0, 1, 2, 3] });
+  try {
+    const model: VerifierModel = { run: request => f.model.run({ ...request, tools: request.tools.map(tool => tool.name === "check_program"
+      ? { ...tool, execute: raw => tool.execute({ ...(raw as object), basisExplanation: "Order cancellation and restored seats are required by the original THEN clauses." }) } : tool) }) };
+    const verifier = createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model });
+    const first = await verifier.check(f.job, new AbortController().signal);
+    const job: CheckJob = { ...f.job, jobId: "diagnosis", mode: "diagnose", programs: first.programs,
+      clauseIds: first.outcomes.map(item => item.clauseId), feedbackReports: [await f.store.putJson(first)] };
+    const result = await verifier.check(job, new AbortController().signal);
+    assert.deepEqual(result.outcomes.map(item => item.status), ["pass", "fail"]);
+    assert.deepEqual(f.roles, ["exploration", "exploration"]);
+    assert.equal(f.replays, 4, "one execution and one fresh failure confirmation per phase");
+    assert.equal(result.activePrograms?.length, 1);
+    const prompt = JSON.parse(f.explorationPrompts[1]);
+    assert.equal(prompt.diagnosis, true);
+    assert.equal(prompt.rejectedPrograms.length, 1);
+    assert.equal(prompt.previousFeedback[0].outcomes[1].status, "fail");
+    const manifest = await f.store.getJson<VerifierManifest>(result.manifest);
+    assert(manifest.diagnostics.some(message => message.includes("Scenario diagnosis")));
+    assert.equal((await readdir(join(f.directory, "reviews")).catch(() => [])).length, 0);
+  } finally { await f.cleanup(); }
+});
+
+test("Local diagnosis can replace a stale check but cannot reuse its old verdict or omit source obligations", async () => {
+  const f = await fixture({ failures: [0, 1] });
+  try {
+    const model: VerifierModel = { run: request => f.model.run({ ...request, tools: request.tools.map(tool => tool.name === "check_program"
+      ? { ...tool, execute: raw => tool.execute({ ...(raw as object), source: "// repaired preparation and identity; original result obligations retained", basisExplanation: "Restore the original unpaid-order identity and both original results." }) } : tool) }) };
+    const initial = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model: f.model }).check(f.job, new AbortController().signal);
+    const job: CheckJob = { ...f.job, jobId: "fixed-program", snapshot: await f.store.putJson({ sha: "same-app-candidate" }), mode: "diagnose",
+      programs: initial.programs, clauseIds: initial.outcomes.map(item => item.clauseId), feedbackReports: [await f.store.putJson(initial)] };
+    const result = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model }).check(job, new AbortController().signal);
+    assert.deepEqual(result.outcomes.map(item => item.status), ["pass", "pass"]);
+    assert.equal(result.outcomes.length, initial.outcomes.length);
+    assert.equal(f.replays, 3, "passing replacement contributes fresh execution without failure confirmation");
+    assert.notDeepEqual(result.activePrograms, initial.activePrograms);
+    for (const outcome of result.outcomes) for (const ref of outcome.evidence) await f.store.validateReceipt(job, await f.store.getJson<EvidenceReceipt>(ref));
+  } finally { await f.cleanup(); }
+});
+
+test("Diagnosis without a source explanation stays inconclusive and grants no active replacement", async () => {
+  const f = await fixture();
+  try {
+    const job: CheckJob = { ...f.job, mode: "diagnose" };
+    const report = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model: f.model }).check(job, new AbortController().signal);
+    assert(report.outcomes.every(outcome => outcome.status === "inconclusive"));
+    assert.deepEqual(report.activePrograms, []);
+    assert.equal(f.replays, 0);
+    assert.deepEqual(f.roles, ["exploration"]);
+  } finally { await f.cleanup(); }
+});

@@ -315,7 +315,7 @@ test("Human logs cover Verifier queue, module checks and cancellation", () => {
     /Verifier 任务已结束（g1）；Execution timed out$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_started",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", requirementIds: ["A"] } })),
-    /开始模块集中检查；版本 snap-2；需求 A$/);
+    /开始最终范围检查；版本 snap-2；需求 A$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: true, requirementResults: { A: "verified" } } })),
     /模块集中检查完成；版本 snap-2；当前结果已发布$/);
@@ -336,7 +336,7 @@ test("Human-readable projection shows in-flight Verifier usage separately from s
 test("Human logs explain Verifier stages, cache reuse and rejection feedback", () => {
   const formatter = new HumanRunFormatter();
   for (const [stage, label] of [
-    ["prepare", "准备隔离环境"], ["exploration", "探索并编写"], ["rediscovery", "按拒绝原因修正"],
+    ["prepare", "准备隔离环境"], ["exploration", "探索并编写"], ["rediscovery", "按拒绝原因修正"], ["diagnosis", "核对失败场景"],
     ["replay", "独立重放"], ["semantic_review", "独立语义复核"], ["review_approved", "验收程序复核通过"],
     ["review_rejected", "验收程序复核未通过"], ["review_cached", "复用已批准复核"],
     ["confirmation", "第二个独立环境"], ["diagnostic", "保留诊断"], ["cleanup", "释放本次隔离环境"],

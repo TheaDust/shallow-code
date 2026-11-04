@@ -736,3 +736,23 @@ test("Role colours distinguish Builder, Verifier and Grouper activity", () => {
   receive(view, "check_started", { jobId: "j1" });
   assert.match(view.render(100).join("\n"), /\x1b\[38;5;74mVerifier/);
 });
+
+
+test("TUI distinguishes historical summaries, local diagnosis, target checks and final full replay", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  const at = "2026-11-04T00:00:00Z";
+  const send = (event: RunEvent, expected: RegExp) => {
+    view.receive(event, formatter.format(JSON.stringify(event)) ?? "");
+    assert.match(view.render(120).join("\n"), expected);
+  };
+  send({ at, type: "module_check_finished", detail: { moduleId: "FIRST", moduleEpoch: 0, snapshotId: "old", published: true,
+    replay: false, requirementResults: { A: "verified" } } }, /模块原快照结果已汇总/);
+  send({ at, type: "module_check_started", detail: { moduleId: "<final>", moduleEpoch: 1, snapshotId: "final", requirementIds: ["A"] } }, /最终范围全量重放/);
+  send({ at, type: "module_check_finished", detail: { moduleId: "<diagnosis>", moduleEpoch: 2, snapshotId: "final", published: true,
+    replay: false, requirementResults: { A: "failed" } } }, /失败场景局部处理完成/);
+  send({ at, type: "builder_started", detail: { mode: "repair" } }, /集中修复业务/);
+  send({ at, type: "module_check_finished", detail: { moduleId: "<repair>", moduleEpoch: 3, snapshotId: "fixed", published: true,
+    replay: false, requirementResults: { A: "verified" } } }, /修复目标检查完成/);
+  send({ at, type: "module_check_finished", detail: { moduleId: "<final>", moduleEpoch: 4, snapshotId: "fixed", published: true,
+    replay: true, requirementResults: { A: "verified" } } }, /最终范围检查完成/);
+});

@@ -34,6 +34,8 @@ export interface BuilderTermination {
 }
 
 export interface BuilderRunOptions {
+  /** Read-only controller-owned application history, scoped to this repair batch. */
+  repairDiff?: import("./repair-diff.js").RepairDiffReader;
   timeoutMs?: number;
   /** 每个已结束调用的增量用量，包括图片预检和降级重试。 */
   onUsage?: (usage: UsageSummary) => void | Promise<void>;

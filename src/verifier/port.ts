@@ -21,8 +21,12 @@ export interface CheckJob {
   binding: ExecutionBindingRef;
   initialState: TypedRef;
   requirementIds: string[];
-  /** Only discover may explore or request semantic reviews; replay/confirm require cached approval when review is enabled. */
-  mode: "prepare" | "discover" | "replay" | "confirm";
+  /** Discover creates checks; diagnose locally re-establishes failed scenarios. Replay is model-free. */
+  mode: "prepare" | "discover" | "diagnose" | "replay" | "confirm";
+  /** Full scenario clause scope for local diagnosis/target checks; omitted for whole requirements. */
+  clauseIds?: string[];
+  /** Previous reports provide diagnostic context only, never current receipts or verdicts. */
+  feedbackReports?: ContentRef[];
   programs: ProgramRef[];
   /** Fixed execution limit starting when the queue grants a slot. */
   timeoutMs: number;
@@ -58,6 +62,8 @@ export interface CheckReport {
   binding: ExecutionBindingRef;
   manifest: ContentRef;
   programs: ProgramRef[];
+  /** Programs actually submitted for these outcomes; other programs remain diagnostic history. */
+  activePrograms?: ProgramRef[];
   outcomes: CheckOutcome[];
 }
 export interface ExecutionSession {
@@ -82,7 +88,7 @@ export interface VerifierPort {
 
 /** Presentation facts only; progress never grants a requirement outcome. */
 export type VerifierProgress = {
-  stage: "prepare" | "exploration" | "rediscovery" | "replay" | "semantic_review" | "review_approved" |
+  stage: "prepare" | "exploration" | "rediscovery" | "diagnosis" | "replay" | "semantic_review" | "review_approved" |
     "review_rejected" | "review_cached" | "confirmation" | "diagnostic" | "cleanup";
   programId?: string;
   clauseIds?: string[];

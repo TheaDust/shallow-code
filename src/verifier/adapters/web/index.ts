@@ -70,7 +70,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const promptFragments = [await store.putBytes(await readFile(new URL("../../../../prompts/verifier/web/browser.md", import.meta.url))),
     await store.putBytes(`Authorized Playwright interface (actions map values are the timeout-options argument position, -1 means no timeout option; reads return host observations):\n${JSON.stringify(PLAYWRIGHT_INTERFACE)}`),
     await store.putBytes(`Web public entry: ${webSettings(spec).browserPath}`), ...(options.promptFragments ?? [])];
-  const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission"].map((name) => readFile(new URL(`../../../../prompts/verifier/${name}.md`, import.meta.url), "utf8")));
+  const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission", "diagnosis"].map((name) => readFile(new URL(`../../../../prompts/verifier/${name}.md`, import.meta.url), "utf8")));
   const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-case", dataDirectory: "allocated-per-case" }, objectSchema);
   const declaration: AdapterDeclaration = {
     schemaVersion: 1, id: "shallow.web", version: "1", implementation: executor, execution, initialStates: [initialState],

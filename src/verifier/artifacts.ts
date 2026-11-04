@@ -122,6 +122,7 @@ export class ArtifactStore {
     for (const outcome of report.outcomes) {
       const key = canonicalJson([outcome.requirementId, outcome.scenarioId, outcome.clauseId]);
       if (!job.requirementIds.includes(outcome.requirementId) || seen.has(key)) throw new Error("Report scope or duplicate clause mismatch");
+      if (job.clauseIds && !job.clauseIds.includes(outcome.clauseId)) throw new Error("Report exceeds local source-clause scope");
       seen.add(key);
       if ((outcome.status === "pass" || outcome.status === "fail") && !outcome.evidence.length) throw new Error("Definitive outcome has no evidence");
       for (const ref of outcome.evidence) await this.validateReceipt(job, await this.getJson<EvidenceReceipt>(ref));
@@ -131,6 +132,7 @@ export class ArtifactStore {
       await this.readTypedJson(program.descriptor);
       await this.getBytes(program.contract);
     }
+    for (const program of report.activePrograms ?? []) if (!report.programs.some(item => canonicalJson(item) === canonicalJson(program))) throw new Error("Active program is absent from report history");
   }
   reviewKey(value: unknown): string { return contentDigest(value); }
 }
