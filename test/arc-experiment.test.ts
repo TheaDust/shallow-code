@@ -51,6 +51,12 @@ function fakeProcess(calls: WorkerRequest[]) {
       const normalized = parse(await readFile(join(input.requirementsDir, "requirements.yaml"), "utf8"));
       assert.equal(normalized.children[0].type, "ATOMIC");
       assert.equal(normalized.children[0].scenarios[0].steps[2].content, "A and B are visible.");
+      assert.equal(await readFile(join(input.requirementsDir, "reference", "a.png"), "utf8"), "reference bytes");
+      assert.equal(await readFile(join(input.privateDir, "source-requirements", "requirements.yaml"), "utf8"), source);
+      const mapping = JSON.parse(await readFile(join(input.privateDir, "source-requirements", "conversion-map.json"), "utf8"));
+      assert.equal(mapping.steps[0].stepId, "STEP-1");
+      assert.deepEqual(mapping.steps[0].normalizedStepIndices, [0, 1, 2]);
+      await assert.rejects(readFile(join(input.requirementsDir, "conversion-map.json")), /ENOENT/);
       await writeFile(join(input.projectDir, "app.txt"), "generated application");
       const runs = join(input.privateDir, "runs", "fixture"); await mkdir(runs, { recursive: true });
       await writeFile(join(runs, "result.json"), JSON.stringify({ status: input.method === "shallow" ? "delivered" : "completed",
@@ -80,7 +86,7 @@ test("ARC conversion preserves source outcomes, identities, image links and step
   ]);
   assert.equal(normalizeArcRequirements(normalized.yaml).yaml, normalized.yaml);
   const invalid = parse(source); invalid.children[0].scenarios[0].steps[0].Unknown = "unhandled";
-  assert.throws(() => normalizeArcRequirements(JSON.stringify(invalid)), /Unsupported ARC step field/);
+  assert.throws(() => normalizeArcRequirements(JSON.stringify(invalid)), /Unsupported ARC .*step field/);
 });
 
 test("experimental scoring includes failed, skipped, interrupted and unexecuted tests in its denominator", () => {
@@ -120,6 +126,14 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     assert.deepEqual(result.byMethod.map(row => row.macroPassRate), [0.5, 0.5]);
     assert.equal(await readFile(join(plan.tasks[0].requirementsDir, "requirements.yaml"), "utf8"), source);
     assert.equal(await readFile(join(plan.tasks[0].testsDir, "fixture.spec.ts"), "utf8"), "// private evaluator tests\n");
+    const inputs = join(output, "private", "inputs", "fixture");
+    assert.equal(await readFile(join(inputs, "source-requirements.yaml"), "utf8"), source);
+    const readInput = (method: string, path: string) => readFile(join(output, "fixture", "repeat-1", method, "private", path), "utf8");
+    for (const path of ["requirements/requirements.yaml", "requirements/reference/a.png", "source-requirements/conversion-map.json"]) {
+      assert.equal(await readInput("baseline", path), await readInput("shallow", path));
+    }
+    assert.equal(await readFile(join(inputs, "conversion-map.json"), "utf8"),
+      await readInput("baseline", "source-requirements/conversion-map.json"));
     assert.equal(result.cells[0].generation.modelUsage?.total, 15);
     await runExperiment(plan, output, env, true, { runProcess: fakeProcess(calls) });
     assert.equal(calls.length, 5);
@@ -127,6 +141,22 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     await assert.rejects(runExperiment(plan, output, env, false), /already exists/);
     assert.match(await readFile(join(output, "runs.csv"), "utf8"), /baseline/);
     assert.equal((await writeSummary(output, plan)).cells.length, 2);
+  });
+});
+
+test("ARC preparation rejects missing and external reference images before generation", async () => {
+  await withTempDir("shallow-arc-images-", async root => {
+    const plan = await fixture(root);
+    const requirementsFile = join(plan.tasks[0].requirementsDir, "requirements.yaml");
+    for (const reference of ["reference/missing.png", "../../tests/fixture.spec.ts", "C:\\outside.png"]) {
+      const tree = parse(source);
+      tree.children[0].description.image[0].reference = reference;
+      await writeFile(requirementsFile, JSON.stringify(tree));
+      await assert.rejects(fixturePlan(), /ARC image must name a bundled requirement file/);
+    }
+    function fixturePlan() {
+      return createPlan(parseExperimentArgs(["prepare", "--bench-root", join(root, "bench"), "--output-dir", join(root, "out")]), env);
+    }
   });
 });
 

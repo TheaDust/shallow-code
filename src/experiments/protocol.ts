@@ -1,5 +1,5 @@
 import { readFile, readdir } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { JSONReport, JSONReportSuite } from "@playwright/test/reporter";
 import { normalizeArcRequirements } from "./requirements.js";
@@ -71,8 +71,16 @@ export async function discoverArcTasks(benchRoot: string): Promise<ArcTask[]> {
     if (!entry.isDirectory()) continue;
     const requirementsDir = join(root, entry.name, "requirements"), testsDir = join(root, entry.name, "tests");
     const normalized = normalizeArcRequirements(await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
+    const requirementFiles = await snapshotFiles(requirementsDir);
+    for (const image of normalized.sourceMap?.images ?? []) {
+      const target = resolve(requirementsDir, image.reference.replaceAll("\\", "/"));
+      const path = relative(requirementsDir, target).replaceAll("\\", "/");
+      if (win32.isAbsolute(image.reference) || !inside(requirementsDir, target) || !(path in requirementFiles)) {
+        throw new Error(`ARC image must name a bundled requirement file: ${entry.name}/${image.reference}`);
+      }
+    }
     tasks.push({ id: entry.name, requirementsDir, testsDir,
-      requirementFiles: await snapshotFiles(requirementsDir), testFiles: await snapshotFiles(testsDir),
+      requirementFiles, testFiles: await snapshotFiles(testsDir),
       normalizedRequirementsDigest: digest(normalized.yaml), requirements: normalized.requirements, scenarios: normalized.scenarios });
   }
   if (!tasks.length) throw new Error(`No ARC tasks found under ${root}`);

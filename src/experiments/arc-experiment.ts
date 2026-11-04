@@ -148,8 +148,11 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
     for (const task of plan.tasks) {
       const normalizedFile = join(outputDir, "private", "inputs", task.id, "requirements.yaml");
       await mkdir(dirname(normalizedFile), { recursive: true });
-      const normalized = normalizeArcRequirements(await readFile(join(task.requirementsDir, "requirements.yaml"), "utf8"));
+      const source = await readFile(join(task.requirementsDir, "requirements.yaml"), "utf8");
+      const normalized = normalizeArcRequirements(source);
       if (digest(normalized.yaml) !== task.normalizedRequirementsDigest) throw new Error(`ARC requirements changed: ${task.id}`);
+      await writeFile(join(dirname(normalizedFile), "source-requirements.yaml"), source);
+      await saveJson(join(dirname(normalizedFile), "conversion-map.json"), normalized.sourceMap);
       await writeFile(normalizedFile, normalized.yaml);
       await loadRequirementCatalog(normalizedFile);
       const directory = join(outputDir, "private", "catalog", task.id);
@@ -194,6 +197,7 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
         await copyFile(join(requirementsDir, "requirements.yaml"), join(sourceDirectory, "requirements.yaml"));
         const normalized = normalizeArcRequirements(await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
         if (digest(normalized.yaml) !== task.normalizedRequirementsDigest) throw new Error("ARC input conversion changed");
+        await saveJson(join(sourceDirectory, "conversion-map.json"), normalized.sourceMap);
         await writeFile(join(requirementsDir, "requirements.yaml"), normalized.yaml);
         await mkdir(projectDir, { recursive: true });
         const processResult = await worker({ action: "generate", method: cell.method, requirementsDir, projectDir, privateDir,

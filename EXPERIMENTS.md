@@ -17,6 +17,8 @@
 
 使用 `--bench-root` 指定另一个 ARC 仓库。入口只读基准目录，测试在应用工作区外加载；开发 Agent 接收转换后的需求与原有参考文件。ARC 的 `description.text`、图片和 `Given/When/Then` 结构由实验层确定性转换为 Shallow DSL，保留需求与场景 ID、结果原文、步骤顺序和图片路径，步骤引用保存在需求上下文。原始 YAML 和转换后输入均留档。引用关系作为原文上下文提供，调度依赖由 Shallow 的正常流程处理。
 
+`private/inputs/<task>/conversion-map.json` 记录每个原始步骤 ID、原始步骤位置、对应的转换后步骤下标、引用，以及图片 ID、路径和页面元数据；下标从 0 开始。每个开发单元在 `private/source-requirements/` 保留相同映射和原始 YAML，映射用于审计，不加入开发输入。已是 Shallow 格式的 YAML 原样传递，映射为 `null`。转换遇到未支持字段、重复身份或非叶节点场景时明确报错；发现图片缺失或越出需求目录时，在生成前报错。种子和场景初态原文保持不变，转换器不推断数据记录或依赖边。
+
 ## 先检查，再运行
 
 以下命令从 ShallowCode 仓库根目录执行。`list` 与 `plan` 只读；`prepare` 生成协议记录并枚举官方测试，不调用模型。
