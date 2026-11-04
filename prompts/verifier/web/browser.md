@@ -76,6 +76,8 @@ Checkpoint 与期望来自验收合同。用 `await check.precondition(checkpoin
 
 格式 shallow.web.javascript@1 是程序格式标识。Web 执行能力仍为 inspect、run、reset_case；inspect 接受可选 actor，run {source} 用于探索，reset_case 会使旧句柄失效。最终程序由 check_program 在独立环境执行，旧 case 的句柄与观察 id 不可带入；执行提供正式证据，semanticReview 为 true 时同时供独立复核使用。业务失败仍须在第二个独立环境复现。
 
+reset_case 和每次正式执行都会重新启动应用、恢复声明的初始数据并创建新的浏览器上下文与环境身份。同一任务可复用已校验的构建和浏览器进程；旧页面、登录状态和后端内存状态不会带入新 case。探索环境在首次调用执行能力时创建，可直接提交 check_program。
+
 解释 Web 程序与收据时遵循：
 
 事件对象不等同于业务结果；check.action 关联真实动作，观察通过宿主签发的 id 引用。复核 page.observeEvents 时核对记录的动作及时间窗口是否足以覆盖需求。

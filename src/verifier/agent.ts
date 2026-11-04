@@ -291,8 +291,13 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
         const explore = async (discoverySources: typeof eligibleSources, repair: boolean): Promise<void> => {
           const explorationDeadline = repair ? Date.now() + Math.max(1, Math.floor(Math.min(PROGRAM_REPAIR_MS, (deadlineAt - Date.now()) / 2))) : deadlineAt;
           const explorationSignal = repair ? AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, explorationDeadline - Date.now()))]) : signal;
-          const exploration = await prepare(explorationSignal);
-          if (!await ready(exploration)) throw new Error("Execution adapter did not establish a ready exploration environment");
+          let exploration: ExecutionSession | undefined;
+          let explorationPreparation: Promise<ExecutionSession> | undefined;
+          const explorationSession = (): Promise<ExecutionSession> => explorationPreparation ??= (async () => {
+            exploration = await prepare(explorationSignal);
+            if (!await ready(exploration)) throw new Error("Execution adapter did not establish a ready exploration environment");
+            return exploration;
+          })();
           const feedback = rejectedPrograms.filter(program => program.clauseIds.some(id => discoverySources.some(source => source.id === id)));
           await progress({ stage: job.mode === "diagnose" ? "diagnosis" : feedback.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
           let finished = false;
@@ -316,7 +321,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 const args = raw as { capabilityId: string; input: unknown };
                 const capability = executionCapability(args.capabilityId);
                 const inputValue = await invocationInput(args.capabilityId, capability.inputSchema, args.input);
-                const result = await exploration.invoke(args.capabilityId, inputValue, explorationSignal);
+                const result = await (await explorationSession()).invoke(args.capabilityId, inputValue, explorationSignal);
                 const output = await store.readTypedJson(result.output);
                 await store.validateSchema(capability.outputSchema, output);
                 manifest.receipts.push(...result.receipts);
@@ -514,7 +519,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
             }
             await progress({ stage: "diagnostic", reason });
           }
-          finally { await close(exploration); }
+          finally { if (exploration) await close(exploration); }
         };
         const unusableCachedPrograms = new Set<string>();
         const replaySubmitted = async (): Promise<Set<string>> => {
@@ -734,6 +739,8 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
       for (const session of sessions) {
         try { await close(session); } catch (error) { manifest.diagnostics.push(`Execution cleanup failed: ${String(error)}`); }
       }
+      try { await adapter.releaseJob?.(job); }
+      catch (error) { cleanupFailure = new VerifierCleanupError(error); }
     }
     if (cleanupFailure) throw cleanupFailure;
     if (manifest.diagnostics.length) for (const outcome of outcomeMap.values()) {

@@ -71,12 +71,14 @@ export interface ExecutionSession {
   readinessEvidence: ContentRef[];
   invoke(capabilityId: string, input: unknown, signal: AbortSignal): Promise<{ output: TypedRef; receipts: ContentRef[] }>;
   replay(program: ProgramRef, signal: AbortSignal): Promise<ContentRef[]>;
-  /** Resolves after all owned execution resources have been released. */
+  /** Releases case processes, data and contexts; the adapter may retain job builds/browser until releaseJob. */
   close(): Promise<void>;
 }
 export interface ExecutionAdapter {
   binding: ExecutionBindingRef;
   prepare(job: Readonly<CheckJob>, signal: AbortSignal): Promise<ExecutionSession>;
+  /** Release retained job resources after every session has closed, including on cancellation. */
+  releaseJob?(job: Readonly<CheckJob>): Promise<void>;
   /** Project opaque adapter data for model review; original receipts remain immutable. */
   reviewEvidence?(evidence: ReviewEvidence[]): ReviewEvidence[];
 }

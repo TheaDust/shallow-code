@@ -71,14 +71,14 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
     await store.putBytes(`Authorized Playwright interface (actions map values are the timeout-options argument position, -1 means no timeout option; reads return host observations):\n${JSON.stringify(PLAYWRIGHT_INTERFACE)}`),
     await store.putBytes(`Web public entry: ${webSettings(spec).browserPath}`), ...(options.promptFragments ?? [])];
   const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission", "diagnosis"].map((name) => readFile(new URL(`../../../../prompts/verifier/${name}.md`, import.meta.url), "utf8")));
-  const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-case", dataDirectory: "allocated-per-case" }, objectSchema);
+  const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-job-slot", dataDirectory: "allocated-per-case" }, objectSchema);
   const declaration: AdapterDeclaration = {
     schemaVersion: 1, id: "shallow.web", version: "1", implementation: executor, execution, initialStates: [initialState],
     resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
       { id: "run", version: "6", description: "Run isolated JavaScript with controlled native Playwright locators, browser events, isolated downloaded HTML/PDF/image rendering and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
-      { id: "reset_case", version: "1", description: "Rebuild an independent case from declared initial state; expire all browser handles.", inputSchema: resetSchema, outputSchema: objectSchema },
+      { id: "reset_case", version: "2", description: "Restart the application with fresh declared initial data and browser contexts; expire all browser handles while retaining the validated build.", inputSchema: resetSchema, outputSchema: objectSchema },
     ],
     programFormat: { id: "shallow.web.javascript", version: "1", mediaType: "text/javascript", schema: programSchema },
     observations: [{ schema: objectSchema, mediaType: "application/json", maxBytes: 8_388_608, visibility: "verifier" }],
@@ -99,8 +99,9 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   return { adapter, declaration, initialState };
 }
 
-/** One session owns each application, data directory, browser and execution realm it creates. */
+/** Cases own mutable execution state; the job retains exclusive build slots and its browser. */
 export class WebExecutionAdapter implements ExecutionAdapter {
+  private readonly jobs = new Map<string, WebJobResources>();
   constructor(private readonly options: WebAdapterOptions, readonly binding: ExecutionBindingRef, readonly declaration: AdapterDeclaration, private readonly schemas: WebSchemas) {}
   reviewEvidence(evidence: ReviewEvidence[]): ReviewEvidence[] { return webReviewEvidence(evidence); }
   async prepare(job: Readonly<CheckJob>, signal: AbortSignal): Promise<ExecutionSession> {
@@ -112,16 +113,102 @@ export class WebExecutionAdapter implements ExecutionAdapter {
     const snapshot = await this.options.snapshots.open(job.snapshot);
     const actualSpec = await loadProjectSpec(snapshot.sourceDirectory);
     if (canonicalJson(resolveRuntimeContract(actualSpec, { port: 1 })) !== canonicalJson(resolveRuntimeContract(this.options.spec, { port: 1 }))) throw new Error("Project run configuration differs from the Web execution binding");
-    const session = new WebSession(this.options, this.schemas, this.declaration, job, snapshot.sourceDirectory, initial.baseline);
+    let resources = this.jobs.get(job.jobId);
+    if (resources && resources.identity !== canonicalJson(job)) throw new Error("Web job identity changed while resources are retained");
+    if (!resources) {
+      resources = new WebJobResources(this.options, job, snapshot.sourceDirectory, initial.baseline);
+      this.jobs.set(job.jobId, resources);
+    }
+    const session = new WebSession(this.options, this.schemas, this.declaration, job, resources, resources.acquire());
     try { await session.initialize(signal); return session; }
     catch (error) { await session.close(); throw new WebExecutionError(error instanceof Error ? error.message : String(error), session.readinessEvidence); }
   }
+  async releaseJob(job: Readonly<CheckJob>): Promise<void> {
+    const resources = this.jobs.get(job.jobId);
+    if (!resources) return;
+    await resources.close();
+    this.jobs.delete(job.jobId);
+  }
   /** Delivery consumes the same immutable snapshot and readiness implementation as Verifier cases. */
   async verifyDelivery(job: Readonly<CheckJob>, signal: AbortSignal): Promise<ContentRef[]> {
-    const session = await this.prepare(job, signal);
-    try { await (session as WebSession).verifyDelivery(signal); return session.readinessEvidence; }
-    catch (error) { throw new WebExecutionError(error instanceof Error ? error.message : String(error), session.readinessEvidence); }
-    finally { await session.close(); }
+    let session: WebSession | undefined;
+    try {
+      session = await this.prepare(job, signal) as WebSession;
+      await session.verifyDelivery(signal);
+      return session.readinessEvidence;
+    } catch (error) {
+      if (!session) throw error;
+      throw new WebExecutionError(error instanceof Error ? error.message : String(error), session.readinessEvidence);
+    } finally {
+      try { await session?.close(); } finally { await this.releaseJob(job); }
+    }
+  }
+}
+
+class WebJobResources {
+  readonly identity: string;
+  private readonly slots: WebBuildSlot[] = [];
+  private browser?: Promise<Browser>;
+  constructor(private readonly options: WebAdapterOptions, job: Readonly<CheckJob>, private readonly source: string, private readonly baseline: ContentRef) {
+    this.identity = canonicalJson(job);
+  }
+  acquire(): WebBuildSlot {
+    let slot = this.slots.find(item => !item.busy);
+    if (!slot) { slot = new WebBuildSlot(this.options, this.source, this.baseline); this.slots.push(slot); }
+    slot.busy = true;
+    return slot;
+  }
+  getBrowser(): Promise<Browser> {
+    return this.browser ??= this.options.launchBrowser?.() ?? chromium.launch({ headless: true });
+  }
+  async close(): Promise<void> {
+    const results = await Promise.allSettled(this.slots.map(slot => slot.dispose()));
+    // A rejected launch has no browser to close; the case already reports that failure.
+    const browser = await this.browser?.catch(() => undefined);
+    try { await browser?.close(); }
+    finally {
+      const failed = results.find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    }
+  }
+}
+
+/** Each slot has its own port, build and immutable initial-data source. It is never shared by live cases. */
+class WebBuildSlot {
+  busy = false;
+  readonly root: string;
+  candidate?: CandidateRuntime;
+  contract?: ReturnType<typeof resolveRuntimeContract>;
+  private port?: number;
+  constructor(private readonly options: WebAdapterOptions, private readonly source: string, private readonly baseline: ContentRef) {
+    this.root = join(options.workspace, "web-" + randomUUID());
+  }
+  async prepare(signal: AbortSignal): Promise<void> {
+    if (this.candidate) return;
+    signal.throwIfAborted();
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    const source = join(this.root, "initial");
+    await cp(this.source, source, { recursive: true });
+    for (const path of this.options.spec.dataPaths ?? []) await rm(join(source, path), { recursive: true, force: true });
+    const baseline = await this.options.snapshots.open(this.baseline);
+    for (const path of this.options.spec.dataPaths ?? []) {
+      const from = join(baseline.sourceDirectory, path);
+      const exists = await lstat(from).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
+      if (exists) { await mkdir(dirname(join(source, path)), { recursive: true }); await cp(from, join(source, path), { recursive: true }); }
+    }
+    this.port = await prepareOneAtATime(async () => {
+      signal.throwIfAborted();
+      const port = await pickFreePort([...leasedPorts, ...webSettings(this.options.spec).extraPorts, ...(this.options.reservedPorts ?? [])]);
+      leasedPorts.add(port);
+      return port;
+    });
+    this.contract = resolveRuntimeContract(this.options.spec, { port: this.port });
+    this.candidate = new CandidateRuntime(source, join(this.root, "candidate"), this.contract, this.options.lifecycle ?? new WebAppLifecycle(), undefined, source);
+  }
+  async dispose(): Promise<void> {
+    await this.candidate?.dispose();
+    await rm(this.root, { recursive: true, force: true });
+    if (this.port !== undefined) { leasedPorts.delete(this.port); this.port = undefined; }
   }
 }
 
@@ -143,45 +230,28 @@ class WebSession implements ExecutionSession {
   private runtimeContract?: ReturnType<typeof resolveRuntimeContract>;
   private app?: Awaited<ReturnType<CandidateRuntime["start"]>>;
   private failed = false;
-  private leasedPort?: number;
   constructor(private readonly options: WebAdapterOptions, private readonly schemas: WebSchemas, private readonly declaration: AdapterDeclaration,
-    private readonly job: Readonly<CheckJob>, private readonly source: string, private readonly initialDataSnapshot: ContentRef) {}
+    private readonly job: Readonly<CheckJob>, private readonly resources: WebJobResources, private readonly slot: WebBuildSlot) {}
   async initialize(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     if (this.closed) throw new Error("Web execution session is closed");
-    const root = join(this.options.workspace, "web-" + randomUUID());
-    await mkdir(root, { recursive: true, mode: 0o700 });
-    this.caseDirectory = root;
-    const source = join(root, "initial");
-    await cp(this.source, source, { recursive: true });
-    for (const path of this.options.spec.dataPaths ?? []) await rm(join(source, path), { recursive: true, force: true });
-    const baseline = await this.options.snapshots.open(this.initialDataSnapshot);
-    for (const path of this.options.spec.dataPaths ?? []) {
-      const from = join(baseline.sourceDirectory, path);
-      const exists = await lstat(from).then(() => true, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return false; throw error; });
-      if (exists) { await mkdir(dirname(join(source, path)), { recursive: true }); await cp(from, join(source, path), { recursive: true }); }
-    }
-    const port = await prepareOneAtATime(async () => {
-      signal.throwIfAborted();
-      const allocated = await pickFreePort([...leasedPorts, ...(webSettings(this.options.spec).extraPorts), ...(this.options.reservedPorts ?? [])]);
-      leasedPorts.add(allocated);
-      return allocated;
-    });
-    this.leasedPort = port;
-    const contract = resolveRuntimeContract(this.options.spec, { port });
+    await this.slot.prepare(signal);
+    this.caseDirectory = this.slot.root;
+    const contract = this.slot.contract!;
     const config = webRuntimeConfig(contract);
+    const port = config.port;
     this.runtimeContract = contract;
     this.execution = await this.options.artifacts.putTypedJson({ caseId: randomUUID(), port, baseUrl: config.baseUrl, initialState: this.job.initialState }, this.schemas.environment);
-    this.candidate = new CandidateRuntime(source, join(root, "candidate"), contract, this.options.lifecycle ?? new WebAppLifecycle(), undefined, source);
-    const onAbort = () => { void this.candidate?.close().catch(() => {}); void this.browser?.close().catch(() => {}); };
+    this.candidate = this.slot.candidate!;
+    const onAbort = () => { void this.candidate?.close().catch(() => {}); };
     signal.addEventListener("abort", onAbort, { once: true });
     try {
-      const app = await prepareOneAtATime(async () => { signal.throwIfAborted(); return this.candidate!.start(source, contract); });
+      const app = await prepareOneAtATime(async () => { signal.throwIfAborted(); return this.candidate!.start(join(this.slot.root, "initial"), contract); });
       this.app = app;
       signal.throwIfAborted();
       const baseUrl = (app.metadata as { baseUrl: string }).baseUrl;
       this.baseUrl = baseUrl;
-      this.browser = await (this.options.launchBrowser?.() ?? chromium.launch({ headless: true }));
+      this.browser = await this.resources.getBrowser();
       const context = await this.browser.newContext({ serviceWorkers: "block" });
       try {
         const page = await context.newPage();
@@ -309,7 +379,7 @@ class WebSession implements ExecutionSession {
   }
   private async reset(signal: AbortSignal): Promise<void> {
     this.used = true;
-    await this.cleanup();
+    await this.stopCase();
     this.program = undefined;
     this.contract = undefined;
     this.failed = false;
@@ -317,21 +387,16 @@ class WebSession implements ExecutionSession {
     await this.initialize(signal);
     this.used = false;
   }
-  private async cleanup(): Promise<void> {
+  private async stopCase(): Promise<void> {
     const failures: unknown[] = [];
     const attempt = async (operation: () => Promise<unknown>) => { try { await operation(); } catch (error) { failures.push(error); } };
     await attempt(async () => { await this.runtime?.close(); }); this.runtime = undefined;
-    await attempt(async () => { await this.browser?.close(); }); this.browser = undefined;
+    this.browser = undefined;
     await attempt(async () => { await this.app?.assertUnchanged?.(); });
     await attempt(async () => { await this.app?.stop(); });
     await attempt(async () => { await this.app?.assertUnchanged?.(); });
-    let disposed = false;
-    await attempt(async () => { await this.candidate?.dispose(); disposed = true; });
-    if (disposed) {
-      this.candidate = undefined; this.app = undefined;
-      if (this.caseDirectory) { await attempt(async () => { await rm(this.caseDirectory!, { recursive: true, force: true }); }); this.caseDirectory = undefined; }
-      if (this.leasedPort !== undefined) { leasedPorts.delete(this.leasedPort); this.leasedPort = undefined; }
-    }
+    await attempt(async () => { await this.candidate?.close(); });
+    this.app = undefined;
     if (failures.length) throw failures[0];
   }
   async verifyDelivery(signal: AbortSignal): Promise<void> {
@@ -343,5 +408,10 @@ class WebSession implements ExecutionSession {
     if (!report.ok) throw new Error(report.message);
     this.readinessEvidence.push(await this.record("readiness", { result: "ready", delivery: report.message }, { readiness: { result: "ready" } }));
   }
-  async close(): Promise<void> { if (!this.closed) { this.closed = true; await this.cleanup(); } }
+  async close(): Promise<void> {
+    if (this.closed) return;
+    this.closed = true;
+    await this.stopCase();
+    this.slot.busy = false;
+  }
 }
