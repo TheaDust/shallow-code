@@ -309,7 +309,7 @@ test("Human logs cover Verifier queue, module checks and cancellation", () => {
     /Verifier 检查未完成.*Execution interrupted/);
   assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
     detail: { ...job, status: "cancelled" } })),
-    /Verifier 任务已结束（g1）；检查范围由模块收口接续$/);
+    /Verifier 任务已结束（g1）；检查范围由最终验收接续$/);
   assert.match(formatLine(formatter, eventLine(base, "check_cancelled", { packetId: "g1",
     detail: { ...job, status: "cancelled", reason: "Execution timed out" } })),
     /Verifier 任务已结束（g1）；Execution timed out$/);

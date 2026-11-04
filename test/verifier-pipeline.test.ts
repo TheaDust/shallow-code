@@ -16,6 +16,7 @@ import { withModulePipeline, type PipelineFixture } from "./helpers/module-pipel
 import { verifierSourceClauses, type VerifierRequirements } from "../src/verifier/evidence.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { readImplementationDigests, requirementDigest } from "../src/requirement-progress.js";
+import type { RunEvent } from "../src/types.js";
 
 async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSignal) => Promise<void>,
   status?: (job: CheckJob) => Promise<CheckOutcome["status"]>): Promise<VerifierRuntime> {
@@ -136,7 +137,7 @@ test("Verifier configuration declares migration mode and bounded concurrency", (
   assert.throws(() => parseVerifierConfig({ SHALLOW_VERIFIER_CONCURRENCY: "3" }));
 });
 
-test("ROOT-direct requirements reach grouping, implementation and one shared module boundary", async () => {
+test("ROOT-direct requirements reach grouping, implementation and one shared module summary", async () => {
   for (const replay of [false, true]) await withModulePipeline(async f => {
     const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
     input.type = "ROOT";
@@ -450,24 +451,37 @@ test("replay off excludes rejected repair reports when aggregating the restored 
   });
 });
 
-test("Group checks overlap Builder while the next module waits for current-version publication", { timeout: 20_000 }, async () => {
+for (const continued of [false, true]) for (const replay of [false, true]) test(`Group checks overlap Builder across modules and join before delivery (continued=${continued}, replay=${replay})`, { timeout: 20_000 }, async () => {
   await withModulePipeline(async f => {
+    if (continued) {
+      await mkdir(f.options.outputDir, { recursive: true });
+      await writeFile(join(f.options.outputDir, "marker.txt"), "A");
+      f.options.resumedRequirementIds = ["A"];
+    }
     const jobs: CheckJob[] = [];
-    let started!: () => void, release!: () => void;
+    let started!: () => void, release!: () => void, sealedAll!: () => void;
     const checking = new Promise<void>(resolve => { started = resolve; });
     const released = new Promise<void>(resolve => { release = resolve; });
+    const implementationFinished = new Promise<void>(resolve => { sealedAll = resolve; });
     let checkingA = false, overlapped = false;
     const runtime = await attach(f, async (job, signal) => {
       jobs.push(job);
+      if (job.mode === "replay") assert.equal(checkingA, false, "final replay waits for background checks");
       if (job.requirementIds[0] !== "A" || job.moduleEpoch !== 0) return;
       checkingA = true;
       started();
       await released;
-      assert.equal(signal.aborted, false, "normal module closure does not cancel group checks");
+      assert.equal(signal.aborted, false, "later modules do not cancel group checks");
       const sealed = await runtime.snapshots.open(job.snapshot);
       assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), "A");
       checkingA = false;
     });
+    f.options.verifier!.replay = replay;
+    const verifyDelivery = runtime.verifyDelivery.bind(runtime);
+    runtime.verifyDelivery = async (job, signal) => {
+      assert.equal(checkingA, false, "delivery waits for background checks");
+      return verifyDelivery(job, signal);
+    };
     let timer!: ReturnType<typeof setTimeout>;
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Group check did not overlap Builder")), 8_000); });
     const build = f.builder.run.bind(f.builder);
@@ -480,18 +494,29 @@ test("Group checks overlap Builder while the next module waits for current-versi
         assert.equal(checkpoint!.accepted.ordinal, 0);
       }
       if (request.mode === "implement" && request.packet.requirementIds[0] === "C") {
-        assert.equal(checkingA, false);
+        assert.equal(checkingA, true, "the next module starts while the first group is still checking");
         const events = await f.events();
-        assert.ok(events.some(event => event.type === "module_check_finished" && event.detail?.moduleId === "FIRST" && event.detail?.published));
+        assert.ok(!events.some(event => event.type === "module_check_finished"), "module summaries wait until implementation finishes");
       }
       const result = await build(request, options);
       await writeFile(join(f.options.outputDir, "marker.txt"), request.mode === "implement" ? request.packet.requirementIds[0] : "repair");
-      if (request.mode === "implement" && request.packet.requirementIds[0] === "B") release();
       return result;
     };
+    const logSink = f.deps.logSink;
+    f.deps.logSink = { write(chunk) {
+      logSink?.write(chunk);
+      const event = JSON.parse(chunk) as RunEvent;
+      if (event.type === "snapshot_sealed" && event.detail?.requirementIds.includes("C")) sealedAll();
+    } };
     const running = f.run();
     let result: Awaited<typeof running>;
-    try { result = await Promise.race([running, timeout]); }
+    try {
+      await Promise.race([implementationFinished, running, timeout]);
+      assert.equal(checkingA, true, "all implementation finishes before the slow group check");
+      assert.equal((await f.events()).some(event => event.type === "delivery_started"), false);
+      release();
+      result = await Promise.race([running, timeout]);
+    }
     finally { release(); clearTimeout(timer); await running.catch(() => {}); }
     assert.equal(overlapped, true);
     assert.equal(result.status, "delivered");
@@ -510,19 +535,52 @@ test("Group checks overlap Builder while the next module waits for current-versi
     assert.equal(groupJobs[1]!.snapshot.id, checkpoint!.snapshots[1].snapshot.id);
     assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.timeoutMs === 3_600_000));
     const fullJobs = jobs.filter(job => job.mode === "replay" && !job.clauseIds);
-    assert.equal(fullJobs.length, 3);
+    assert.equal(fullJobs.length, replay ? 3 : 0);
     assert(fullJobs.every(job => job.snapshot.id === checkpoint!.snapshots[2].snapshot.id), "only the completed application receives full replay");
     const events = await f.events();
     assert.ok(!events.some(item => item.type === "check_cancelled"));
-    const boundary = events.findIndex(item => item.type === "module_check_started");
-    assert.ok(boundary >= 0);
-    assert.ok(events.slice(0, boundary).some(item => item.type === "check_started"));
-    assert.ok(events.slice(0, boundary).filter(item => item.type === "module_check_finished").every(item => item.detail?.replay === false));
+    const delivery = events.findIndex(item => item.type === "delivery_started");
+    assert.ok(delivery >= 0);
+    assert.ok(events.slice(0, delivery).some(item => item.type === "check_started"));
+    assert.ok(events.slice(0, delivery).filter(item => item.type === "module_check_finished").every(item => item.detail?.replay === false));
     assert.ok(events.some(item => item.type === "module_check_finished" && item.detail?.moduleId === "<final>"));
     await writeRunReport(dirname(f.options.ledgerFile), result);
     assert.match(await readFile(join(dirname(f.options.ledgerFile), "verifier-report.md"), "utf8"), /Verifier 验收证据/);
     const ledger = events.map(item => item.sequence);
     assert.deepEqual(ledger, Array.from({ length: ledger.length }, (_, i) => i + 1));
+  });
+});
+
+test("Fixed shared resources still serialize Verifier checks with Builder self-tests", { timeout: 20_000 }, async () => {
+  await withModulePipeline(async f => {
+    let started!: () => void, release!: () => void;
+    const checking = new Promise<void>(resolve => { started = resolve; });
+    const released = new Promise<void>(resolve => { release = resolve; });
+    let finishedA = false;
+    const runtime = await attach(f, async job => {
+      if (job.mode !== "discover" || !job.requirementIds.includes("A")) return;
+      started();
+      await released;
+      finishedA = true;
+    });
+    runtime.resourceKeys = ["local-port:4321"];
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      if (request.mode === "implement" && !request.packet.requirementIds.includes("A")) {
+        assert.equal(finishedA, true, "Builder self-tests wait for the shared resource");
+      }
+      return build(request, options);
+    };
+    let timer!: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Shared-resource check did not start")), 8_000); });
+    const running = f.run();
+    try {
+      await Promise.race([checking, running, timeout]);
+      assert.equal(finishedA, false);
+      assert.deepEqual(f.builder.requests.map(request => request.mode === "implement" ? request.packet.requirementIds : request.mode), [["A"]]);
+      release();
+      assert.equal((await Promise.race([running, timeout])).status, "delivered");
+    } finally { release(); clearTimeout(timer); await running.catch(() => {}); }
   });
 });
 
@@ -663,8 +721,8 @@ test("Module and final events report cumulative scenario coverage", async () => 
     const first = events.find(event => event.type === "module_check_finished" && event.detail?.moduleId === "FIRST");
     assert.equal(first?.type, "module_check_finished");
     if (first?.type !== "module_check_finished") return;
-    assert.deepEqual(first.detail?.scenarioCoverage, { total: 3, verified: 2, failed: 0, inconclusive: 0, notRun: 1 },
-      "the first module reports only its own implementation and leaves later scenarios unrun");
+    assert.deepEqual(first.detail?.scenarioCoverage, { total: 3, verified: 2, failed: 0, inconclusive: 1, notRun: 0 },
+      "all modules are implemented before summaries publish each module's evidence");
     assert.deepEqual(first.detail?.scenarioResults?.map(item => [item.requirementId, item.scenarioId, item.status]),
       [["A", "A-1", "verified"], ["A", "A-2", "verified"]]);
     const final = events.find(event => event.type === "pipeline_finished");

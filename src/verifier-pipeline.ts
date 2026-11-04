@@ -354,13 +354,6 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       scenarioResults: scenarioResults(scope, allOutcomes, implemented),
       scenarioCoverage: scenarioCoverage(selected, allOutcomes, implemented) } });
   };
-  const boundary = async (module: string): Promise<void> => {
-    await coordinator.drain();
-    const head = coordinator.checkpoints.snapshot.producedHead;
-    if (!head) return;
-    const scope = catalog.requirements.filter(item => moduleId(item) === module && implemented.has(item.id));
-    await publish(head, module, coordinator.checkpoints.snapshot.epoch, await aggregate(head, scope), scope);
-  };
   const restore = async (baseline: ProducedSnapshot): Promise<void> => {
     await coordinator.cancelOutstanding();
     await deps.git.restoreAccepted(baseline.sourceSha);
@@ -442,7 +435,6 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         for (const group of auditPackets({ requirements: continued, statusById: catalog.statusById })) {
           await coordinator.submit(head, packetFor(group.id, group.requirements), "discover", VERIFIER_TIMEOUT_MS);
         }
-        for (const module of new Set(continued.map(moduleId))) await boundary(module);
       }
     }
     if (recoveredHead) {
@@ -454,14 +446,10 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
 
       }
     }
-    let previousModule: string | undefined;
     for (const grouped of grouping.packets) {
       const requirements = grouped.requirements.filter(item => !implemented.has(item.id));
       if (!requirements.length) continue;
       const packet = packetFor(grouped.id, requirements);
-      const module = moduleId(requirements[0]);
-      if (previousModule && previousModule !== module) await boundary(previousModule);
-      previousModule = module;
       const dependencies = [...dependencyClosure(requirements, byId)].filter(id => !packet.requirementIds.includes(id) && !implemented.has(id));
       if (dependencies.length) {
         state.markRequirements(packet.requirementIds, "blocked");
@@ -486,10 +474,13 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       const head = await coordinator.seal(packet, implemented);
       await coordinator.submit(head, auditGroups.find(group => group.id === grouped.id)!, "discover", VERIFIER_TIMEOUT_MS);
     }
-    if (previousModule) await boundary(previousModule);
     if (!coordinator.checkpoints.snapshot.producedHead) await coordinator.seal(packetFor("initial", catalog.requirements), implemented);
     await coordinator.drain();
     let head = coordinator.checkpoints.snapshot.producedHead!;
+    for (const module of new Set(catalog.requirements.filter(item => implemented.has(item.id)).map(moduleId))) {
+      const scope = catalog.requirements.filter(item => moduleId(item) === module && implemented.has(item.id));
+      await publish(head, module, coordinator.checkpoints.snapshot.epoch, await aggregate(head, scope), scope);
+    }
     const scope = catalog.requirements;
     let fullSnapshotId: string | undefined;
     let delivery: DeliveryReport = { ok: false, stage: "candidate", message: "No sealed application is available" };
