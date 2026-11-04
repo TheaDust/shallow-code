@@ -150,6 +150,47 @@ async function cachedAgent(f: Awaited<ReturnType<typeof fixture>>, directory: st
     semanticReview: options.semanticReview, programCache: cache }) };
 }
 
+test("Direct check_program submissions skip the unused exploration environment and release job resources", async () => {
+  const f = await fixture();
+  let released = 0;
+  f.adapter.releaseJob = async job => {
+    assert.equal(job.jobId, f.job.jobId);
+    assert.equal(f.closed, f.environments);
+    released++;
+  };
+  const model: VerifierModel = { run: request => f.model.run({ ...request,
+    tools: request.tools.map(tool => tool.name === "invoke" ? { ...tool, execute: async args => {
+      const input = args as { capabilityId: string; input: unknown };
+      if (input.capabilityId === "inspect" && typeof input.input === "object") return {};
+      return tool.execute(args);
+    } } : tool) }) };
+  try {
+    const report = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
+    assert(report.outcomes.every(outcome => outcome.status === "pass"));
+    assert.equal(f.environments, 1, "only the submitted program needs an environment");
+    assert.equal(released, 1);
+  } finally { await f.cleanup(); }
+});
+
+test("Cancellation closes exploration before releasing retained job resources", async () => {
+  const f = await fixture();
+  const abort = new AbortController();
+  let released = 0;
+  f.adapter.releaseJob = async () => { assert.equal(f.closed, f.environments); released++; };
+  const model: VerifierModel = { async run(request) {
+    await request.tools.find(tool => tool.name === "invoke")!.execute({ capabilityId: "inspect", input: {} });
+    abort.abort(new Error("cancel exploration"));
+    throw abort.signal.reason;
+  } };
+  try {
+    await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, abort.signal);
+    assert.equal(f.environments, 1);
+    assert.equal(released, 1);
+    f.adapter.releaseJob = async () => { throw new Error("retained-resource cleanup failed"); };
+    await assert.rejects(f.verifier.check({ ...f.job, mode: "prepare" }, new AbortController().signal), VerifierCleanupError);
+  } finally { await f.cleanup(); }
+});
+
 test("Cross-build programs bind fresh tasks and states, execute again and avoid exploration", async () => {
   const first = await fixture({ initialState: { run: "first" } });
   const next = await fixture({ initialState: { run: "next" } });
@@ -990,7 +1031,7 @@ test("model-defined unverifiable gaps need no limitation list and expire with ch
     const second = await restarted.check({ ...f.job, jobId: "gap-replay" }, new AbortController().signal,
       async event => { progress.push(event); });
     assert.equal(explorations, 1);
-    assert.equal(f.environments, 1, "a gap on the same snapshot defaults to reuse without another exploration environment");
+    assert.equal(f.environments, 0, "submitting gaps without execution calls never starts an exploration environment");
     assert(second.outcomes.every(outcome => outcome.status === "inconclusive"));
     assert.equal(progress.filter(event => event.cached && event.stage === "diagnostic").length, 2);
     const manifest = await f.store.getJson<VerifierManifest>(second.manifest);
@@ -1277,6 +1318,7 @@ test("Verifier cancellation awaits cleanup and returns unconfirmed results", asy
   try {
     const controller = new AbortController();
     const verifier = createVerifierAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request: VerifierModelRequest) {
+      await request.tools.find(tool => tool.name === "invoke")!.execute({ capabilityId: "inspect", input: {} });
       controller.abort(new Error("Cancelled test job")); request.signal.throwIfAborted(); return { totalTokens: 0 };
     } } });
     const report = await verifier.check(f.job, controller.signal);
