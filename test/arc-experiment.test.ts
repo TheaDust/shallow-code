@@ -39,6 +39,7 @@ async function fixture(root: string): Promise<ExperimentPlan> {
 function fakeProcess(calls: WorkerRequest[]) {
   return async (request: ProcessRequest) => {
     const input = request.message as WorkerRequest;
+    assert.equal(request.timeoutMs, input.timeoutMs, "the worker and its subprocess share the optional wall limit");
     calls.push(input);
     if (input.action === "catalog") {
       assert.equal(request.env.OPENAI_API_KEY, undefined);
@@ -92,9 +93,16 @@ test("experimental scoring includes failed, skipped, interrupted and unexecuted 
 });
 
 test("experiment CLI validates tasks and limits and alternates paired method order", () => {
+  const defaults = parseExperimentArgs(["run"]);
+  assert.equal(defaults.generationTimeoutMs, null);
+  assert.equal(defaults.evaluationTimeoutMs, null);
+  const explicit = parseExperimentArgs(["run", "--generation-timeout-ms", "60000", "--evaluation-timeout-ms", "30000"]);
+  assert.equal(explicit.generationTimeoutMs, 60000);
+  assert.equal(explicit.evaluationTimeoutMs, 30000);
   assert.deepEqual(planCells(["a", "b"], 2).map(cell => cell.method), ["baseline", "shallow", "shallow", "baseline", "shallow", "baseline", "baseline", "shallow"]);
   for (const args of [["run", "--tasks", "../keep"], ["run", "--tasks", "keep,keep"], ["run", "--repeats", "0"],
-    ["run", "--generation-timeout-ms", "NaN"], ["run", "--repeats", "1", "--repeats", "2"]]) {
+    ["run", "--generation-timeout-ms", "NaN"], ["run", "--generation-timeout-ms", "0"],
+    ["run", "--evaluation-timeout-ms", "-1"], ["run", "--repeats", "1", "--repeats", "2"]]) {
     assert.throws(() => parseExperimentArgs(args));
   }
 });
@@ -103,8 +111,12 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
   await withTempDir("shallow-arc-experiment-", async root => {
     const plan = await fixture(root), output = join(root, "out"), calls: WorkerRequest[] = [];
     assert.doesNotMatch(JSON.stringify(plan), /private-credential/);
+    assert.equal(plan.generationTimeoutMs, null); assert.equal(plan.evaluationTimeoutMs, null);
     const result = await runExperiment(plan, output, env, false, { runProcess: fakeProcess(calls) });
     assert.equal(calls.length, 5);
+    assert(calls.every(call => call.timeoutMs === null));
+    const manifest = JSON.parse(await readFile(join(output, "experiment.json"), "utf8"));
+    assert.equal(manifest.generationTimeoutMs, null); assert.equal(manifest.evaluationTimeoutMs, null);
     assert.deepEqual(result.byMethod.map(row => row.macroPassRate), [0.5, 0.5]);
     assert.equal(await readFile(join(plan.tasks[0].requirementsDir, "requirements.yaml"), "utf8"), source);
     assert.equal(await readFile(join(plan.tasks[0].testsDir, "fixture.spec.ts"), "utf8"), "// private evaluator tests\n");
@@ -138,7 +150,7 @@ test("prepare enumerates tests without running a generator; resume retains an in
 
 test("a generation wall timeout still evaluates the retained final program and is included in summaries", async () => {
   await withTempDir("shallow-arc-timeout-", async root => {
-    const plan = await fixture(root), output = join(root, "out"), calls: WorkerRequest[] = [];
+    const plan = { ...await fixture(root), generationTimeoutMs: 1000 }, output = join(root, "out"), calls: WorkerRequest[] = [];
     const run = fakeProcess(calls);
     const result = await runExperiment(plan, output, env, false, { runProcess: async request => {
       const response = await run(request);

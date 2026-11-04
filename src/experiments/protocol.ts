@@ -31,8 +31,9 @@ export interface ExperimentPlan {
   playwrightVersion: string;
   settings: Record<string, string | undefined>;
   repeats: number;
-  generationTimeoutMs: number;
-  evaluationTimeoutMs: number;
+  /** null means no experiment-level wall deadline; internal stage limits still apply. */
+  generationTimeoutMs: number | null;
+  evaluationTimeoutMs: number | null;
   tasks: ArcTask[];
   cells: Array<{ task: string; repeat: number; method: Method }>;
 }

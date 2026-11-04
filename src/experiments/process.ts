@@ -11,7 +11,8 @@ export interface ProcessRequest {
   cwd: string;
   env: NodeJS.ProcessEnv;
   logFile: string;
-  timeoutMs: number;
+  /** null disables the wall timer while preserving cancellation and process-tree cleanup. */
+  timeoutMs: number | null;
   message?: object;
   signal?: AbortSignal;
 }
@@ -64,7 +65,7 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
     tree = await ownProcessTree(child);
     if (request.message !== undefined) child.send!(request.message);
     outcome = await Promise.race([exited, new Promise<ProcessResult>((resolve, reject) => {
-      timer = setTimeout(() => resolve({ exitCode: null, timedOut: true, durationMs: Date.now() - started }), Math.max(1, request.timeoutMs - (Date.now() - started)));
+      if (request.timeoutMs !== null) timer = setTimeout(() => resolve({ exitCode: null, timedOut: true, durationMs: Date.now() - started }), Math.max(1, request.timeoutMs - (Date.now() - started)));
       abort = () => reject(request.signal?.reason ?? new Error("Experiment interrupted"));
       request.signal?.addEventListener("abort", abort, { once: true });
       if (request.signal?.aborted) abort();

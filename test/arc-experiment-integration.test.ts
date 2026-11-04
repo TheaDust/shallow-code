@@ -22,7 +22,8 @@ test('missing heading fails', async ({ page }) => { await page.goto('/'); await 
 fs.writeFileSync(path.join(process.argv[2], 'playwright.config.ts'), "import {defineConfig} from '@playwright/test'; export default defineConfig({testDir:'./tests',workers:1,retries:0,timeout:2000,expect:{timeout:100},use:{baseURL:" + JSON.stringify(process.argv[3]) + "},projects:[{name:'chromium',use:{browserName:'chromium'}}]});");
 `);
     const plan = await createPlan(parseExperimentArgs(["run", "--bench-root", bench, "--output-dir", join(root, "out"),
-      "--repeats", "1", "--generation-timeout-ms", "30000", "--evaluation-timeout-ms", "30000"]), {});
+      "--repeats", "1"]), {});
+    assert.equal(plan.generationTimeoutMs, null); assert.equal(plan.evaluationTimeoutMs, null);
     const result = await runExperiment(plan, join(root, "out"), toolEnvironment(), false, { runProcess: async request => {
       const input = request.message as WorkerRequest;
       if (input.action !== "generate") return runProcess(request);
@@ -60,5 +61,34 @@ test("experiment wall timeout terminates the worker and its detached descendant"
       assert.ok(Number.isInteger(pid) && pid > 0);
       assert.throws(() => process.kill(pid, 0), /ESRCH/);
     }
+  });
+});
+
+test("an unlimited experiment process runs to completion without a wall timer", { timeout: 15_000 }, async () => {
+  await withTempDir("shallow-arc-unlimited-", async root => {
+    const logFile = join(root, "process.log");
+    const result = await runProcess({ executable: process.execPath,
+      args: ["-e", "setTimeout(() => console.log('completed naturally'), 150)"],
+      cwd: root, env: toolEnvironment(), logFile, timeoutMs: null });
+    assert.equal(result.exitCode, 0); assert.equal(result.timedOut, false);
+    assert.match(await readFile(logFile, "utf8"), /completed naturally/);
+    assert(result.durationMs >= 150);
+  });
+});
+
+test("unlimited experiment processes still cancel and clean up their process tree", { timeout: 15_000 }, async () => {
+  await withTempDir("shallow-arc-unlimited-abort-", async root => {
+    const logFile = join(root, "process.log");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(new Error("stop unlimited experiment")), 1000);
+    try {
+      await assert.rejects(runProcess({ executable: process.execPath, args: ["-e", `const child = require('node:child_process').spawn(process.execPath,
+        ['-e','setInterval(() => {}, 1000)'], {detached:true, windowsHide:true, stdio:'ignore'});
+        console.log(process.pid, child.pid); setInterval(() => {}, 1000);`],
+        cwd: root, env: toolEnvironment(), logFile, timeoutMs: null, signal: controller.signal }), /stop unlimited experiment/);
+      const pids = (await readFile(logFile, "utf8")).trim().split(/\s+/).map(Number);
+      assert.equal(pids.length, 2);
+      for (const pid of pids) { assert(Number.isInteger(pid) && pid > 0); assert.throws(() => process.kill(pid, 0), /ESRCH/); }
+    } finally { clearTimeout(timer); }
   });
 });

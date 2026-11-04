@@ -12,9 +12,9 @@ import { runProcess } from "./process.js";
 import { REPOSITORY, reportEntries, scoreReport, type ArcTask, type Method, type TestEntry } from "./protocol.js";
 
 export type WorkerRequest =
-  | { action: "generate"; method: Method; requirementsDir: string; projectDir: string; privateDir: string; timeoutMs: number }
+  | { action: "generate"; method: Method; requirementsDir: string; projectDir: string; privateDir: string; timeoutMs: number | null }
   | { action: "catalog" | "evaluate"; task: ArcTask; setupScript: string; directory: string; projectDir?: string;
-      catalog?: TestEntry[]; timeoutMs: number };
+      catalog?: TestEntry[]; timeoutMs: number | null };
 
 async function copyInputs(source: string, files: Record<string, string>, target: string): Promise<void> {
   for (const path of Object.keys(files)) {
@@ -30,7 +30,7 @@ export async function executeWorker(request: WorkerRequest): Promise<void> {
     process.env.SHALLOW_CAPTURE_SSE = "0";
     if (request.method === "baseline") {
       const result = await runBaseline({ requirementsDir: request.requirementsDir, outputDir: request.projectDir,
-        runDirectory: join(process.env.SHALLOW_RUN_DIR, "baseline"), env: process.env, timeoutMs: request.timeoutMs });
+        runDirectory: join(process.env.SHALLOW_RUN_DIR, "baseline"), env: process.env, timeoutMs: request.timeoutMs ?? undefined });
       process.exitCode = result.status === "completed" ? 0 : 1;
     } else {
       const { main } = await import("../../index.js");

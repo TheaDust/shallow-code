@@ -26,8 +26,8 @@ Options:
   --tasks <id,id>                  Selected tasks (default: all discovered tasks)
   --repeats <n>                    Independent paired repetitions (default: 2)
   --output-dir <dir>               Experiment artifacts (default: outputs/arc-experiment)
-  --generation-timeout-ms <n>      Same total generation wall limit for both methods (default: 5400000)
-  --evaluation-timeout-ms <n>      Per evaluation phase wall limit (default: 3600000)
+  --generation-timeout-ms <n>      Optional total generation wall limit for both methods (default: no limit)
+  --evaluation-timeout-ms <n>      Optional per evaluation phase wall limit (default: no limit)
   --resume                        Continue this frozen experiment; retain all completed results
 `;
 
@@ -57,8 +57,9 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   return { command, tasks, resume,
     benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench"),
     outputDir: resolve(cwd, values.get("--output-dir") ?? "outputs/arc-experiment"),
-    repeats: integer("--repeats", 2, 100), generationTimeoutMs: integer("--generation-timeout-ms", 5_400_000),
-    evaluationTimeoutMs: integer("--evaluation-timeout-ms", 3_600_000) };
+    repeats: integer("--repeats", 2, 100),
+    generationTimeoutMs: values.has("--generation-timeout-ms") ? integer("--generation-timeout-ms", 0) : null,
+    evaluationTimeoutMs: values.has("--evaluation-timeout-ms") ? integer("--evaluation-timeout-ms", 0) : null };
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -130,7 +131,7 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
   const childEnv: NodeJS.ProcessEnv = { ...env, SHALLOW_CAPTURE_SSE: "0" };
   delete childEnv.SHALLOW_PROBE_PORT;
   delete childEnv.SHALLOW_EVAL_PORT;
-  const worker = async (message: WorkerRequest, logFile: string, timeoutMs: number, generation = false) => run({
+  const worker = async (message: WorkerRequest, logFile: string, timeoutMs: number | null, generation = false) => run({
     executable: process.execPath, args: ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("worker.ts", import.meta.url))],
     cwd: REPOSITORY, env: generation ? childEnv : Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/API_KEY|TOKEN|SECRET|PASSWORD/i.test(key))),
     logFile, timeoutMs, message, signal: dependencies.signal });
