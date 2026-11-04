@@ -19,6 +19,7 @@ export interface ContractCheckpoint {
   clauseId?: string;
   dependsOn: string[];
   basis: string;
+  sourceStepIndex?: number;
   expected?: unknown;
 }
 export interface AcceptanceContract {
@@ -85,15 +86,31 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
   if (new Set(contract.clauses.map(clause => JSON.stringify([clause.requirementId, clause.scenarioId]))).size !== 1) {
     throw new Error("Each program must cover one requirement scenario; save separate contracts and programs for independent cases");
   }
+  const checkpointPositions = new Map<string, number>();
+  const clausePositions = new Map<string, number>();
   // Initial conditions and required actions are source checkpoints even if the model omits them.
   for (const requirement of input?.requirements ?? []) for (const scenario of requirement.scenarioContracts ?? []) {
     if (!contract.clauses.some(clause => clause.requirementId === requirement.id && clause.scenarioId === scenario.id)) continue;
     const phases = scenarioStepPhases(scenario);
+    for (const checkpoint of contract.checkpoints.filter(item => item.requirementId === requirement.id && item.scenarioId === scenario.id)) {
+      if (checkpoint.kind === "assertion") continue;
+      const index = checkpoint.sourceStepIndex ?? scenario.steps.findIndex(step => step.content === checkpoint.basis);
+      if (!Number.isInteger(index) || index < 0 || index >= scenario.steps.length || !scenario.steps[index]!.content.includes(checkpoint.basis)) {
+        throw new Error(`Checkpoint ${checkpoint.id} requires a valid sourceStepIndex and basis from that source step`);
+      }
+      checkpointPositions.set(checkpoint.id, index);
+    }
     scenario.steps.forEach((step, index) => {
       const phase = phases[index];
+      if (phase === "then") for (const [part] of requirementOutcomeClauses(step.content).entries()) {
+        const clauseId = `${requirement.id}:${scenario.id}:${index}:${part}`;
+        clausePositions.set(clauseId, index);
+        const clause = contract.clauses.find(item => item.id === clauseId);
+        if (clause) checkpointPositions.set(clause.checkpointId, index);
+      }
       if (phase !== "given" && phase !== "when") return;
       const checkpoint = contract.checkpoints.find(item => item.requirementId === requirement.id && item.scenarioId === scenario.id
-        && item.basis === step.content
+        && item.basis === step.content && checkpointPositions.get(item.id) === index
         && (phase === "given" ? item.kind === "precondition" : item.kind === "action" || item.kind === "condition"));
       if (!checkpoint) throw new Error(`${phase === "given" ? "Contract omitted a source initial condition" : "Contract omitted a source action or condition"} for requirementId=${requirement.id}, scenarioId=${scenario.id}, phase=${phase}, step=${JSON.stringify(step.content)}`);
       if (phase === "given" && checkpoint.expected === undefined) throw new Error(`Source initial condition has no expectation for requirementId=${requirement.id}, scenarioId=${scenario.id}, phase=${phase}, step=${JSON.stringify(step.content)}`);
@@ -112,8 +129,8 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
     visit(checkpoint.id, new Set());
   }
   // Reject an incomplete assertion graph before any browser replay or semantic review.
-  // Every source GIVEN/WHEN checkpoint in the scenario must be an ancestor of each
-  // result assertion; otherwise the program can never establish the required state.
+  // Each result depends on setup and actions through its own source step, never
+  // on a later action embedded in another result.
   for (const clause of contract.clauses) {
     const assertion = checkpoints.get(clause.checkpointId)!;
     const ancestors = new Set<string>();
@@ -123,8 +140,13 @@ export function validateAcceptanceContract(contract: AcceptanceContract, job: Ch
       checkpoints.get(id)?.dependsOn.forEach(collect);
     };
     assertion.dependsOn.forEach(collect);
+    const position = clausePositions.get(clause.id);
+    if (position !== undefined && [...ancestors].some(id => (checkpointPositions.get(id) ?? -1) > position)) {
+      throw new Error(`Assertion checkpoint depends on a later source step for ${clause.id}`);
+    }
     const setup = contract.checkpoints.filter(item => item.requirementId === clause.requirementId
-      && item.scenarioId === clause.scenarioId && item.kind !== "assertion");
+      && item.scenarioId === clause.scenarioId && item.kind !== "assertion"
+      && (position === undefined || checkpointPositions.get(item.id)! <= position));
     if (setup.some(item => !ancestors.has(item.id))) {
       throw new Error(`Assertion checkpoint dependency closure omits source setup, action, or condition for ${clause.id}`);
     }

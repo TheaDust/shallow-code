@@ -227,6 +227,58 @@ test("download filenames are independent observations and reject a wrong expecte
   });
 });
 
+test("localStorage fixtures preserve raw inputs, bind action receipts and isolate actors and cases", async () => {
+  const server = createServer((_request, response) => {
+    response.setHeader("content-type", "text/html");
+    response.end(`<!doctype html><output role="status"></output><button>Continue</button><script>
+      localStorage.setItem('unrelated','keep');let value=5;
+      try { const state=JSON.parse(localStorage.getItem('workspace')); if(state?.version===1) value=state.value; } catch {}
+      const output=document.querySelector('output');output.textContent=value;
+      document.querySelector('button').onclick=()=>output.textContent=++value;
+    </script>`);
+  });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address(); assert(address && typeof address === "object");
+  const browser = await chromium.launch({ headless: true });
+  const events: WebRuntimeEvent[] = [];
+  const createRuntime = () => new WebProgramRuntime(browser, `http://127.0.0.1:${address.port}`, async event => {
+    events.push(event); return `host-${events.length}`;
+  }, [], 5000, [{ id: "prepare", kind: "action" }]);
+  const runtime = createRuntime();
+  let next: WebProgramRuntime | undefined;
+  const options = () => ({ signal: new AbortController().signal, timeoutMs: 10_000 });
+  try {
+    for (const raw of ['not-json', '{"version":0,"data":{}}', null, '{"version":1,"value":77}']) {
+      const source = raw === null ? "await p.storage.removeItem('workspace')" : `await p.storage.setItem('workspace',${JSON.stringify(raw)})`;
+      const result = await runtime.run(`const p=await browser.actor('alice');
+        await check.action('prepare',async()=>{${source};});await p.reload();
+        const before=await p.getByRole('status').innerText();await p.getByRole('button',{name:'Continue',exact:true}).click();
+        return {before:before.value,after:(await p.getByRole('status').innerText()).value};`, options());
+      const value = raw?.includes('"version":1') ? 77 : 5;
+      assert.deepEqual(result, { before: String(value), after: String(value + 1) });
+      const page = browser.contexts()[0]!.pages()[0]!;
+      assert.equal(await page.evaluate(() => localStorage.getItem("workspace")), raw);
+      assert.equal(await page.evaluate(() => localStorage.getItem("unrelated")), "keep");
+    }
+    await runtime.run("const p=await browser.actor('alice');await p.storage.setItem('','');", options());
+    assert.equal(await browser.contexts()[0]!.pages()[0]!.evaluate(() => localStorage.getItem("")), "");
+    assert.equal(await runtime.run("const p=await browser.actor('bob');return (await p.getByRole('status').innerText()).value;", options()), "5");
+    for (const source of ["await p.storage.setItem('workspace',{})", "await p.storage.setItem('workspace','x'.repeat(64001))", "await p.storage.removeItem('x'.repeat(4097))"]) {
+      await assert.rejects(runtime.run(`const p=await browser.actor('alice');${source}`, options()), /Storage fixture/);
+    }
+    const mutations = events.filter(event => event.payload.method === "storageSetItem" || event.payload.method === "storageRemoveItem");
+    assert.equal(mutations.length, 5, "rejected mutations emit no action receipt");
+    assert(mutations.slice(0, 4).every(event => event.kind === "action" && event.checkpointId === "prepare"));
+    assert.equal(mutations[0]!.payload.value, "not-json");
+    await runtime.close();
+    next = createRuntime();
+    assert.equal(await next.run("const p=await browser.actor('alice');return (await p.getByRole('status').innerText()).value;", options()), "5");
+  } finally {
+    await runtime.close(); await next?.close(); await browser.close(); server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  }
+});
+
 test("host fixtures supply real oversized files, narrow viewports and isolated storage quota", async () => {
   const server = createServer((_request, response) => {
     response.setHeader("content-type", "text/html");

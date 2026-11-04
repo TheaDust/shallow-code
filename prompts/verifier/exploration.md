@@ -8,7 +8,7 @@
 
 按场景收敛：一个场景的授权入口、初态建立方法和对象身份已足够明确，就先提交该场景的完整程序，不等待全组源码读完。把准备、动作和观察放进这次独立执行，避免先用 invoke 逐步跑通同一路径再抄成程序。只有具体缺失的信息妨碍编写程序时才补读或探测；首次执行后根据真实阻断点局部修正，不重新通读实现。已实际确认同一能力或前置条件阻断后，不为相同原因重复尝试等价路径；继续其他可测场景，并如实记录缺口。
 
-逐条阅读每个 GIVEN、WHEN、THEN、结果段的 AND/BUT 以及显式复合结果。sourceClauses 给出稳定的原文结果身份；合同逐字保留每个 id、requirementId、scenarioId 与 basis。合同包含 checkpoints [{id,kind,requirementId,scenarioId,clauseId?,dependsOn,basis,expected?}] 与 clauses [{id,requirementId,scenarioId,basis,checkpointId,expected}]；checkpoint 的 kind 为 precondition、action、condition、assertion。每个 GIVEN 与 WHEN 各成一个 checkpoint：用户动作 WHEN 为 action，系统状态/状态转移（渲染完成、保存完成、加载完成等）为 condition；动作 WHEN 必须把 checkpoint id 传给实际执行的动作，condition 不要求动作收据，由结果断言在状态成立后的观察证明。每个结果有独立 assertion checkpoint，其依赖须传递地包含该场景的初始条件与动作/状态条件。precondition 携带以原文为依据的 expected 比较。
+逐条阅读每个 GIVEN、WHEN、THEN、结果段的 AND/BUT 以及显式复合结果。sourceClauses 给出稳定的原文结果身份；合同逐字保留每个 id、requirementId、scenarioId 与 basis。合同包含 checkpoints [{id,kind,requirementId,scenarioId,clauseId?,dependsOn,basis,sourceStepIndex?,expected?}] 与 clauses [{id,requirementId,scenarioId,basis,checkpointId,expected}]；checkpoint 的 kind 为 precondition、action、condition、assertion。每个 GIVEN 与 WHEN 各成一个 checkpoint：用户动作 WHEN 为 action，系统状态/状态转移（渲染完成、保存完成、加载完成等）为 condition；动作 WHEN 必须把 checkpoint id 传给实际执行的动作，condition 不要求动作收据，由结果断言在状态成立后的观察证明。每个结果有独立 assertion checkpoint，其依赖须传递地包含截至该结果原文步骤的初始条件与动作/状态条件，不得依赖后续步骤。GIVEN/WHEN 的 basis 逐字匹配原文；THEN/AND/BUT 中附带的动作或条件另建 checkpoint，填写从 0 开始的 sourceStepIndex，basis 使用该步骤的原文片段。后续动作发生前先断言前一个阶段的结果，动作及观察收据必须早于使用它们的断言。precondition 携带以原文为依据的 expected 比较。
 
 clause 的 expected 来自需求原文，不得照抄观察值；不得使用恒定谓词、空检查、恒真式。依据实际观察确定完整对象身份，保留原文规定的参与者、操作语义与授权入口；消除对象歧义后再操作，具体定位与调用语义遵循适配器声明。场景允许的样例数据、关系比较和必要测试探针可由程序选择，其常量来自准备输入，不从被测结果抄写。
 
