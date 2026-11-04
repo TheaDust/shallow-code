@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compactExecutionFeedback, feedbackSlice } from "../src/verifier/feedback.js";
+import type { CheckOutcome } from "../src/verifier/port.js";
+
+test("compact feedback retains evidence conclusions and reasons independently of raw assertion success", () => {
+  const outcomes: CheckOutcome[] = [{ requirementId: "r", scenarioId: "s", clauseId: "c", status: "inconclusive",
+    reason: "Program did not record required checkpoint receipt: undo", evidence: [{ id: "receipt", digest: "digest" }] }];
+  assert.deepEqual(compactExecutionFeedback({ outcomes }).outcomes, [{ requirementId: "r", scenarioId: "s", clauseId: "c",
+    status: "inconclusive", reason: outcomes[0]!.reason }]);
+  assert.equal(outcomes[0]!.evidence.length, 1);
+});
 
 test("execution feedback preserves every result while removing passed values and bounding failed values", () => {
   const long = "document-body-".repeat(20_000);

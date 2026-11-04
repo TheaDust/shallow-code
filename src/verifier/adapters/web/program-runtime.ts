@@ -138,7 +138,7 @@ const PRELUDE = String.raw`
       inspect: () => auxiliary('inspect'),
       viewport: () => auxiliary('viewport'),
       clipboard: Object.freeze({writeText: value => auxiliary('clipboardWrite',{value}), readText: () => auxiliary('clipboardRead')}),
-      storage: Object.freeze({fill: bytes => auxiliary('storageFill',{bytes})}),
+      storage: Object.freeze({fill: bytes => auxiliary('storageFill',{bytes}), setItem: (key, value) => auxiliary('storageSetItem',{key,value}), removeItem: key => auxiliary('storageRemoveItem',{key})}),
       render: (sourceId, options = {}) => auxiliary('render',{sourceId,options}),
     }), actor, window, eventObservation);
   };
@@ -294,6 +294,18 @@ export class WebProgramRuntime {
     if (method === "viewport") return this.observation({ actor: actorName, window: windowName, kind: "viewport", value: await page.evaluate(() => ({
       width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,
     })) });
+    if (method === "storageSetItem" || method === "storageRemoveItem") {
+      if (typeof input.key !== "string" || input.key.length > 4096) throw new Error("Storage fixture key must be a string of at most 4096 characters");
+      if (method === "storageSetItem" && (typeof input.value !== "string" || input.value.length > 64_000)) throw new Error("Storage fixture value must be a string of at most 64000 characters");
+      const key = input.key;
+      const value = method === "storageSetItem" ? input.value as string : undefined;
+      await page.evaluate(({ key, value }) => {
+        if (value === undefined) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      }, { key, value });
+      return { id: await this.emit({ kind: "action", checkpointId: input.checkpointId as string | undefined, inputs: [],
+        payload: { method, actor: actorName, window: windowName, key, ...(value === undefined ? {} : { value }) } }) };
+    }
     if (method === "storageFill") {
       const bytes = finiteNumber(input.bytes, "bytes", 16 * 1024 * 1024);
       if (!Number.isInteger(bytes) || bytes < 2) throw new Error("Storage fixture bytes must be an integer between 2 and 16 MiB");

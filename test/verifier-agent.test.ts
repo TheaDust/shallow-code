@@ -590,7 +590,7 @@ test("Verifier assembles final-program self-check guidance with its exploration 
         assert.match(request.systemPrompt, /check_program.*独立干净环境/);
         assert.match(request.systemPrompt, /源码或合同修改后，重新调用 check_program/);
         assert.match(request.systemPrompt, /业务断言失败不要求把正确程序改到通过/);
-        assert.match(request.systemPrompt, /verifier-tools@6/);
+        assert.match(request.systemPrompt, /verifier-tools@7/);
         assert.match(request.systemPrompt, /不等待全组源码读完/);
         assert.match(request.systemPrompt, /避免先用 invoke 逐步跑通同一路径/);
         assert.match(request.systemPrompt, /摘要缺失排错所需信息时才用 read_feedback/);
@@ -670,12 +670,73 @@ test("progress sink failures cannot change evidence or prevent environment clean
   } finally { await f.cleanup(); }
 });
 
-test("Verifier never grants missing source AND clause through submitted coverage", async () => {
+test("Verifier rejects finish that omits a source AND clause", async () => {
   const f = await fixture({ omitSecond: true });
   try {
     const report = await f.verifier.check(f.job, new AbortController().signal);
-    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "inconclusive"]);
-    assert.match(report.outcomes[1]!.reason!, /No reviewed program/);
+    assert(report.outcomes.every(item => item.status === "inconclusive"));
+    assert.match(report.outcomes[1]!.reason!, /Finish omitted 1 source result clauses/);
+  } finally { await f.cleanup(); }
+});
+
+test("finish lists omitted requirements and permits completion in the same exploration without persisting partial gaps", async () => {
+  const f = await fixture();
+  const input = await f.store.getJson<VerifierRequirements>(f.job.requirements);
+  input.requirements.push({ ...input.requirements[0]!, id: "r2" });
+  f.job.requirementIds.push("r2");
+  f.job.requirements = await f.store.putJson(input);
+  let attempts = 0;
+  const model: VerifierModel = { async run(request) {
+    const sources = JSON.parse(request.prompt).sourceClauses as SourceClause[];
+    const call = (name: string, args: unknown) => request.tools.find(tool => tool.name === name)!.execute(args);
+    const save = async (clauses: SourceClause[]) => {
+      const identity = { requirementId: clauses[0]!.requirementId, scenarioId: clauses[0]!.scenarioId };
+      const contract: AcceptanceContract = { requirements: f.job.requirements, checkpoints: [
+        { id: "given", kind: "precondition", ...identity, basis: "Order is unpaid", dependsOn: [], expected: { operator: "equal", value: "unpaid" } },
+        { id: "when", kind: "action", ...identity, basis: "Cancel the order", dependsOn: ["given"] },
+        ...clauses.map((clause, index) => ({ id: `result-${index}`, kind: "assertion" as const, ...identity, clauseId: clause.id, basis: clause.basis, dependsOn: ["when"] })),
+      ], clauses: clauses.map((clause, index) => ({ ...clause, checkpointId: `result-${index}`, expected: { operator: "equal", value: 5 } })) };
+      return (await call("check_program", { contract, source: "test saved program" }) as { program: ProgramRef }).program;
+    };
+    const first = await save(sources.slice(0, 1));
+    await assert.rejects(call("finish", { programs: [first] }), error => {
+      assert.match(String(error), /Finish omitted 3/);
+      assert.match(String(error), /r2:cancel/);
+      return true;
+    });
+    attempts++;
+    const gap = { clauseId: sources[1]!.id, reason: "Unobservable", attempts: ["Tried observing"] };
+    await assert.rejects(call("finish", { programs: [first], unsupported: [gap] }), /Finish omitted 2/);
+    await assert.rejects(readdir(join(f.directory, "unsupported")), /ENOENT/);
+    const second = await save(sources.slice(1, 2));
+    const third = await save(sources.slice(2));
+    await call("finish", { programs: [first, second, third] });
+    return { totalTokens: 100 };
+  } };
+  try {
+    const report = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
+    assert.equal(attempts, 1);
+    assert.equal(f.replays, 3, "saved executions are reused after correcting finish");
+    assert.deepEqual(report.outcomes.map(item => item.status), ["pass", "pass", "pass", "pass"]);
+    assert.equal((await f.store.getJson<VerifierManifest>(report.manifest)).unsupported, undefined);
+  } finally { await f.cleanup(); }
+});
+
+test("check_program reports incomplete evidence even when every raw assertion matched", async () => {
+  const f = await fixture({ omitActionReceipt: true });
+  let previews = 0;
+  const model: VerifierModel = { run: request => f.model.run({ ...request, tools: request.tools.map(tool => tool.name === "check_program"
+    ? { ...tool, async execute(args) {
+      const result = await tool.execute(args) as { checks: Array<{ assertion?: { result: string } }>; outcomes: Array<{ status: string; reason?: string }> };
+      assert(result.checks.filter(item => item.assertion).every(item => item.assertion!.result === "satisfied"));
+      assert(result.outcomes.every(item => item.status === "inconclusive" && /required checkpoint receipt: when/.test(item.reason!)));
+      previews++;
+      return result;
+    } } : tool) }) };
+  try {
+    const report = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
+    assert.equal(previews, 1);
+    assert(report.outcomes.every(item => item.status === "inconclusive" && /required checkpoint receipt: when/.test(item.reason!)));
   } finally { await f.cleanup(); }
 });
 
@@ -734,9 +795,9 @@ test("Verifier semantic review payload is scoped and stably ordered", async () =
 });
 
 test("explicit discovery fills missing clauses and replaces incompatible requirement contracts", async () => {
-  const f = await fixture({ omitSecond: true });
+  const f = await fixture();
   try {
-    const first = await f.verifier.check(f.job, new AbortController().signal);
+    const first = await f.verifier.check({ ...f.job, clauseIds: ["r1:cancel:2:0"] }, new AbortController().signal);
     const second = await f.verifier.check({ ...f.job, jobId: "partial-discovery", mode: "discover", programs: first.programs }, new AbortController().signal);
     assert(second.outcomes.every(outcome => outcome.status === "pass"));
     assert.equal(second.programs.length, 2);
@@ -745,6 +806,7 @@ test("explicit discovery fills missing clauses and replaces incompatible require
     const changedInput = await f.store.putJson({ ...original, browserEntry: "/new-entry" });
     const third = await f.verifier.check({ ...f.job, jobId: "changed-input", requirements: changedInput, mode: "discover", programs: second.programs }, new AbortController().signal);
     assert.equal(third.programs.length, 1);
+    assert(third.outcomes.every(outcome => outcome.status === "pass"));
     const manifest = await f.store.getJson<VerifierManifest>(third.manifest);
     assert(manifest.diagnostics.some(message => /is incompatible/.test(message)));
     assert.equal(f.roles.filter(role => role === "exploration").length, 3);
@@ -859,15 +921,15 @@ test("rejected programs survive restart as feedback and cannot be replayed or re
 });
 
 test("rejected coverage is rediscovered, revised programs are reviewed, and approved replacements are reused", async () => {
-  const config = { rejectReview: true, omitSecond: true, source: "// rejected test" };
+  const config = { rejectReview: true, source: "// rejected test" };
   const f = await fixture(config);
   try {
-    const first = await f.verifier.check(f.job, new AbortController().signal);
-    config.rejectReview = false; config.omitSecond = false; config.source = "// revised test";
+    const first = await f.verifier.check({ ...f.job, clauseIds: ["r1:cancel:2:0"] }, new AbortController().signal);
+    config.rejectReview = false; config.source = "// revised test";
     const second = await f.verifier.check({ ...f.job, jobId: "explicit-retry", mode: "discover", programs: first.programs,
       snapshot: await f.store.putJson({ sha: "source-2" }) }, new AbortController().signal);
     assert(second.outcomes.every(item => item.status === "pass"));
-    assert.deepEqual(JSON.parse(f.explorationPrompts.at(-1)!).sourceClauses.map((item: SourceClause) => item.id), first.outcomes.map(item => item.clauseId));
+    assert.deepEqual(JSON.parse(f.explorationPrompts.at(-1)!).sourceClauses.map((item: SourceClause) => item.id), second.outcomes.map(item => item.clauseId));
     assert.equal(second.programs.length, 2, "history retains the rejected attempt alongside its replacement");
     assert.deepEqual(f.roles, ["exploration", "semantic_review", "exploration", "exploration", "semantic_review"]);
     assert.equal(f.replays, 2, "only the replacement is replayed during rediscovery");
@@ -895,10 +957,10 @@ test("changed requirement context invalidates a cached rejection", async () => {
 });
 
 test("failed rediscovery leaves approved sibling programs eligible for current replay", async () => {
-  const config = { omitSecond: true, rejectReview: false };
+  const config = { rejectReview: false };
   const f = await fixture(config);
   try {
-    const first = await f.verifier.check(f.job, new AbortController().signal);
+    const first = await f.verifier.check({ ...f.job, clauseIds: ["r1:cancel:2:0"] }, new AbortController().signal);
     config.rejectReview = true;
     const second = await f.verifier.check({ ...f.job, jobId: "partial", mode: "discover", programs: first.programs }, new AbortController().signal);
     assert.deepEqual(second.outcomes.map(item => item.status), ["pass", "inconclusive"]);

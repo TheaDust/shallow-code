@@ -335,7 +335,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 }
                 return executionFeedback({ output, receipts: result.receipts, ...(checks.length ? { checks } : {}) });
               } },
-            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Once entry, initial state and object identity are located, use this tool directly instead of separately probing the same path. Inspect compact checks and diagnostics; use read_feedback only for missing diagnostic detail. Revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled.",
+            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Once entry, initial state and object identity are located, use this tool directly instead of separately probing the same path. Inspect outcomes status/reason for formal evidence conclusions, then compact checks and diagnostics; matching checks alone do not establish a complete evidence chain. Use read_feedback only for missing diagnostic detail. Revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled.",
               parameters: Type.Object({ contract: toolObjectSchema, source: Type.String({ minLength: 1 }),
                 basisExplanation: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })) }),
               prepareArguments: prepareCheckArguments,
@@ -363,11 +363,12 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 await options.programCache?.save(job, input, program).catch(cacheFailure);
                 const execution = await prepare(explorationSignal);
                 let refs = [...execution.readinessEvidence];
+                let outcomes: CheckOutcome[];
                 try {
                   await progress({ stage: "replay", programId: program.descriptor.id, clauseIds: contract.clauses.map(clause => clause.id) });
                   if (await ready(execution)) refs.push(...await execution.replay(program, explorationSignal));
                   manifest.receipts.push(...refs);
-                  await evaluateProgramEvidence(store, job, program, contract, deduplicate(refs));
+                  outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(refs));
                 } finally { await close(execution); }
                 executions.set(canonicalJson(program), refs);
                 savedPrograms.push(program);
@@ -379,9 +380,9 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                     checkpointId: receipt.checkpointId, ...(receipt.assertion ? { assertion: receipt.assertion } : {}), payload });
                   else if (receipt.kind === "diagnostic" || receipt.kind === "readiness" && receipt.readiness?.result !== "ready") diagnostics.push(payload);
                 }
-                return executionFeedback({ program, checks, diagnostics });
+                return executionFeedback({ program, outcomes, checks, diagnostics });
               } },
-            { name: "finish", description: "Submit exact program references returned by check_program after inspecting its checks and diagnostics, or explain unverifiable clauses. When enabled, independent review uses those executions without another replay; faithful business failures are independently confirmed.",
+            { name: "finish", description: "Submit exact program references returned by check_program after inspecting its outcomes, checks and diagnostics, or explain unverifiable clauses. Submitted programs and unsupported entries must cover every source clause exactly once; omissions are returned for correction in this session. When enabled, independent review uses those executions without another replay; faithful business failures are independently confirmed.",
               parameters: Type.Object({ programs: Type.Array(programSchema), unsupported: Type.Optional(Type.Array(Type.Object({
                 clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
                 attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
@@ -404,6 +405,8 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                   if (!validGap(gap) || !discoverySources.some(source => source.id === gap.clauseId) || claimed.has(gap.clauseId)) throw new Error("Unverifiable clauses must uniquely cite a source clause and explain the reason and attempts");
                   claimed.add(gap.clauseId);
                 }
+                const missing = discoverySources.filter(source => !claimed.has(source.id));
+                if (missing.length) throw new Error(`Finish omitted ${missing.length} source result clauses; submit programs or explain unsupported clauses: ${missing.map(source => source.id).join(", ")}`);
                 for (const gap of gaps) {
                   if (gap.retryable !== true) {
                     const cache = gapCache(gap.clauseId);

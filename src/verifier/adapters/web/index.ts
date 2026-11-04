@@ -77,7 +77,7 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
     resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
-      { id: "run", version: "6", description: "Run isolated JavaScript with controlled native Playwright locators, browser events, isolated downloaded HTML/PDF/image rendering and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
+      { id: "run", version: "7", description: "Run isolated JavaScript with controlled native Playwright locators, browser events, localStorage state fixtures, isolated downloaded HTML/PDF/image rendering and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },
       { id: "reset_case", version: "2", description: "Restart the application with fresh declared initial data and browser contexts; expire all browser handles while retaining the validated build.", inputSchema: resetSchema, outputSchema: objectSchema },
     ],
     programFormat: { id: "shallow.web.javascript", version: "1", mediaType: "text/javascript", schema: programSchema },

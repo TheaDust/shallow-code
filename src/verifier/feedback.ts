@@ -1,4 +1,4 @@
-import type { ContentRef, EvidenceReceipt, ProgramRef } from "./port.js";
+import type { CheckOutcome, ContentRef, EvidenceReceipt, ProgramRef } from "./port.js";
 
 interface CheckFeedback {
   receipt: ContentRef;
@@ -13,6 +13,7 @@ export interface ExecutionFeedback {
   receipts?: ContentRef[];
   checks?: CheckFeedback[];
   diagnostics?: unknown[];
+  outcomes?: CheckOutcome[];
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -45,9 +46,10 @@ function preview(value: unknown, limit: number): unknown {
   return { truncated: true, type: "json", characters: text.length, head: text.slice(0, size), tail: text.slice(-size) };
 }
 
-export function compactExecutionFeedback(feedback: ExecutionFeedback): ExecutionFeedback & { receiptsOmitted?: number; diagnosticsOmitted?: number } {
+export function compactExecutionFeedback(feedback: ExecutionFeedback): Omit<ExecutionFeedback, "outcomes"> & { outcomes?: Omit<CheckOutcome, "evidence">[]; receiptsOmitted?: number; diagnosticsOmitted?: number } {
   return {
     ...(feedback.program ? { program: feedback.program } : {}),
+    ...(feedback.outcomes ? { outcomes: feedback.outcomes.map(({ evidence: _evidence, ...outcome }) => outcome) } : {}),
     ...("output" in feedback ? { output: preview(feedback.output, 4096) } : {}),
     ...(feedback.receipts ? { receipts: feedback.receipts.slice(0, 8),
       ...(feedback.receipts.length > 8 ? { receiptsOmitted: feedback.receipts.length - 8 } : {}) } : {}),

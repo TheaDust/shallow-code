@@ -54,7 +54,7 @@ await check.expect("no-download", [observed.id], "(values,expected)=>values[0].c
 - `locator.computedStyle(property)` 返回真实计算样式观察 `{id,value}`，例如 color；属性名是 CSS 属性，不是 JavaScript 表达式。
 
 - `inspect()` 返回 `{id,value:{url,text,accessibility}}`；`viewport()` 返回 `{id,value:{width,height,scrollWidth,scrollHeight}}`。
-- `clipboard.writeText(value)`、`clipboard.readText()` 访问当前应用文本剪贴板。`storage.fill(bytes)` 仅为原文要求的配额前置准备写入独立 fixture 键，最多 16 MiB，保留现有键，返回 `{id,value:{writtenBytes,quotaExceeded}}`。
+- `clipboard.writeText(value)`、`clipboard.readText()` 访问当前应用文本剪贴板。`storage.setItem(key, rawString)` 与 `storage.removeItem(key)` 在当前 actor/window 的应用 origin 写入原始字符串或删除指定 localStorage 键，key 最多 4096 字符、rawString 最多 64000 字符，允许空字符串。仅用于需求明确规定的损坏、缺失、版本不兼容等存储初态；先创建 actor，设置存储后按原文刷新或导航，让应用重新读取。准备动作按需放入 check.action，产生动作收据，不证明业务结果；回退内容及后续可用性须通过实际页面观察断言。不得用存储写入替代原文规定的用户操作。`storage.fill(bytes)` 仅为原文要求的配额前置准备写入独立 fixture 键，最多 16 MiB，保留现有键，返回 `{id,value:{writtenBytes,quotaExceeded}}`。
 - `locator.pasteImage(file)` 对唯一目标执行真实 PNG 图片粘贴；`locator.dropFiles(files)` 派发携带 File 的 dragenter/dragover/drop，证明页面投放处理；`locator.uploadDirectory({name,files:[{path,text?|base64?|fixture?,mimeType?}]})` 上传宿主隔离生成的目录树。使用同一套严格唯一的 Playwright 定位器；动作使用 check.action 关联 checkpoint。
 - `render(download.id,options?)` 解析当前 actor/window 已读取的 base64 下载；`locator.image(options?)` 对唯一可见元素截图。支持 HTML（.html/.htm）、PDF、PNG、JPEG、WebP 与离线 OCR，返回 `{id,value}`，并保存 PNG 附件。PDF page 为 1–100、默认 1，scale 为 0.25–3、PDF 默认 1.5、图片与 HTML 默认 1。结果含 format/page/pageCount/width/height/text/textItems/truncated/pixels/samples；samples 最多 64 个 `{x,y}`，返回 rgba；region 选择像素区域时不提供整页提取文本。每边最多 4096 像素。ocr 可选 eng/chi_sim/eng+chi_sim，返回 ocr.text/confidence。同 case 相同内容与选项复用解析结果。
 
@@ -72,7 +72,7 @@ Checkpoint 与期望来自验收合同。用 `await check.precondition(checkpoin
 
 使用当前页面观察到的 role、label 与完整对象身份定位。结果断言表达需求的可观察语义：单个已有元素可用 `locator.isVisible()` 检查可见性；要求视觉隐藏时须结合能定位该对象的 label/testId 或容器可见性观察，不能只看 role 的 count=0。需求允许隐藏时，不能额外强制原文未要求的 DOM 移除或 ARIA 属性值。测试样例与 UI 探针可以用于建立关系证据，例如在隔离 case 中追加一个字符以检查光标位置，但须保留操作前后的真实观察，并保持原文规定动作与结果的含义。
 
-`run` 能力接受 `{source}` 或 `{program}`。探索页面使用 source；试运行已保存程序优先仅传完整 ProgramRef，由宿主读取已保存源码；同时传 source 和 program 时二者的源码字节必须一致。只有传入已保存的 program 时，`check.precondition` 与 `check.expect` 才从其合同加载 checkpoint 与 expected；仅探索页面时不要调用 `check.*`。最终场景使用 check_program {contract,source}。宿主自动保存完整程序、从合同生成 clauses 映射，并在独立干净 case 中运行，不需要先保存合同、手工 reset_case 或再次 run。已确定公开入口、初态准备与唯一定位后，直接把导航、准备、动作和读取写入完整程序；不要先逐步点击同一路径。检查返回 checks 的结果及失败项的 actual/expected 预览与 diagnostics；通过项不回传完整值，长正文、图片数据或动作参数可能截断，排错必要时按 feedbackRef 使用 read_feedback 读取具体字段。修改后重新调用 check_program。正确观察到业务失败仍可提交，不要求全部 passed:true；不得跳过失败前置或放宽期望，无法验证时提交 unsupported。
+`run` 能力接受 `{source}` 或 `{program}`。探索页面使用 source；试运行已保存程序优先仅传完整 ProgramRef，由宿主读取已保存源码；同时传 source 和 program 时二者的源码字节必须一致。只有传入已保存的 program 时，`check.precondition` 与 `check.expect` 才从其合同加载 checkpoint 与 expected；仅探索页面时不要调用 `check.*`。最终场景使用 check_program {contract,source}。宿主自动保存完整程序、从合同生成 clauses 映射，并在独立干净 case 中运行，不需要先保存合同、手工 reset_case 或再次 run。已确定公开入口、初态准备与唯一定位后，直接把导航、准备、动作和读取写入完整程序；不要先逐步点击同一路径。先检查返回 outcomes 的 status/reason；checks 中的比较通过不代表初态与动作证据完整。检查 checks 的结果及失败项的 actual/expected 预览与 diagnostics；通过项不回传完整值，长正文、图片数据或动作参数可能截断，排错必要时按 feedbackRef 使用 read_feedback 读取具体字段。修改后重新调用 check_program。正确观察到业务失败仍可提交，不要求全部 passed:true；不得跳过失败前置或放宽期望，无法验证时提交 unsupported。
 
 格式 shallow.web.javascript@1 是程序格式标识。Web 执行能力仍为 inspect、run、reset_case；inspect 接受可选 actor，run {source} 用于探索，reset_case 会使旧句柄失效。最终程序由 check_program 在独立环境执行，旧 case 的句柄与观察 id 不可带入；执行提供正式证据，semanticReview 为 true 时同时供独立复核使用。业务失败仍须在第二个独立环境复现。
 
