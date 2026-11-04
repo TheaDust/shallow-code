@@ -179,3 +179,12 @@ test("Ordinary failures do not replay and repeated image rejection stops after o
     assert.equal(f.calls.length, imageUnsupported ? 2 : 1);
   }
 });
+
+
+test("PromptBuilder forwards the repair-scoped history reader without putting it into the prompt", async () => {
+  const f = await fixture([completed]);
+  const repairDiff = async () => ({ available: false });
+  await f.builder.run(f.request, { repairDiff });
+  assert.equal(f.calls[0].repairDiff, repairDiff);
+  assert.doesNotMatch(f.calls[0].taskPrompt, /async.*available/);
+});

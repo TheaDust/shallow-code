@@ -14,6 +14,7 @@ export interface VerifierConfig {
   mode: "active";
   concurrency: number;
   semanticReview?: boolean;
+  /** Full replay only after implementation and at final repair closure. Local checks are independent. */
   replay?: boolean;
 }
 

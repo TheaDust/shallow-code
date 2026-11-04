@@ -119,8 +119,9 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
       Math.min(2_147_483_647, deadlineAt - Date.now())))]);
     const manifest: VerifierManifest = { schemaVersion: 1, contracts: [], reviews: [], receipts: [], diagnostics: [] };
     const programs = new Map<string, ProgramRef>();
+    const activePrograms = new Map<string, ProgramRef>();
     const input = await store.getJson<VerifierRequirements>(job.requirements);
-    const sources = verifierSourceClauses(input, job.requirementIds);
+    const sources = verifierSourceClauses(input, job.requirementIds).filter(source => !job.clauseIds || job.clauseIds.includes(source.id));
     const missingProgramReason = semanticReview ? "No reviewed program covered this source result" : "No executed program covered this source result";
     const outcomeMap = new Map<string, CheckOutcome>(sources.map(source => [source.id, { requirementId: source.requirementId,
       scenarioId: source.scenarioId, clauseId: source.id, status: "inconclusive", evidence: [], reason: missingProgramReason }]));
@@ -172,7 +173,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
       if (!sameRef(adapter.binding, job.binding)) throw new Error("Verifier adapter binding mismatch");
       const binding = await store.validateBinding(job.binding);
       const declaration = await store.getJson<AdapterDeclaration>(binding.declaration);
-      const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission"].map(promptAsset));
+      const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission", "diagnosis"].map(promptAsset));
       const adapterPrompts = await Promise.all(declaration.prompts.map(ref => store.getBytes(ref).then(bytes => bytes.toString("utf8"))));
       const promptDigest = hashBytes(genericPrompts.join("\n\n"));
       // Review uses only review/tools/adapter prompts. Keep its cache key independent
@@ -230,6 +231,11 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
             if (!sameRef(descriptor.initialState, job.initialState)) continue;
             const contract = await store.getJson<AcceptanceContract>(program.contract);
             validateAcceptanceContract(contract, job, eligibleSources, input);
+            if (job.mode === "diagnose") {
+              rejectedPrograms.push({ program, contract, source: (await store.getBytes(descriptor.source)).toString("utf8"),
+                clauseIds: contract.clauses.map(clause => clause.id), reasons: ["Re-establish this scenario against its original requirement on the current snapshot; retain a faithful program even when it exposes a business violation."] });
+              continue;
+            }
             const cached = await cachedReview(program);
             if (cached.review && !cached.review.approved) {
               manifest.reviews.push(cached.ref!);
@@ -272,7 +278,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
             clauseId: source.id, status: "inconclusive", evidence: [], reason });
           await progress({ stage: "diagnostic", clauseIds: [source.id], cached, reason });
         };
-        for (const source of eligibleSources.filter(source => !coveredSources.has(source.id))) {
+        for (const source of eligibleSources.filter(source => job.mode !== "diagnose" && !coveredSources.has(source.id))) {
           const cache = gapCache(source.id);
           let gap: UnsupportedClause | undefined;
           try {
@@ -288,7 +294,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
           const exploration = await prepare(explorationSignal);
           if (!await ready(exploration)) throw new Error("Execution adapter did not establish a ready exploration environment");
           const feedback = rejectedPrograms.filter(program => program.clauseIds.some(id => discoverySources.some(source => source.id === id)));
-          await progress({ stage: feedback.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
+          await progress({ stage: job.mode === "diagnose" ? "diagnosis" : feedback.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
           let finished = false;
           const savedPrograms: ProgramRef[] = [];
           const feedbackRefs = new Map<string, ContentRef>();
@@ -325,11 +331,13 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 return executionFeedback({ output, receipts: result.receipts, ...(checks.length ? { checks } : {}) });
               } },
             { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Once entry, initial state and object identity are located, use this tool directly instead of separately probing the same path. Inspect compact checks and diagnostics; use read_feedback only for missing diagnostic detail. Revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled.",
-              parameters: Type.Object({ contract: toolObjectSchema, source: Type.String({ minLength: 1 }) }),
+              parameters: Type.Object({ contract: toolObjectSchema, source: Type.String({ minLength: 1 }),
+                basisExplanation: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })) }),
               prepareArguments: prepareCheckArguments,
               async execute(raw) {
                 if (finished) throw new Error("Verifier exploration already finished");
-                const args = raw as { contract: unknown; source: string };
+                const args = raw as { contract: unknown; source: string; basisExplanation?: string };
+                if (job.mode === "diagnose" && !args.basisExplanation?.trim()) throw new Error("Diagnosis requires basisExplanation: cite the source obligation and explain why the existing check is faithful or how the replacement restores it");
                 const contract = { ...toolObject(args.contract, "contract"), requirements: job.requirements } as unknown as AcceptanceContract;
                 validateAcceptanceContract(contract, job, discoverySources, input);
                 if (!args.source?.trim()) throw new Error("Program must contain nonempty source");
@@ -346,6 +354,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                   throw new Error(`Program was rejected by semantic review; revise its source or contract: ${cached.review.reasons.join("; ")}`);
                 }
                 programs.set(canonicalJson(program), program);
+                if (job.mode === "diagnose") manifest.diagnostics.push(`Scenario diagnosis ${program.descriptor.id}: ${args.basisExplanation}`);
                 await options.programCache?.save(job, input, program).catch(cacheFailure);
                 const execution = await prepare(explorationSignal);
                 let refs = [...execution.readinessEvidence];
@@ -460,7 +469,26 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
             }
             const context = repair ? { requirements: input.requirements.filter(requirement => discoverySources.some(source => source.requirementId === requirement.id)),
               prerequisites: input.prerequisites ?? [] } : input;
-            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts].join("\n\n"), JSON.stringify({
+            const previousFeedback = [];
+            if (job.mode === "diagnose") for (const ref of job.feedbackReports ?? []) {
+              const report = await store.getJson<CheckReport>(ref);
+              const previousJob = await store.getJson<import("./port.js").CheckJob>(report.job);
+              await store.validateReport(previousJob, report);
+              if (!sameRef(previousJob.requirements, job.requirements) || !sameRef(previousJob.binding, job.binding) || !sameRef(previousJob.initialState, job.initialState)) continue;
+              const outcomes = report.outcomes.filter(outcome => discoverySources.some(source => source.id === outcome.clauseId));
+              const checks = [];
+              for (const receiptRef of deduplicate(outcomes.flatMap(outcome => outcome.evidence))) {
+                const receipt = await store.getJson<EvidenceReceipt>(receiptRef);
+                if (receipt.kind === "assertion" || receipt.kind === "precondition") checks.push({ receipt: receiptRef, kind: receipt.kind,
+                  checkpointId: receipt.checkpointId, ...(receipt.assertion ? { assertion: receipt.assertion } : {}), payload: await store.readTypedJson(receipt.payload) });
+              }
+              const previousManifest = await store.getJson<VerifierManifest>(report.manifest);
+              previousFeedback.push({ outcomes: outcomes.map(({ requirementId, scenarioId, clauseId, status, reason }) =>
+                ({ requirementId, scenarioId, clauseId, status, ...(reason ? { reason } : {}) })),
+                feedback: await executionFeedback({ checks, diagnostics: previousManifest.diagnostics ?? [] }) });
+            }
+            await runModel("exploration", [genericPrompts[0], genericPrompts[2], ...adapterPrompts,
+              ...(job.mode === "diagnose" ? [genericPrompts[4]] : [])].join("\n\n"), JSON.stringify({
               // Keep session-invariant fields first; discovery scope and feedback
               // are the parts that change between initial and repair sessions.
               capabilities: orderedCapabilities,
@@ -471,6 +499,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
               sourceClauses: discoverySources,
               ...(sourceIndexInfo ? { sourceIndex: sourceIndexInfo } : {}),
               repair,
+              ...(job.mode === "diagnose" ? { diagnosis: true, previousFeedback } : {}),
               remainingMs: Math.max(0, explorationDeadline - Date.now()),
               ...(feedback.length ? { rejectedPrograms: feedback } : {}),
             }), tools, explorationSignal);
@@ -511,8 +540,9 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
               const source = (await store.getBytes(descriptor.source)).toString("utf8");
               if (!source.trim()) throw new Error("Cannot replay an empty program");
               programs.set(canonicalJson(program), program); manifest.contracts.push(program.contract);
+              activePrograms.set(canonicalJson(program), program);
               const cached = await cachedReview(program);
-              if (semanticReview && job.mode !== "discover" && !cached.review?.approved) {
+              if (semanticReview && job.mode !== "discover" && job.mode !== "diagnose" && !cached.review?.approved) {
                 for (const clause of contract.clauses) outcomeMap.get(clause.id)!.reason = "Replay requires an approved program; no model sessions are started";
                 continue;
               }
@@ -552,6 +582,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
               if (reviewRef) manifest.reviews.push(reviewRef);
               if (review && item.cached.review) await progress({ stage: "review_cached", programId: program.descriptor.id, clauseIds: review.clauseIds, cached: true });
               if (review && !review.approved) {
+                activePrograms.delete(canonicalJson(program));
                 await options.programCache?.invalidate(program).catch(cacheFailure);
                 rejectedPrograms.push({ program, contract, source, clauseIds: review.clauseIds, reasons: review.reasons,
                   observations: item.projected?.filter(value => value.receipt.kind === "observation").map(value => reviewReceipt(value.receipt, value.payload)) });
@@ -667,7 +698,11 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
           return rejectedClauses;
         };
         // Verify reusable programs first; one difficult discovery cannot erase their results.
-        const corrections = await replaySubmitted();
+        if (job.mode === "diagnose" && eligibleSources.length) {
+          await explore(eligibleSources, true);
+          await replaySubmitted();
+        }
+        const corrections = job.mode === "diagnose" ? new Set<string>() : await replaySubmitted();
         // A stale locator or non-executing cached script needs fresh discovery. A
         // reproduced business assertion failure keeps its result and its program.
         for (const program of cachedPrograms.filter(program => unusableCachedPrograms.has(canonicalJson(program)))) {
@@ -707,7 +742,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
     for (const ref of deduplicate(manifest.receipts)) await store.validateReceipt(job, await store.getJson<EvidenceReceipt>(ref));
     const report: CheckReport = { job: await store.putJson(job), snapshot: job.snapshot, binding: job.binding,
       manifest: await store.putJson({ ...manifest, contracts: deduplicate(manifest.contracts), receipts: deduplicate(manifest.receipts) }),
-      programs: [...programs.values()], outcomes: job.mode === "prepare" ? [] : [...outcomeMap.values()] };
+      programs: [...programs.values()], activePrograms: [...activePrograms.values()], outcomes: job.mode === "prepare" ? [] : [...outcomeMap.values()] };
     await store.validateReport(job, report);
     return report;
   } };

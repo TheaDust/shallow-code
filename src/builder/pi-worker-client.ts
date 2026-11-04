@@ -15,7 +15,8 @@ import type { BuilderTermination } from "./port.js";
 import type { ApplicationRegistry } from "../application/registry.js";
 import type { ModelRates } from "../model-usage.js";
 
-export interface PiWorkerRequest extends CodingAgentRequest {
+export interface PiWorkerRequest extends Omit<CodingAgentRequest, "repairDiff"> {
+  repairDiffAvailable?: boolean;
   gateway: GatewayConfig;
   sessionDir: string;
   sessionFile?: string;
@@ -89,6 +90,16 @@ export class PiWorkerClient implements CodingAgentPort {
     this.active = { child, finished };
     const toolGroups = new Set<number>();
     const onAppRequest = (message: unknown) => {
+      const diff = message as { type?: string; id?: string; input?: import("./repair-diff.js").RepairDiffInput } | null;
+      if (diff?.type === "builder_diff" && typeof diff.id === "string") {
+        const respond = (detail: object) => {
+          if (child.connected) child.send({ type: "builder_diff_result", id: diff.id, ...detail }, () => {});
+        };
+        if (!input.repairDiff || !diff.input) { respond({ error: "No repair history is available" }); return; }
+        void input.repairDiff(diff.input).then(result => respond({ result }),
+          error => respond({ error: sanitizeDiagnosticText(String(error), [this.gateway.apiKey]) }));
+        return;
+      }
       const request = message as { type?: string; id?: string; action?: string; pid?: number; active?: boolean } | null;
       if (process.platform !== "win32" && request?.type === "builder_tool_process" && Number.isInteger(request.pid) && request.pid! > 0) {
         if (request.active === true) toolGroups.add(request.pid!);
@@ -133,7 +144,8 @@ export class PiWorkerClient implements CodingAgentPort {
         timer = setTimeout(() => res({ ...fallback, ...progress, outcome: "timed_out", summary: "Pi call deadline reached" }), Math.max(1, input.timeoutMs));
       });
       tree = await ownProcessTree(child);
-      child.send({ ...input, ...(input.applicationContract ? { applicationContract: { ...input.applicationContract, dataDirectory } } : {}),
+      const { repairDiff, ...workerInput } = input;
+      child.send({ ...workerInput, ...(repairDiff ? { repairDiffAvailable: true } : {}), ...(input.applicationContract ? { applicationContract: { ...input.applicationContract, dataDirectory } } : {}),
         gateway: this.gateway, sessionDir: this.sessionDir, sessionFile: prior?.file,
         ...(this.live.modelCost ? { modelCost: this.live.modelCost } : {}),
         ...(this.sseCaptureDir ? { sseCaptureDir: this.sseCaptureDir } : {}) } satisfies PiWorkerRequest);

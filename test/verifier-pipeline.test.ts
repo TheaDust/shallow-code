@@ -13,6 +13,7 @@ import { HumanRunFormatter } from "../src/human-log.js";
 import { BuildView } from "../src/terminal/build-tui.js";
 import { terminalTheme } from "../src/terminal/theme.js";
 import { withModulePipeline, type PipelineFixture } from "./helpers/module-pipeline.js";
+import { verifierSourceClauses, type VerifierRequirements } from "../src/verifier/evidence.js";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { readImplementationDigests, requirementDigest } from "../src/requirement-progress.js";
 
@@ -43,14 +44,12 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
       await hook?.(job, signal);
       if (job.mode !== "prepare") await onProgress?.({ stage: "replay" });
       const ready = await readiness(job);
-      const requirements = job.mode === "prepare" ? undefined
-        : await artifacts.getJson<{ requirements: Array<{ id: string; scenarioContracts?: Array<{ id: string }> }> }>(job.requirements);
+      const input = await artifacts.getJson<VerifierRequirements>(job.requirements);
+      const sources = verifierSourceClauses(input, job.requirementIds).filter(source => !job.clauseIds || job.clauseIds.includes(source.id));
       return { job: await artifacts.putJson(job), snapshot: job.snapshot, binding, manifest: await artifacts.putJson({ receipts: [ready] }), programs: [],
-        outcomes: job.mode === "prepare" ? [] : await Promise.all(job.requirementIds.flatMap(requirementId => {
-          const scenarios = requirements?.requirements.find(item => item.id === requirementId)?.scenarioContracts;
-          return (scenarios?.length ? scenarios : [{ id: "description" }]).map(async scenario => ({ requirementId,
-            scenarioId: scenario.id, clauseId: `${requirementId}:${scenario.id}:result`, status: await status?.(job) ?? "pass", evidence: [ready] }));
-        })) };
+        outcomes: job.mode === "prepare" ? [] : await Promise.all(sources.map(async source => ({ requirementId: source.requirementId,
+          scenarioId: source.scenarioId, clauseId: source.id, status: await status?.(job) ?? "pass", evidence: [ready] }))) };
+
     } } };
   f.options.verifier = { mode: "active", concurrency: 2, semanticReview: true, replay: true };
   f.deps.verifier = runtime;
@@ -363,7 +362,7 @@ test("default switches aggregate group snapshots without historical replay, incl
     }
     await writeRunReport(dirname(f.options.ledgerFile), result);
     const report = await readFile(join(dirname(f.options.ledgerFile), "verifier-report.md"), "utf8");
-    assert.match(report, /独立语义复核：关闭；历史程序重放：关闭/);
+    assert.match(report, /独立语义复核：关闭；最终全量重放：关闭/);
     assert.match(report, new RegExp(`检查快照：${first.snapshot.id}`));
     const events = await f.events();
     const final = events.find(item => item.type === "module_check_finished" && item.detail?.moduleId === "<final>")!;
@@ -404,7 +403,7 @@ test("Failed Verifier tasks retain their task references and redacted errors wit
   });
 });
 
-test("replay off checks repairs with fresh discovery scoped to the repaired requirements", async () => {
+test("replay off still diagnoses failures and replays only the repaired scenario targets", async () => {
   await withModulePipeline(async f => {
     const jobs: CheckJob[] = [];
     const runtime = await attach(f, async job => { jobs.push(job); }, async job => {
@@ -423,8 +422,10 @@ test("replay off checks repairs with fresh discovery scoped to the repaired requ
     assert.equal(result.status, "delivered");
     assert.equal(result.verifier?.semanticReview, true);
     assert.equal(result.verifier?.replay, false);
-    assert.deepEqual(jobs.filter(job => job.mode === "discover").map(job => job.requirementIds), [["A"], ["B"], ["A"], ["C"]]);
-    assert(jobs.every(job => job.mode !== "replay" && job.programs.length === 0));
+    assert.deepEqual(jobs.filter(job => job.mode === "discover").map(job => job.requirementIds), [["A"], ["B"], ["C"]]);
+    assert.deepEqual(jobs.filter(job => job.mode === "diagnose").map(job => job.requirementIds), [["A"]]);
+    assert.deepEqual(jobs.filter(job => job.mode === "replay").map(job => job.requirementIds), [["A"]]);
+    assert(jobs.filter(job => job.mode === "replay").every(job => job.clauseIds?.length));
   });
 });
 
@@ -443,9 +444,9 @@ test("replay off excludes rejected repair reports when aggregating the restored 
     assert.equal(result.status, "partial");
     assert.deepEqual(result.failedRequirementIds, ["A"]);
     await assert.rejects(readFile(join(f.options.outputDir, "rejected.txt")));
-    const original = jobs.find(job => job.mode === "discover" && job.requirementIds.includes("A"))!;
+    const original = jobs.find(job => job.mode === "diagnose" && job.requirementIds.includes("A"))!;
     assert(result.verifier?.outcomes?.filter(item => item.requirementId === "A").every(item => item.snapshotId === original.snapshot.id));
-    assert.equal(jobs.filter(job => job.mode === "replay").length, 0);
+    assert(jobs.filter(job => job.mode === "replay").every(job => job.clauseIds?.length));
   });
 });
 
@@ -503,22 +504,20 @@ test("Group checks overlap Builder while the next module waits for current-versi
       assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), marker);
     }
     const groupJobs = jobs.filter(job => job.moduleEpoch === 0);
-    assert.deepEqual(groupJobs.map(job => job.requirementIds), [["A"], ["B"]]);
+    assert.deepEqual(groupJobs.map(job => job.requirementIds), [["A"], ["B"], ["C"]]);
     assert(groupJobs.every(job => job.mode === "discover"));
     assert.equal(groupJobs[0]!.snapshot.id, checkpoint!.snapshots[0].snapshot.id);
     assert.equal(groupJobs[1]!.snapshot.id, checkpoint!.snapshots[1].snapshot.id);
     assert.ok(groupJobs.every(job => job.initialState.id === runtime.initialState.id && job.timeoutMs === 3_600_000));
-    const firstModuleJobs = jobs.filter(job => job.moduleEpoch === 1 && job.moduleId === "FIRST");
-    assert.equal(firstModuleJobs.length, 3);
-    assert(firstModuleJobs.filter(job => job.mode !== "prepare").every(job => job.mode === "replay"), "boundary jobs remain replay even when no programs were produced");
-    assert.ok(firstModuleJobs.every(job => job.snapshot.id === checkpoint!.snapshots[1].snapshot.id));
-    assert.deepEqual(firstModuleJobs.filter(job => job.mode !== "prepare").flatMap(job => job.requirementIds).sort(), ["A", "B"]);
+    const fullJobs = jobs.filter(job => job.mode === "replay" && !job.clauseIds);
+    assert.equal(fullJobs.length, 3);
+    assert(fullJobs.every(job => job.snapshot.id === checkpoint!.snapshots[2].snapshot.id), "only the completed application receives full replay");
     const events = await f.events();
     assert.ok(!events.some(item => item.type === "check_cancelled"));
     const boundary = events.findIndex(item => item.type === "module_check_started");
     assert.ok(boundary >= 0);
     assert.ok(events.slice(0, boundary).some(item => item.type === "check_started"));
-    assert.ok(!events.slice(0, boundary).some(item => item.type === "module_check_finished"));
+    assert.ok(events.slice(0, boundary).filter(item => item.type === "module_check_finished").every(item => item.detail?.replay === false));
     assert.ok(events.some(item => item.type === "module_check_finished" && item.detail?.moduleId === "<final>"));
     await writeRunReport(dirname(f.options.ledgerFile), result);
     assert.match(await readFile(join(dirname(f.options.ledgerFile), "verifier-report.md"), "utf8"), /Verifier 验收证据/);
@@ -544,7 +543,7 @@ test("feature groups share discovery context, aggregate scoped program history a
       const report = await check(job, signal, onProgress);
       if (job.mode === "prepare") return report;
       const programs = await Promise.all(job.requirementIds.map(async requirementId => {
-        const clauseId = `${requirementId}:result`, checkpointId = `${requirementId}-result`;
+        const clauseId = `${requirementId}:description:0:0`, checkpointId = `${requirementId}-result`;
         const contract = await runtime.artifacts.putJson({ requirements: job.requirements,
           checkpoints: [{ id: checkpointId, kind: "assertion", requirementId, scenarioId: "description", clauseId, dependsOn: [], basis: "Display the main workspace." }],
           clauses: [{ id: clauseId, requirementId, scenarioId: "description", basis: "Display the main workspace.", checkpointId, expected: { operator: "equal", value: true } }] });
@@ -557,14 +556,11 @@ test("feature groups share discovery context, aggregate scoped program history a
     const result = await f.run();
     assert.equal(result.status, "delivered");
     const initial = jobs.filter(job => job.moduleEpoch === 0 && job.mode !== "prepare");
-    assert.deepEqual(initial.map(job => job.requirementIds), [["A", "B"]], "a sealed feature group creates one discovery job");
+    assert.deepEqual(initial.map(job => job.requirementIds), [["A", "B"], ["C"]], "each sealed feature group creates one discovery job");
     const sharedContext = initial[0]!.requirements.digest;
     const groupJobs = jobs.filter(job => job.requirementIds.includes("A") && job.mode !== "prepare");
     assert(groupJobs.every(job => job.requirements.digest === sharedContext));
-    const scoped = groupJobs.find(job => job.requirementIds.length === 1)!;
-    assert(scoped, "the later module audits only its prerequisite A using the original A/B context");
-    assert.equal(scoped.programs.length, 1);
-    assert.equal(scoped.mode, "replay");
+    assert.equal(groupJobs.some(job => job.mode === "replay" && job.requirementIds.length === 1), false, "no prerequisite boundary replay");
     const final = groupJobs.at(-1)!;
     assert.deepEqual(final.requirementIds, ["A", "B"]);
     assert.equal(final.programs.length, 2, "latest scoped A report cannot hide the earlier B program");
@@ -588,7 +584,7 @@ test("feature groups share discovery context, aggregate scoped program history a
   });
 });
 
-test("Module repairs and their regression replay finish before Builder enters the next module", async () => {
+test("Concentrated repairs wait for all modules and follow current-snapshot Verifier diagnosis", async () => {
   await withModulePipeline(async f => {
     const runtime = await attach(f, undefined, async job => {
       const snapshot = await runtime.snapshots.open(job.snapshot);
@@ -596,12 +592,15 @@ test("Module repairs and their regression replay finish before Builder enters th
       return job.requirementIds[0] === "A" && !repaired ? "fail" : "pass";
     });
     const build = f.builder.run.bind(f.builder);
-    let builtB = false;
+    let builtB = false, builtC = false;
     f.builder.run = async (request, options) => {
-      if (request.mode === "repair") assert.equal(builtB, true, "group failure cannot interrupt the active module's implementation");
+      if (request.mode === "repair") {
+        assert(builtB && builtC, "all modules finish before concentrated repair");
+        assert.ok((await f.events()).some(event => event.type === "check_completed" && event.detail?.mode === "diagnose"));
+      }
       if (request.mode === "implement" && request.packet.requirementIds[0] === "C") {
-        assert.equal(await readFile(join(f.options.outputDir, "repaired.txt"), "utf8"), "fixed");
-        assert.ok((await f.events()).some(event => event.type === "repair_batch_finished" && event.detail?.retained));
+        await assert.rejects(readFile(join(f.options.outputDir, "repaired.txt")));
+        builtC = true;
       }
       const result = await build(request, options);
       if (request.mode === "implement" && request.packet.requirementIds[0] === "B") builtB = true;
@@ -610,11 +609,11 @@ test("Module repairs and their regression replay finish before Builder enters th
     };
     assert.equal((await f.run()).status, "delivered");
     const modes = f.builder.requests.map(request => request.mode === "implement" ? request.packet.requirementIds[0] : request.mode);
-    assert.deepEqual(modes, ["A", "B", "repair", "C"]);
+    assert.deepEqual(modes, ["A", "B", "C", "repair"]);
   });
 });
 
-test("Module boundary rechecks prerequisite behavior changed by a later module", async () => {
+test("Final replay finds prerequisite behavior changed by a later module", async () => {
   await withModulePipeline(async f => {
     const runtime = await attach(f, undefined, async job => {
       const snapshot = await runtime.snapshots.open(job.snapshot);
@@ -676,12 +675,12 @@ test("Module and final events report cumulative scenario coverage", async () => 
   });
 });
 
-test("Rejected repair restores the complete module, including B produced after A", async () => {
+test("Rejected non-improving repair restores the complete application including later modules", async () => {
   await withModulePipeline(async f => {
     const runtime = await attach(f, undefined, async job => {
       const snapshot = await runtime.snapshots.open(job.snapshot);
       const repaired = await readFile(join(snapshot.sourceDirectory, "repaired.txt"), "utf8").then(() => true, () => false);
-      return job.requirementIds[0] === "A" ? repaired ? "pass" : "fail" : job.requirementIds[0] === "B" && repaired ? "fail" : "pass";
+      return job.requirementIds[0] === "A" ? "fail" : "pass";
     });
     const build = f.builder.run.bind(f.builder);
     f.builder.run = async (request, options) => {
@@ -753,7 +752,7 @@ test("A runnable ancestor can be delivered while newer sealed source remains rec
   });
 });
 
-test("Repair retains partial improvement and checks each packet once per round from the bound input state", async () => {
+test("One concentrated repair retains partial improvement and leaves remaining failures for the final report", async () => {
   await withModulePipeline(async f => {
     const jobs: CheckJob[] = [];
     const runtime = await attach(f, async job => { jobs.push(job); }, async job => {
@@ -771,6 +770,7 @@ test("Repair retains partial improvement and checks each packet once per round f
     const result = await f.run();
     assert.equal(result.status, "partial"); assert.deepEqual(result.failedRequirementIds, ["A"]);
     assert.ok(result.verifiedRequirementIds.includes("B"));
+    assert.equal(f.builder.requests.filter(request => request.mode === "repair").length, 1, "remaining failures cannot start a second business repair");
     const decision = (await f.events()).find(item => item.type === "repair_batch_finished" && item.detail?.retained === true);
     assert.ok(decision?.type === "repair_batch_finished" && decision.detail);
     assert.notEqual(decision.detail.baselineSnapshotId, decision.detail.candidateSnapshotId);
@@ -879,5 +879,127 @@ test("Checkpoint readiness is monotone and a rejected ready descendant never pro
     assert.equal(reopened.snapshot.accepted.sha, "sha-B");
     await assert.rejects(VerifierCheckpoints.open(file, "changed-binding", "initial"), /binding changed/);
     assert.equal(await reopened.ready(repaired.snapshot), false);
+  });
+});
+
+
+test("Final failure diagnosis can fix a program without invoking Builder or repeating unchanged full replay", async () => {
+  for (const replay of [false, true]) await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    await attach(f, async job => { jobs.push(job); }, async job => job.requirementIds.includes("A") && job.mode !== "diagnose" ? "fail" : "pass");
+    f.options.verifier = { ...parseVerifierConfig({}), replay };
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    assert.equal(f.builder.requests.some(request => request.mode === "repair"), false);
+    assert.deepEqual(jobs.filter(job => job.mode === "diagnose").map(job => job.requirementIds), [["A"]]);
+    const full = jobs.filter(job => job.mode === "replay" && !job.clauseIds);
+    assert.equal(full.length, replay ? 3 : 0);
+    assert.equal(result.verifier?.verifiedSnapshotId !== undefined, replay);
+  });
+});
+
+test("Repair target checks defer sibling regressions to the last full check and do not start another repair", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); }, async job => {
+      const candidate = await runtime.snapshots.open(job.snapshot);
+      const fixed = await readFile(join(candidate.sourceDirectory, "fix-A.txt")).then(() => true, () => false);
+      return job.requirementIds.includes("A") ? fixed ? "pass" : "fail" : job.requirementIds.includes("B") && fixed ? "fail" : "pass";
+    });
+    const build = f.builder.run.bind(f.builder);
+    f.builder.run = async (request, options) => {
+      const result = await build(request, options);
+      if (request.mode === "repair") await writeFile(join(f.options.outputDir, "fix-A.txt"), "A fixed; B regressed");
+      return result;
+    };
+    const result = await f.run();
+    assert.equal(result.status, "partial"); assert.deepEqual(result.failedRequirementIds, ["B"]);
+    assert.equal(result.verifier?.verifiedSnapshotId, undefined);
+    assert.equal(f.builder.requests.filter(request => request.mode === "repair").length, 1);
+    const targets = jobs.filter(job => job.mode === "replay" && job.clauseIds);
+    assert.deepEqual(targets.map(job => job.requirementIds), [["A"]]);
+    const full = jobs.filter(job => job.mode === "replay" && !job.clauseIds);
+    assert.equal(new Set(full.map(job => job.snapshot.id)).size, 2);
+    assert.equal(full.length, 6, "two full passes over three groups, with no boundary replay");
+    assert(result.verifier!.outcomes!.every(outcome => outcome.snapshotId === result.verifier!.producedHead!.snapshot.id));
+  });
+});
+
+test("Local diagnosis preserves a passing sibling scenario and only rechecks the failed scenario", async () => {
+  await withModulePipeline(async f => {
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    input.children[0].children[0].scenarios = ["one", "two"].map(id => ({ id, name: id, steps: [
+      { keyword: "GIVEN", content: "Workspace open" }, { keyword: "WHEN", content: "Save" }, { keyword: "THEN", content: "Saved" }] }));
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); });
+    f.options.verifier.replay = false;
+    const check = runtime.verifier.check.bind(runtime.verifier);
+    runtime.verifier.check = async (job, signal, progress) => {
+      const report = await check(job, signal, progress);
+      return { ...report, outcomes: report.outcomes.map(outcome => outcome.requirementId === "A" && outcome.scenarioId === "one" && job.mode !== "diagnose"
+        ? { ...outcome, status: "inconclusive" as const, reason: "stale route" } : outcome) };
+    };
+    const result = await f.run();
+    assert.equal(result.status, "delivered");
+    const diagnosis = jobs.filter(job => job.mode === "diagnose");
+    assert.equal(diagnosis.length, 1);
+    assert(diagnosis[0].clauseIds?.every(id => id.includes(":one:")));
+    const a = result.verifier!.outcomes!.filter(item => item.requirementId === "A");
+    assert.deepEqual(new Set(a.map(item => item.scenarioId)), new Set(["one", "two"]));
+    assert.equal(a.find(item => item.scenarioId === "two")!.jobId, jobs.find(job => job.mode === "discover" && job.requirementIds.includes("A"))!.jobId);
+  });
+});
+
+test("Builder receives a bounded diff reader only after diagnosis and only for its confirmed repair cases", async () => {
+  await withModulePipeline(async f => {
+    const jobs: CheckJob[] = [];
+    const runtime = await attach(f, async job => { jobs.push(job); });
+    const check = runtime.verifier.check.bind(runtime.verifier);
+    runtime.verifier.check = async (job, signal, progress) => {
+      const report = await check(job, signal, progress);
+      if (job.mode === "prepare") return report;
+      const candidate = await runtime.snapshots.open(job.snapshot);
+      const broken = await readFile(join(candidate.sourceDirectory, "broken.txt")).then(() => true, () => false);
+      const outcomes = report.outcomes.map(item => item.requirementId === "A" && broken ? { ...item, status: "fail" as const } : item);
+      const programs = await Promise.all(outcomes.map(async item => {
+        const contract = await runtime.artifacts.putJson({ requirements: job.requirements, checkpoints: [],
+          clauses: [{ id: item.clauseId, requirementId: item.requirementId, scenarioId: item.scenarioId, basis: "Display the main workspace.", checkpointId: "result", expected: true }] });
+        return { contract, binding: job.binding, format: "fake@1", descriptor: await runtime.artifacts.putTypedJson({
+          source: await runtime.artifacts.putBytes("stable application check"), initialState: job.initialState,
+          clauses: [{ clauseId: item.clauseId, checkpointId: "result" }] }, runtime.initialState.schema) };
+      }));
+      return { ...report, outcomes, programs };
+    };
+    const build = f.builder.run.bind(f.builder);
+    let consulted = false;
+    f.builder.run = async (request, options) => {
+      if (request.mode === "repair") {
+        assert(jobs.some(job => job.mode === "diagnose"));
+        assert(options?.repairDiff);
+        const summary = await options.repairDiff({ caseId: "A/description/A:description:0:0" }) as { available: boolean; beforeSnapshotId: string; afterSnapshotId: string };
+        assert.equal(summary.available, true);
+        assert.notEqual(summary.beforeSnapshotId, summary.afterSnapshotId);
+        await assert.rejects(options.repairDiff({ caseId: "C/unrelated" }), /outside/);
+        consulted = true;
+      } else assert.equal(options?.repairDiff, undefined);
+      const result = await build(request, options);
+      if (request.mode === "implement" && request.packet.requirementIds.includes("C")) await writeFile(join(f.options.outputDir, "broken.txt"), "regression");
+      if (request.mode === "repair") await rm(join(f.options.outputDir, "broken.txt"));
+      return result;
+    };
+    assert.equal((await f.run()).status, "delivered"); assert(consulted);
+  });
+});
+
+
+test("An unresolved diagnosis cannot forward an old reproducible failure to Builder", async () => {
+  await withModulePipeline(async f => {
+    await attach(f, undefined, async job => job.requirementIds.includes("A") ? job.mode === "diagnose" ? "inconclusive" : "fail" : "pass");
+    f.options.verifier.replay = false;
+    const result = await f.run();
+    assert.equal(result.status, "partial"); assert.deepEqual(result.inconclusiveRequirementIds, ["A"]);
+    assert.deepEqual(result.failedRequirementIds, []);
+    assert.equal(f.builder.requests.some(request => request.mode === "repair"), false);
   });
 });

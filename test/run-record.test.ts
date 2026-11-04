@@ -86,7 +86,7 @@ test("Verifier reports link source requirements and artifacts even when a clause
     const summary = await readFile(join(run, "report.md"), "utf8");
     assert.doesNotMatch(summary, /evidence\//);
     assert.match(summary, /\[运行账本\]\(run-ledger.jsonl\)/);
-    assert.match(markdown, /按功能组原检查快照汇总/);
+    assert.match(markdown, /按功能组及局部修复检查快照汇总/);
   });
 });
 

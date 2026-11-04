@@ -544,3 +544,29 @@ test("GitOps adopts injected files from old Shallow history and rollback preserv
     });
   }
 });
+
+
+test("Application repair diffs read immutable private commits with paging and literal path bounds", async () => {
+  await withTempDir("shallow-repair-diff-", async root => {
+    const app = join(root, "app"); await mkdir(app);
+    const git = await GitCliOps.open(app, { checkpointDirectory: join(root, "private.git") });
+    await writeFile(join(app, "app.ts"), "export const saved = false;\n");
+    const before = await git.captureAccepted("before");
+    await writeFile(join(app, "app.ts"), "export const saved = true;\n" + "// context\n".repeat(2200));
+    await writeFile(join(app, "new.ts"), "export const added = true;\n");
+    await writeFile(join(app, ".env"), "SECRET_MUST_NOT_REACH_BUILDER=1");
+    const after = await git.captureAccepted("after");
+    await writeFile(join(app, "app.ts"), "unsealed work must not appear");
+    const summary = await git.applicationDiff(before, after) as { files: Array<{ path: string }> };
+    assert.deepEqual(summary.files.map(item => item.path), ["app.ts", "new.ts"]);
+    const page = await git.applicationDiff(before, after, "app.ts") as { text: string; nextOffset: number };
+    assert.match(page.text, /saved = true/);
+    assert.doesNotMatch(page.text, /unsealed work|SECRET_MUST_NOT/);
+    assert.equal(page.nextOffset, 12000);
+    const next = await git.applicationDiff(before, after, "app.ts", page.nextOffset) as { offset: number; text: string };
+    assert.equal(next.offset, 12000); assert(next.text.length > 0);
+    for (const path of ["../private.git/config", ".env", "*.ts", "C:/secret", ":(glob)*"]) await assert.rejects(git.applicationDiff(before, after, path));
+    await assert.rejects(git.applicationDiff("HEAD", after));
+    await assert.rejects(git.applicationDiff(before, after, undefined, -1));
+  });
+});

@@ -303,3 +303,39 @@ test("Pi credential smoke performs file editing, shell checks, and session resum
     } finally { await client.close(); }
   });
 });
+
+
+test("Repair diff uses controller RPC and is absent from ordinary Builder sessions", { timeout: 60_000 }, async () => {
+  await withTempDir("shallow-diff-worker-", async root => {
+    const app = join(root, "app"); await mkdir(app);
+    const requests: Array<{ tools?: Array<{ function: { name: string } }>; messages: unknown[] }> = [];
+    let ordinary = false;
+    const server = createServer(async (req, res) => {
+      let body = ""; for await (const chunk of req) body += chunk;
+      const request = JSON.parse(body); requests.push(request);
+      const toolNames = request.tools?.map((tool: { function: { name: string } }) => tool.function.name) ?? [];
+      assert.equal(toolNames.includes("repair_diff"), !ordinary);
+      const call = requests.length;
+      const useTool = !ordinary && call <= 2;
+      const delta = useTool ? { role: "assistant", tool_calls: [{ index: 0, id: `diff-${call}`, type: "function", function: {
+        name: "repair_diff", arguments: JSON.stringify({ caseId: "A/save", ...(call === 2 ? { path: "app.ts", offset: 0 } : {}) }) } }] }
+        : { role: "assistant", content: "done" };
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: useTool ? "tool_calls" : "stop" }] })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const client = new PiWorkerClient({ apiKey: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, model: "fixture" }, join(root, "private-sessions"), undefined, { heartbeat: false });
+    const calls: unknown[] = [];
+    try {
+      const result = await client.run({ outputDir: app, systemPrompt: "Use the requested tools.", taskPrompt: "Inspect the regression diff.", timeoutMs: 25_000,
+        repairDiff: async input => { calls.push(input); return { available: true, changes: input.path ? { text: "source-delta" } : { files: ["app.ts"] } }; } });
+      assert.equal(result.outcome, "completed", result.summary);
+      assert.deepEqual(calls, [{ caseId: "A/save" }, { caseId: "A/save", path: "app.ts", offset: 0 }]);
+      assert.match(JSON.stringify(requests), /source-delta/);
+      assert.doesNotMatch(JSON.stringify(requests), /private-sessions/);
+      ordinary = true;
+      assert.equal((await client.run({ outputDir: app, systemPrompt: "Finish.", taskPrompt: "done", timeoutMs: 25_000 })).outcome, "completed");
+    } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
+});

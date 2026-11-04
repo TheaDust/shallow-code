@@ -6,6 +6,7 @@ export class FakeGitOps implements GitOps {
   applicationChanged = true;
 
   async hasApplicationChanges(_sinceSha: string): Promise<boolean> { return this.applicationChanged; }
+  async applicationDiff(beforeSha: string, afterSha: string): Promise<unknown> { return { beforeSha, afterSha, files: [] }; }
 
   constructor(private readonly shas = ["baseline", "accepted"]) {}
 

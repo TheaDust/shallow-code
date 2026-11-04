@@ -13,6 +13,7 @@ export interface GitOps {
   captureAccepted(message: string): Promise<string>;
   restoreAccepted(sha: string): Promise<void>;
   hasApplicationChanges(sinceSha: string): Promise<boolean>;
+  applicationDiff(beforeSha: string, afterSha: string, path?: string, offset?: number): Promise<unknown>;
 }
 
 interface CommandResult {
@@ -108,6 +109,23 @@ export class GitCliOps implements GitOps {
       this.require(["ls-files", "--others", "--exclude-standard", ...paths]),
     ]);
     return Boolean(changed.stdout.trim() || untracked.stdout.trim());
+  }
+
+  async applicationDiff(beforeSha: string, afterSha: string, path?: string, offset = 0): Promise<unknown> {
+    if (![beforeSha, afterSha].every(sha => /^[0-9a-f]{40,64}$/i.test(sha)) || !Number.isSafeInteger(offset) || offset < 0) throw new Error("Invalid application diff request");
+    if (path !== undefined && (!path || path.includes("\\") || path.startsWith("/") || path.includes(":") || path.split("/").some(part => !part || part === "." || part === ".."))) throw new Error("Diff path must be application-relative");
+    const excludes = pathspecExcludes([...EXCLUDED_METADATA_NAMES, ".env", ".git"]);
+    const files = (await this.require(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--numstat", "-z", beforeSha, afterSha, "--", ".", ...excludes])).stdout
+      .split("\0").filter(Boolean).map(row => {
+        const first = row.indexOf("\t"), second = row.indexOf("\t", first + 1);
+        return { path: row.slice(second + 1), added: row.slice(0, first), removed: row.slice(first + 1, second) };
+      });
+    if (path === undefined) return { files: files.slice(offset, offset + 100), totalFiles: files.length,
+      ...(offset + 100 < files.length ? { nextOffset: offset + 100 } : {}) };
+    if (!files.some(file => file.path === path)) throw new Error("Path is not part of this application diff");
+    const diff = (await this.require(["diff", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=3", beforeSha, afterSha, "--", `:(top,literal)${path}`, ...excludes])).stdout;
+    return { path, offset, text: diff.slice(offset, offset + 12_000), totalCharacters: diff.length,
+      ...(offset + 12_000 < diff.length ? { nextOffset: offset + 12_000 } : {}) };
   }
 
   async restoreAccepted(sha: string): Promise<void> {

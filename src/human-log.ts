@@ -6,6 +6,7 @@ import type { VerifierProgress } from "./verifier/port.js";
 export function verifierProgressLabel(progress: VerifierProgress): string {
   const labels: Record<VerifierProgress["stage"], string> = {
     prepare: "准备隔离环境", exploration: "探索并编写验收程序", rediscovery: "按拒绝原因修正验收程序",
+    diagnosis: "核对失败场景并局部修正程序",
     replay: progress.cached ? "复用已有程序，独立检查当前版本" : "独立重放当前版本", semantic_review: "独立语义复核", review_approved: "验收程序复核通过",
     review_rejected: progress.cached ? "跳过已被拒绝的程序" : "验收程序复核未通过",
     review_cached: "复用已批准复核，跳过该程序的 LLM 复核", confirmation: "在第二个独立环境复现失败",
@@ -75,8 +76,10 @@ function describe(event: RunEvent): string | null {
     case "check_cancelled":
       return `Verifier 任务已结束（${packetId}）；${reason ?? "检查范围由模块收口接续"}`;
     case "module_check_started":
-      return `开始模块集中检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
+      return `开始最终范围检查；版本 ${pickString(detail, "snapshotId")}；需求 ${strings(detail?.requirementIds).join("、")}`;
     case "module_check_finished":
+      if (detail?.moduleId === "<diagnosis>") return `失败场景局部处理完成；版本 ${pickString(detail, "snapshotId")}${scenarioCoverageText(detail)}`;
+      if (detail?.moduleId === "<repair>") return `修复目标检查完成；版本 ${pickString(detail, "snapshotId")}${scenarioCoverageText(detail)}`;
       if (detail?.replay === false) return `${detail?.moduleId === "<final>" ? "最终功能组结果汇总" : "模块功能组结果汇总"}；交付版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
       return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
     case "verifier_usage": {

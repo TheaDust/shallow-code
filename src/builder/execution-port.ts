@@ -3,6 +3,7 @@ import type { ApplicationContract } from "../types.js";
 
 /** Engine-independent prompt execution shared by the controller and raw baseline. */
 export interface CodingAgentRequest {
+  repairDiff?: import("./repair-diff.js").RepairDiffReader;
   systemPrompt: string;
   taskPrompt: string;
   outputDir: string;
