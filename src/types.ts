@@ -145,8 +145,10 @@ interface RunEventDetails {
   module_check_started: { moduleId: string; moduleEpoch: number; snapshotId: string; requirementIds: string[] };
   module_check_finished: { moduleId: string; moduleEpoch: number; snapshotId: string;
     replay?: boolean;
+    /** Identity of the feature group whose independently checked evidence was just published. */
+    featureGroupId?: string;
     requirementResults: Record<string, RequirementStatus>; published: boolean;
-    /** Scenario results for the module scope that was just checked. */
+    /** Scenario results for the published scope (module or feature group). */
     scenarioResults?: RunScenarioResult[];
     /** Cumulative scenario coverage across the current audit scope. */
     scenarioCoverage?: ScenarioCoverageCounts };

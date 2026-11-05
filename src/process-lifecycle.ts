@@ -69,14 +69,23 @@ export function toolEnvironment(): NodeJS.ProcessEnv {
 const CREDENTIAL_ENV_KEY = /openai_|api[_-]?key|token|secret|password|credential/i;
 
 /**
+ * `npm run` exports its resolved config to lifecycle scripts, and npm rejects
+ * an `allow-scripts` value that arrives from the environment in a project-scoped
+ * install (EALLOWSCRIPTS). The outer policy only approves the package that
+ * launched the controller, never the candidate's own dependencies.
+ */
+const INHERITED_NPM_POLICY_KEY = /^npm_config_allow_scripts$/i;
+
+/**
  * Environment for candidate processes: the host environment is inherited so
  * npm, Node and platform tooling keep working (proxies, registry settings,
- * temp paths), minus gateway credentials the application has no use for.
+ * temp paths), minus gateway credentials the application has no use for and
+ * outer npm script policy that would break the candidate's own install.
  */
 export function runtimeEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined || CREDENTIAL_ENV_KEY.test(key)) continue;
+    if (value === undefined || CREDENTIAL_ENV_KEY.test(key) || INHERITED_NPM_POLICY_KEY.test(key)) continue;
     environment[key] = value;
   }
   return { ...environment, ...extra };

@@ -30,7 +30,7 @@ export async function executeWorker(request: WorkerRequest): Promise<void> {
     process.env.SHALLOW_CAPTURE_SSE = "0";
     if (request.method === "baseline") {
       const result = await runBaseline({ requirementsDir: request.requirementsDir, outputDir: request.projectDir,
-        runDirectory: join(process.env.SHALLOW_RUN_DIR, "baseline"), env: process.env, timeoutMs: request.timeoutMs ?? undefined });
+        runDirectory: join(process.env.SHALLOW_RUN_DIR, "baseline"), env: process.env, timeoutMs: request.timeoutMs });
       process.exitCode = result.status === "completed" ? 0 : 1;
     } else {
       const { main } = await import("../../index.js");

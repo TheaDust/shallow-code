@@ -52,6 +52,43 @@ for (const heartbeat of [true, false]) {
   });
 }
 
+for (const timeoutMs of [null, 5_400_000]) {
+  test(`Pi worker ${timeoutMs === null ? "continues without a deadline" : "enforces an explicit deadline"}`, { timeout: 30_000 }, async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    await withTempDir("shallow-pi-deadline-", async root => {
+      const app = join(root, "app"); await mkdir(app);
+      let requested!: () => void;
+      const received = new Promise<void>(resolve => { requested = resolve; });
+      let respond!: () => void;
+      const released = new Promise<void>(resolve => { respond = resolve; });
+      const server = createServer(async (req, res) => {
+        for await (const _chunk of req) { /* consume the held request */ }
+        requested();
+        await released;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: "stop" }] })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      });
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const client = new PiWorkerClient({ apiKey: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        model: "fixture" }, join(root, "sessions"), undefined, { heartbeat: false });
+      try {
+        const pending = client.run({ outputDir: app, systemPrompt: "Finish immediately.", taskPrompt: "finish", timeoutMs });
+        await Promise.race([received, pending.then(result => { throw new Error(`Worker finished before the held request: ${result.summary}`); })]);
+        t.mock.timers.tick(5_400_001);
+        respond();
+        const result = await pending;
+        assert.equal(result.outcome, timeoutMs === null ? "completed" : "timed_out", result.summary);
+      } finally {
+        respond();
+        await client.close();
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    });
+  });
+}
+
 test("Pi SDK executes tools and resumes persisted history in a new worker", { timeout: 60_000 }, async () => {
   await withTempDir("shallow-pi-", async root => {
     const app = join(root, "app"); await mkdir(app);

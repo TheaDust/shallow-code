@@ -143,7 +143,7 @@ test("Preflight time is deducted from the Builder call and exhaustion prevents d
   } } as unknown as VisionCapability;
   const f = await fixture([completed], { referenceImages: true, visionProbe: probe, timeoutMs: 200 });
   assert.equal((await f.builder.run(f.request)).outcome, "completed");
-  assert.ok(f.calls[0].timeoutMs > 0 && f.calls[0].timeoutMs < 200);
+  assert.ok(f.calls[0].timeoutMs !== null && f.calls[0].timeoutMs > 0 && f.calls[0].timeoutMs < 200);
   assert.ok(probeTimeouts[0] > 0 && probeTimeouts[0] <= 20);
 
   const expired = await fixture([completed], { referenceImages: true, visionProbe: probe, timeoutMs: 10 });
@@ -168,7 +168,7 @@ test("Unsupported images fall back once and subsequent calls retain text mode", 
   assert.equal(f.calls[0].textOnly, false);
   assert.equal(f.calls[1].textOnly, true);
   assert.equal(f.calls[2].textOnly, true);
-  assert.ok(f.calls[1].timeoutMs <= f.calls[0].timeoutMs);
+  assert.ok(f.calls[1].timeoutMs !== null && f.calls[0].timeoutMs !== null && f.calls[1].timeoutMs <= f.calls[0].timeoutMs);
 });
 
 test("Ordinary failures do not replay and repeated image rejection stops after one fallback", async () => {

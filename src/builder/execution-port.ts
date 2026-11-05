@@ -7,7 +7,8 @@ export interface CodingAgentRequest {
   systemPrompt: string;
   taskPrompt: string;
   outputDir: string;
-  timeoutMs: number;
+  /** Total session deadline; null runs until completion or cancellation. */
+  timeoutMs: number | null;
   sessionKey?: string;
   /** Initialization compatibility inspection cannot edit the project. */
   toolMode?: "normal" | "read_only";

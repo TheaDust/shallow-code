@@ -58,7 +58,7 @@ test("baseline develops the whole input in one session and archives self-check s
     assert.match(request.taskPrompt, /run_tests/); assert.match(request.systemPrompt, /自检报告/);
     assert.match(request.systemPrompt, /ARCHITECTURE\.md/);
     assert.equal(request.contextWindow, 200000); assert.equal(request.attachReferences, false);
-    assert.ok(request.timeoutMs > 0 && request.timeoutMs <= options.timeoutMs!);
+    assert.ok(request.timeoutMs !== null && request.timeoutMs > 0 && request.timeoutMs <= options.timeoutMs!);
     assert.equal(request.sessionKey, undefined);
     assert.equal(request.requirementsDir, join(options.runDirectory, "requirements"));
     assert.equal(request.applicationContract?.adapterId, "web");
@@ -77,6 +77,28 @@ test("baseline develops the whole input in one session and archives self-check s
     const unlock = await lockWorkspace(options.outputDir); await unlock();
   });
 });
+
+for (const timeoutMs of [undefined, null]) {
+  test(`baseline ${timeoutMs === null ? "explicit unlimited" : "default"} development and image fallback have no deadline`, async () => {
+    await withTempDir("shallow-baseline-unlimited-", async root => {
+      const options = { ...await fixture(root), timeoutMs, env: { ...env, SHALLOW_REFERENCE_IMAGES: "1" } };
+      const requests: CodingAgentRequest[] = [];
+      const result = await runBaseline(options, {
+        createBuilder: () => ({ async run(request) {
+          requests.push(request);
+          return requests.length === 1 ? { ...response("failed"), imageUnsupported: true } : response();
+        }, async close() {} }),
+        verifyProject: async () => {},
+      });
+      assert.equal(result.status, "completed");
+      assert.equal(requests.length, 2);
+      assert.ok(requests.every(request => request.timeoutMs === null));
+      assert.equal(requests[1].textOnly, true);
+      const record = JSON.parse(await readFile(join(options.runDirectory, "baseline.json"), "utf8"));
+      assert.equal(record.timeoutMs, null);
+    });
+  });
+}
 
 test("baseline installs the shared scaffold for an empty application", async () => {
   await withTempDir("shallow-baseline-scaffold-", async root => {
@@ -118,12 +140,16 @@ test("baseline CLI loads the shared env file with process overrides", async () =
       "MODEL=from-file", `SHALLOW_RUN_DIR=${runs}`].join("\n"));
     const code = await baselineMain(["--requirements-dir", options.requirementsDir, "--project", options.outputDir],
       { SHALLOW_BUILDER_MODEL: "from-process", MODEL: undefined },
-      { createBuilder: () => ({ async run() { return response(); }, async close() {} }), verifyProject: async () => {} }, envFile);
+      { createBuilder: () => ({ async run(request) {
+        assert.equal(request.timeoutMs, null);
+        return response();
+      }, async close() {} }), verifyProject: async () => {} }, envFile);
     assert.equal(code, 0);
     const { readdir } = await import("node:fs/promises");
     const [run] = await readdir(runs);
     const record = JSON.parse(await readFile(join(runs, run, "baseline.json"), "utf8"));
     assert.equal(record.gateway.model, "from-process");
+    assert.equal(record.timeoutMs, null);
     await assert.rejects(baselineMain(["--requirements-dir", options.requirementsDir, "--project", join(root, "missing")],
       env, {}, null), /ENOENT/);
   });
@@ -190,6 +216,7 @@ test("baseline diagnostics must stay outside both application and requirements",
 });
 
 test("baseline CLI shares project arguments and validates its development timeout", async () => {
+  assert.equal(parseBaselineArgs(["--requirements-dir", "."], process.cwd()).timeoutMs, null);
   const parsed = parseBaselineArgs(["--requirements-dir", ".", "--project", "app", "--timeout-ms", "60000"], process.cwd());
   assert.equal(parsed.projectDir, parsed.outputDir); assert.equal(parsed.timeoutMs, 60000);
   for (const value of ["0", "-1", "1.5", "NaN", "2147483648"]) {

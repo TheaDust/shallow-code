@@ -6,11 +6,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { runBaseline, type BaselineDependencies } from "./baseline.js";
 import { discoverRequirementsDir, parseCliArgs } from "./cli.js";
 import { sanitizeDiagnosticText } from "./diagnostics.js";
-import { BUILDER_TIMEOUT_MS, parseRunDirOverride, readEnvFile } from "./runtime-config.js";
+import { parseRunDirOverride, readEnvFile } from "./runtime-config.js";
 
 export function parseBaselineArgs(argv: string[], cwd: string) {
   const shared: string[] = [];
-  let timeoutMs = BUILDER_TIMEOUT_MS;
+  let timeoutMs: number | null = null;
   for (let index = 0; index < argv.length; index += 2) {
     if (argv[index] === "--timeout-ms") {
       timeoutMs = Number(argv[index + 1]);
@@ -26,7 +26,7 @@ export async function baselineMain(argv = process.argv.slice(2), env: Record<str
   dependencies: BaselineDependencies = {}, envFile: string | null = fileURLToPath(new URL("../.env", import.meta.url)),
   cwd = process.cwd()): Promise<number> {
   if (argv.length === 1 && ["--help", "-h"].includes(argv[0])) {
-    process.stdout.write("Builder self-check baseline\n\nnpm run baseline -- --requirements-dir <dir> --output-dir <app> [--timeout-ms 5400000]\nUse --project <app> for an existing application.\n");
+    process.stdout.write("Builder self-check baseline\n\nnpm run baseline -- --requirements-dir <dir> --output-dir <app> [--timeout-ms <ms>]\nDevelopment has no time limit by default. Use --project <app> for an existing application.\n");
     return 0;
   }
   const cli = parseBaselineArgs(argv, cwd);

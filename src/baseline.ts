@@ -15,7 +15,7 @@ import { loadProjectSpec, PROJECT_SPEC_FILENAME } from "./project-spec.js";
 import { hasProjectFiles } from "./project-workspace.js";
 import { fillTemplate, loadPrompt } from "./prompt-assets.js";
 import { assertPrivateRunDirectory, digest, lockWorkspace, snapshotFiles } from "./run-record.js";
-import { BUILDER_TIMEOUT_MS, parseBuilderContextWindow, readGatewayConfig, referenceImagesEnabled,
+import { parseBuilderContextWindow, readGatewayConfig, referenceImagesEnabled,
   resolveSseCaptureDir } from "./runtime-config.js";
 
 export interface BaselineOptions {
@@ -23,8 +23,8 @@ export interface BaselineOptions {
   outputDir: string;
   runDirectory: string;
   env: Record<string, string | undefined>;
-  /** Limit for the development session, including reference-image preflight. */
-  timeoutMs?: number;
+  /** Optional limit for development and reference-image preflight; null or omitted means no limit. */
+  timeoutMs?: number | null;
 }
 
 export interface BaselineDependencies {
@@ -51,8 +51,8 @@ export async function runBaseline(options: BaselineOptions, dependencies: Baseli
   const { env } = options;
   const outputDir = resolve(options.outputDir), requirementsDir = resolve(options.requirementsDir);
   const runDirectory = resolve(options.runDirectory);
-  const timeoutMs = options.timeoutMs ?? BUILDER_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647) {
+  const timeoutMs = options.timeoutMs ?? null;
+  if (timeoutMs !== null && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2_147_483_647)) {
     throw new Error("Baseline timeout must be an integer from 1 to 2147483647 ms");
   }
   const gateway = readGatewayConfig(env, "builder");
@@ -128,15 +128,16 @@ export async function runBaseline(options: BaselineOptions, dependencies: Baseli
     };
     await writeFile(join(runDirectory, "prompt.json"), JSON.stringify(prompt, null, 2) + "\n");
     builder = createBuilder(join(runDirectory, "pi-sessions"));
-    const deadline = Date.now() + timeoutMs;
+    const deadline = timeoutMs === null ? Infinity : Date.now() + timeoutMs;
+    const remainingTimeout = () => timeoutMs === null ? null : Math.max(1, deadline - Date.now());
     const references = [...new Set(catalog.requirements.flatMap(requirement => requirement.references))];
     let visionUnsupported = false;
     if (referenceImages && references.length) {
-      visionUnsupported = await new VisionCapability(gateway).supports(Math.floor(timeoutMs / 10), observed => {
+      visionUnsupported = await new VisionCapability(gateway).supports(timeoutMs === null ? Infinity : Math.floor(timeoutMs / 10), observed => {
         usage.add({ ...observed, ...(rates ? { cost: usageCost(observed, rates) } : {}) });
       }) === "unsupported";
     }
-    const request: CodingAgentRequest = { ...prompt, outputDir, timeoutMs: Math.max(1, deadline - Date.now()),
+    const request: CodingAgentRequest = { ...prompt, outputDir, timeoutMs: remainingTimeout(),
       applicationContract: contract, requirementsDir: requirementSnapshot, references, contextWindow,
       attachReferences: referenceImages && !visionUnsupported, visionUnsupported };
     const account = (response: BuilderResult) => {
@@ -146,7 +147,7 @@ export async function runBaseline(options: BaselineOptions, dependencies: Baseli
     let response = await builder.run(request);
     account(response);
     if (response.imageUnsupported && referenceImages && !visionUnsupported && Date.now() < deadline) {
-      response = await builder.run({ ...request, textOnly: true, timeoutMs: deadline - Date.now() });
+      response = await builder.run({ ...request, textOnly: true, timeoutMs: remainingTimeout() });
       account(response);
     }
     result.builder = { ...response, summary: sanitizeDiagnosticText(response.summary, [gateway.apiKey], 8_000) };

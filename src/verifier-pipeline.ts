@@ -41,6 +41,7 @@ export interface VerifierRuntime {
 }
 const VERIFIER_TIMEOUT_MS = 3_600_000;
 type ScopedOutcome = RunCheckOutcome;
+type CheckCompletion = (record: QueueRecord, report: CheckReport | undefined) => Promise<void>;
 
 function checkTrace(record: QueueRecord) {
   return { jobId: record.job.jobId, job: record.ref, snapshotId: record.job.snapshot.id,
@@ -100,11 +101,12 @@ export class VerifierCoordinator {
   }
 
   async submit(head: ProducedSnapshot, packet: WorkPacket, mode: CheckJob["mode"], timeoutMs: number,
-    options: { epoch?: number; programs?: ProgramRef[]; priority?: number; requirementIds?: string[]; clauseIds?: string[]; feedbackReports?: ContentRef[] } = {}): Promise<CheckJob> {
+    options: { epoch?: number; programs?: ProgramRef[]; priority?: number; requirementIds?: string[]; clauseIds?: string[];
+      feedbackReports?: ContentRef[]; onCompleted?: CheckCompletion } = {}): Promise<CheckJob> {
     const job = await this.createJob(head, packet, mode, timeoutMs, options);
     await this.queue.enqueue(job, { priority: options.priority ?? 3 });
     await this.emit({ at: now(), type: "check_queued", packetId: packet.id, detail: jobDetail(job, head.sourceSha) });
-    const monitor = this.monitor(job, head).catch(error => { this.failure = error; });
+    const monitor = this.monitor(job, head, options.onCompleted).catch(error => { this.failure = error; });
     this.monitors.add(monitor);
     void monitor.finally(() => this.monitors.delete(monitor));
     return job;
@@ -188,10 +190,11 @@ export class VerifierCoordinator {
     return ids;
   }
 
-  private async monitor(job: CheckJob, head: ProducedSnapshot): Promise<void> {
+  private async monitor(job: CheckJob, head: ProducedSnapshot, onCompleted?: CheckCompletion): Promise<void> {
     const record = await this.queue.wait(job.jobId);
+    let report: CheckReport | undefined;
     if (record.status === "completed" && record.report) {
-      const report = await this.runtime.artifacts.getJson<CheckReport>(record.report);
+      report = await this.runtime.artifacts.getJson<CheckReport>(record.report);
       const manifest = await this.runtime.artifacts.getJson<{ receipts?: ContentRef[] }>(report.manifest);
       await this.acceptReadiness(job, head, manifest.receipts ?? []);
     }
@@ -200,6 +203,8 @@ export class VerifierCoordinator {
       detail: { ...jobDetail(job, head.sourceSha), status: record.status, reason: record.error,
         archived: current.producedHead?.snapshot.id !== job.snapshot.id || current.epoch !== job.moduleEpoch,
         durationMs: (record.completedAt ?? Date.now()) - (record.startedAt ?? record.queuedAt) } });
+    // Group evidence is published independently of later implementation work; drain awaits this callback.
+    if (onCompleted) await onCompleted(record, report);
   }
 
   private async acceptReadiness(job: CheckJob, head: ProducedSnapshot, receipts: ContentRef[]): Promise<boolean> {
@@ -338,7 +343,8 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         reason: sanitizeDiagnosticText(record.error ?? "Verifier did not commit a current source-clause result", deps.diagnosticSecrets) }), ...checkTrace(record) }));
     });
   };
-  const publish = async (head: ProducedSnapshot, module: string, epoch: number, outcomes: ScopedOutcome[], scope: AtomicRequirement[], fullReplay = false): Promise<void> => {
+  const publish = async (head: ProducedSnapshot, module: string, epoch: number, outcomes: ScopedOutcome[], scope: AtomicRequirement[],
+    fullReplay = false, featureGroupId?: string): Promise<void> => {
     for (const requirement of scope) {
       const previous = currentResults.get(requirement.id) ?? [];
       const incoming = outcomes.filter(item => item.requirementId === requirement.id);
@@ -349,10 +355,23 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     const selected = catalog.requirements;
     const allOutcomes = [...currentResults.values()].flat();
     await state.record({ at: now(), type: "module_check_finished", detail: { moduleId: module, moduleEpoch: epoch,
-      snapshotId: head.snapshot.id, published: true, replay: fullReplay,
+      snapshotId: head.snapshot.id, published: true, replay: fullReplay, ...(featureGroupId ? { featureGroupId } : {}),
       requirementResults: Object.fromEntries(scope.map(item => [item.id, outcomeStatus(currentResults.get(item.id) ?? [])])),
       scenarioResults: scenarioResults(scope, allOutcomes, implemented),
       scenarioCoverage: scenarioCoverage(selected, allOutcomes, implemented) } });
+  };
+  const publishFeatureGroup = async (groupId: string, requirements: AtomicRequirement[], head: ProducedSnapshot,
+    record: QueueRecord, report: CheckReport | undefined): Promise<void> => {
+    const outcomes: ScopedOutcome[] = requirements.flatMap(requirement => {
+      const sources = verifierSourceClauses({ requirements: [requirement] }, [requirement.id]);
+      return sources.length ? sources.map(source => ({ ...(report?.outcomes.find(item => item.clauseId === source.id) ?? {
+        requirementId: requirement.id, scenarioId: source.scenarioId, clauseId: source.id,
+        status: "inconclusive" as const, evidence: [], reason: sanitizeDiagnosticText(
+          record.error ?? "Verifier did not commit a source-clause result", deps.diagnosticSecrets) }), ...checkTrace(record) }))
+        : [{ requirementId: requirement.id, scenarioId: "unknown", clauseId: `${requirement.id}:missing-source`,
+          status: "inconclusive" as const, evidence: [], reason: "Requirement has no source result clause", ...checkTrace(record) }];
+    });
+    await publish(head, moduleId(requirements[0]), record.job.moduleEpoch, outcomes, requirements, false, groupId);
   };
   const restore = async (baseline: ProducedSnapshot): Promise<void> => {
     await coordinator.cancelOutstanding();
@@ -433,7 +452,8 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       if (continued.length) {
         const head = await coordinator.seal(packetFor("continue", continued), implemented);
         for (const group of auditPackets({ requirements: continued, statusById: catalog.statusById })) {
-          await coordinator.submit(head, packetFor(group.id, group.requirements), "discover", VERIFIER_TIMEOUT_MS);
+          await coordinator.submit(head, packetFor(group.id, group.requirements), "discover", VERIFIER_TIMEOUT_MS, {
+            onCompleted: (record, report) => publishFeatureGroup(group.id, group.requirements, head, record, report) });
         }
       }
     }
@@ -472,15 +492,12 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       }
       for (const id of packet.requirementIds) implemented.add(id);
       const head = await coordinator.seal(packet, implemented);
-      await coordinator.submit(head, auditGroups.find(group => group.id === grouped.id)!, "discover", VERIFIER_TIMEOUT_MS);
+      await coordinator.submit(head, auditGroups.find(group => group.id === grouped.id)!, "discover", VERIFIER_TIMEOUT_MS, {
+        onCompleted: (record, report) => publishFeatureGroup(grouped.id, requirements, head, record, report) });
     }
     if (!coordinator.checkpoints.snapshot.producedHead) await coordinator.seal(packetFor("initial", catalog.requirements), implemented);
     await coordinator.drain();
     let head = coordinator.checkpoints.snapshot.producedHead!;
-    for (const module of new Set(catalog.requirements.filter(item => implemented.has(item.id)).map(moduleId))) {
-      const scope = catalog.requirements.filter(item => moduleId(item) === module && implemented.has(item.id));
-      await publish(head, module, coordinator.checkpoints.snapshot.epoch, await aggregate(head, scope), scope);
-    }
     const scope = catalog.requirements;
     let fullSnapshotId: string | undefined;
     let delivery: DeliveryReport = { ok: false, stage: "candidate", message: "No sealed application is available" };

@@ -82,3 +82,16 @@ test("Runtime environments keep host tooling but never gateway credentials", () 
     if (priorNpmToken === undefined) delete process.env[priorNpmTokenKey]; else process.env[priorNpmTokenKey] = priorNpmToken;
   }
 });
+
+test("Runtime environments do not forward the outer npm script policy into candidate installs", () => {
+  const priorPolicy = process.env.npm_config_allow_scripts;
+  process.env.npm_config_allow_scripts = "@opencode/cli";
+  try {
+    const env = runtimeEnvironment({ PORT: "43210" });
+    assert.equal(env.npm_config_allow_scripts, undefined);
+    assert.equal(env.PORT, "43210");
+  } finally {
+    if (priorPolicy === undefined) delete process.env.npm_config_allow_scripts;
+    else process.env.npm_config_allow_scripts = priorPolicy;
+  }
+});

@@ -3,9 +3,9 @@ import { acquireSseResilience } from "./builder/sse-resilience.js";
 import { GatewayRequestError, observeGatewayFailures, providerGatewayFailure } from "./gateway-failure.js";
 
 /** One Pi retry policy for Builder, Verifier and Grouper; the caller owns its total deadline. */
-export function piGatewaySettings(timeoutMs: number): SettingsManager {
+export function piGatewaySettings(timeoutMs: number | null): SettingsManager {
   return SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2, baseDelayMs: 1_000,
-    provider: { maxRetries: 0, timeoutMs: Math.max(1, Math.min(2_147_483_647, timeoutMs)) } },
+    provider: { maxRetries: 0, ...(timeoutMs === null ? {} : { timeoutMs: Math.max(1, Math.min(2_147_483_647, timeoutMs)) }) } },
     compaction: { enabled: true }, enableInstallTelemetry: false });
 }
 

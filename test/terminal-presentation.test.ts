@@ -699,6 +699,18 @@ test("Progress entries drop internal packet ids", () => {
   assert.doesNotMatch(text, /packet-a|packet-b/);
 });
 
+test("Background feature-group publication keeps foreground Builder activity", () => {
+  const view = new BuildView(options, () => 24, terminalTheme(false));
+  receive(view, "builder_started", {}, "packet-c");
+  receive(view, "module_check_finished", { featureGroupId: "feature-a-1",
+    requirementResults: { A: "verified" },
+    scenarioResults: [{ requirementId: "A", scenarioId: "a-1", name: "创建", status: "verified", caseIds: [] }] }, "packet-a");
+  const text = view.render(80).join("\n");
+  assert.match(text, /Builder 开始编写代码/);
+  assert.doesNotMatch(text, /功能组结果已发布/);
+  assert.match(text, /已验证 1\/3/);
+});
+
 test("Activity line rotates a spinner frame with wall-clock time", (t) => {
   t.mock.timers.enable({ apis: ["Date"] });
   t.mock.timers.setTime(0);

@@ -6,7 +6,8 @@ import { ArtifactStore, contentDigest } from "../src/verifier/artifacts.js";
 import { VerifierCheckpoints, readVerifierCheckpoint } from "../src/verifier/checkpoints.js";
 import type { AdapterDeclaration, CheckJob, CheckOutcome, CheckReport, ExecutionBindingRef } from "../src/verifier/port.js";
 import { SnapshotStore } from "../src/snapshot-store.js";
-import type { VerifierRuntime } from "../src/verifier-pipeline.js";
+import { VerifierCoordinator, type VerifierRuntime } from "../src/verifier-pipeline.js";
+import { makePacket } from "../src/scheduler.js";
 import { parseVerifierConfig } from "../src/runtime-config.js";
 import { writeRunReport } from "../src/run-record.js";
 import { HumanRunFormatter } from "../src/human-log.js";
@@ -138,7 +139,7 @@ test("Verifier configuration declares migration mode and bounded concurrency", (
   assert.throws(() => parseVerifierConfig({ SHALLOW_VERIFIER_CONCURRENCY: "3" }));
 });
 
-test("ROOT-direct requirements reach grouping, implementation and one shared module summary", async () => {
+test("ROOT-direct requirements reach grouping, implementation and one feature-group summary each", async () => {
   for (const replay of [false, true]) await withModulePipeline(async f => {
     const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
     input.type = "ROOT";
@@ -161,9 +162,12 @@ test("ROOT-direct requirements reach grouping, implementation and one shared mod
       [["A", "B"], ["C"]]);
     assert(jobs.some(job => job.requirementIds.length > 0));
     assert(jobs.filter(job => job.requirementIds.length > 0).every(job => job.moduleId === "ROOT"));
-    const boundaries = (await f.events()).flatMap(event =>
-      event.type === "module_check_finished" && event.detail && event.detail.moduleId !== "<final>" ? [event.detail.moduleId] : []);
-    assert.deepEqual(boundaries, ["ROOT"]);
+    const groups = (await f.events()).flatMap(event =>
+      event.type === "module_check_finished" && event.detail?.featureGroupId
+        ? [{ moduleId: event.detail.moduleId, featureGroupId: event.detail.featureGroupId }] : []);
+    assert.equal(groups.length, 2);
+    assert(groups.every(group => group.moduleId === "ROOT"));
+    assert(groups.every(group => group.featureGroupId.startsWith("feature-")));
   });
 });
 
@@ -506,7 +510,9 @@ for (const continued of [false, true]) for (const replay of [false, true]) test(
       if (request.mode === "implement" && request.packet.requirementIds[0] === "C") {
         assert.equal(checkingA, true, "the next module starts while the first group is still checking");
         const events = await f.events();
-        assert.ok(!events.some(event => event.type === "module_check_finished"), "module summaries wait until implementation finishes");
+        assert.ok(!events.some(event => event.type === "module_check_finished" &&
+          (event.detail?.requirementResults as Record<string, unknown> | undefined)?.A),
+          "an in-flight group publishes only when its own check completes");
       }
       const result = await build(request, options);
       await writeFile(join(f.options.outputDir, "marker.txt"), request.mode === "implement" ? request.packet.requirementIds[0] : "repair");
@@ -715,7 +721,7 @@ test("Verifier observations update published results without resetting them at a
   assert.match(view.render(100).join("\n"), /已验证 1\/1/, "a sealed module keeps prior coverage until new results replace it");
 });
 
-test("Module and final events report cumulative scenario coverage", async () => {
+test("Feature-group and final events report cumulative scenario coverage", async () => {
   await withModulePipeline(async f => {
     const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
     const scenario = (id: string, name: string) => ({ id, name, steps: [
@@ -730,11 +736,15 @@ test("Module and final events report cumulative scenario coverage", async () => 
     const result = await f.run();
     assert.equal(result.status, "delivered");
     const events = await f.events();
-    const first = events.find(event => event.type === "module_check_finished" && event.detail?.moduleId === "FIRST");
+    const first = events.find(event => event.type === "module_check_finished" &&
+      event.detail?.featureGroupId && event.detail.scenarioResults?.some(item => item.requirementId === "A"));
     assert.equal(first?.type, "module_check_finished");
     if (first?.type !== "module_check_finished") return;
-    assert.deepEqual(first.detail?.scenarioCoverage, { total: 3, verified: 2, failed: 0, inconclusive: 1, notRun: 0 },
-      "all modules are implemented before summaries publish each module's evidence");
+    assert.equal(first.detail?.scenarioCoverage?.total, 3);
+    assert.equal(first.detail?.scenarioCoverage?.verified, 2);
+    assert.equal(first.detail?.scenarioCoverage?.failed, 0);
+    assert.equal((first.detail?.scenarioCoverage?.inconclusive ?? 0) + (first.detail?.scenarioCoverage?.notRun ?? 0), 1,
+      "only the feature group that just finished is verified");
     assert.deepEqual(first.detail?.scenarioResults?.map(item => [item.requirementId, item.scenarioId, item.status]),
       [["A", "A-1", "verified"], ["A", "A-2", "verified"]]);
     const final = events.find(event => event.type === "pipeline_finished");
@@ -742,6 +752,108 @@ test("Module and final events report cumulative scenario coverage", async () => 
     if (final?.type !== "pipeline_finished") return;
     assert.deepEqual(final.detail?.scenarioCoverage, { total: 3, verified: 3, failed: 0, inconclusive: 0, notRun: 0 });
     assert.equal(result.scenarioResults?.filter(item => item.status === "verified").length, 3);
+  });
+});
+
+for (const checkFails of [false, true]) test(`Feature-group ${checkFails ? "faults" : "results"} publish while later implementation groups are still running`, { timeout: 20_000 }, async () => {
+  await withModulePipeline(async f => {
+    const input = JSON.parse(await readFile(f.options.requirementsFile, "utf8"));
+    input.children[0].children[0].scenarios = [{ id: "a-results", name: "workspace results", steps: [
+      { keyword: "WHEN", content: "Open the main workspace." },
+      { keyword: "THEN", content: "The main workspace is visible." },
+      { keyword: "AND", content: "The current selection is visible." },
+    ] }];
+    await writeFile(f.options.requirementsFile, JSON.stringify(input));
+    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
+    const expectedClauses = verifierSourceClauses({ requirements: catalog.requirements }, ["A"]).map(source => source.id);
+    assert.equal(expectedClauses.length, 2);
+    let releaseB!: () => void;
+    const bReleased = new Promise<void>(resolve => { releaseB = resolve; });
+    let resolveGroup!: (event: RunEvent) => void;
+    const groupPublished = new Promise<RunEvent>(resolve => { resolveGroup = resolve; });
+    await attach(f, async job => {
+      if (checkFails && job.mode !== "prepare" && job.requirementIds.includes("A")) {
+        throw new Error("Verifier connection closed: private-credential");
+      }
+      if (job.mode === "discover" && job.requirementIds[0] === "B") await bReleased;
+    });
+    f.options.verifier.replay = false;
+    f.deps.diagnosticSecrets = ["private-credential"];
+    const expectedStatus = checkFails ? "inconclusive" : "verified";
+    const logSink = f.deps.logSink;
+    f.deps.logSink = { ...logSink, write(chunk) {
+      logSink?.write(chunk);
+      const event = JSON.parse(chunk) as RunEvent;
+      if (event.type === "module_check_finished" && event.detail?.featureGroupId &&
+        event.detail.requirementResults?.A === expectedStatus) resolveGroup(event);
+    } };
+    const build = f.builder.run.bind(f.builder);
+    let publishedBeforeLaterGroupFinished = false;
+    f.builder.run = async (request, options) => {
+      if (request.mode === "implement" && request.packet.requirementIds[0] === "C") {
+        let timer!: ReturnType<typeof setTimeout>;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("feature-group result was not published before the later group finished")), 5_000);
+        });
+        try {
+          const event = await Promise.race([groupPublished, timeout]);
+          publishedBeforeLaterGroupFinished = true;
+          assert.equal(event.type, "module_check_finished");
+          assert.ok(event.detail?.featureGroupId);
+          assert.equal(event.detail?.requirementResults?.A, expectedStatus);
+          const scene = event.detail?.scenarioResults?.find(item => item.requirementId === "A");
+          assert.equal(scene?.status, expectedStatus);
+          assert.deepEqual(scene?.caseIds, expectedClauses);
+          if (checkFails) {
+            assert.match(scene?.reason ?? "", /Verifier connection closed: \[redacted\]/);
+            assert.doesNotMatch(scene?.reason ?? "", /private-credential/);
+          }
+        } finally {
+          clearTimeout(timer);
+          releaseB();
+        }
+      }
+      return build(request, options);
+    };
+    const result = await f.run();
+    assert.equal(publishedBeforeLaterGroupFinished, true);
+    assert.equal(result.status, checkFails ? "partial" : "delivered");
+    const events = await f.events();
+    assert.ok(events.some(event => event.type === "module_check_finished" && event.detail?.featureGroupId &&
+      event.detail.requirementResults?.A === expectedStatus));
+    assert.ok(events.some(event => event.type === "module_check_finished" && event.detail?.moduleId === "<final>"));
+  });
+});
+
+test("Verifier completion callbacks receive deadline-expired tasks without their late reports", { timeout: 20_000 }, async () => {
+  await withModulePipeline(async f => {
+    const runtime = await attach(f, async (_job, signal) => {
+      await new Promise<void>(resolve => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+    });
+    await mkdir(f.options.outputDir, { recursive: true });
+    const catalog = await loadRequirementCatalog(f.options.requirementsFile);
+    const packet = makePacket("expired-group", catalog.requirements.filter(item => item.id === "A"));
+    const coordinator = await VerifierCoordinator.open(runtime, f.options, f.deps, "initial", async () => {});
+    try {
+      const head = await coordinator.seal(packet, new Set(["A"]));
+      let completions = 0;
+      await coordinator.submit(head, packet, "discover", 50, { onCompleted: async (record, report) => {
+        completions++;
+        assert.equal(record.status, "cancelled");
+        assert.ok(record.lateReport, "the expired task returned a report after its deadline");
+        assert.equal(record.report, undefined);
+        assert.equal(report, undefined, "late results must not grant verification");
+        assert.equal(record.job.snapshot.id, head.snapshot.id);
+        assert.match(record.error ?? "", /cancellation or deadline/);
+      } });
+      await coordinator.drain();
+      assert.equal(completions, 1);
+    } finally {
+      await coordinator.cancelOutstanding();
+    }
   });
 });
 

@@ -223,6 +223,8 @@ export class BuildView implements Component {
       this.module = ids("names").join("、") || event.packetId || "当前需求包";
     }
     if (event.packetId && this.packetId && event.packetId !== this.packetId && event.type !== "builder_started" && event.type !== "builder_finished") return;
+    // 后台功能组结果不抢占仍在运行的 Builder 前台活动，只更新计数与最近进展。
+    if (event.type === "module_check_finished" && detail?.featureGroupId && this.builderRunning) return;
     const activity = this.describeActivity(event, detail);
     if (activity) { this.activity = activity; this.lastActivityAt = Date.now(); }
   }
@@ -601,6 +603,7 @@ export class BuildView implements Component {
       case "snapshot_sealed": return "源码已封存，等待独立检查";
       case "module_check_started": return "Verifier · 最终范围全量重放";
       case "module_check_finished":
+        if (detail?.featureGroupId) return "Verifier · 功能组结果已发布";
         if (detail?.moduleId === "<diagnosis>") return "Verifier · 失败场景局部处理完成";
         if (detail?.moduleId === "<repair>") return "Verifier · 修复目标检查完成";
         if (detail?.replay === false) return detail?.moduleId === "<final>" ? "历史与局部检查结果已汇总" : "模块原快照结果已汇总";
@@ -776,7 +779,7 @@ export class BuildTui {
     this.treeViewer = undefined;
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
       "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求树与每个需求的实现/验收状态；按 v 切换完整 requirements.yaml\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  运行中中断，运行结束后退出\n\n" +
-      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，模块推进时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Verifier：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告与项目路径追加在详细日志末尾；在项目目录再次执行 shallow build 可继续开发，按 Ctrl+C 退出。",
+      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，功能组检查完成时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Verifier：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告与项目路径追加在详细日志末尾；在项目目录再次执行 shallow build 可继续开发，按 Ctrl+C 退出。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });

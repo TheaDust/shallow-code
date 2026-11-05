@@ -72,7 +72,7 @@ function describe(event: RunEvent): string | null {
     case "check_started":
       return `Verifier 开始检查（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史任务" : ""}`;
     case "check_completed":
-      return `Verifier 检查${detail?.status === "failed" || detail?.status === "interrupted" ? "未完成" : "完成"}（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
+      return `Verifier 检查${detail?.status === "failed" || detail?.status === "interrupted" ? "未完成" : "完成"}（${packetId}）；版本 ${pickString(detail, "snapshotId")}${detail?.mode === "discover" ? "；等待功能组汇总" : detail?.archived ? "；历史结果已归档" : "；等待当前版本汇总"}${reason ? `；${reason}` : ""}`;
     case "check_cancelled":
       return `Verifier 任务已结束（${packetId}）；${reason ?? "检查范围由最终验收接续"}`;
     case "module_check_started":
@@ -80,6 +80,8 @@ function describe(event: RunEvent): string | null {
     case "module_check_finished":
       if (detail?.moduleId === "<diagnosis>") return `失败场景局部处理完成；版本 ${pickString(detail, "snapshotId")}${scenarioCoverageText(detail)}`;
       if (detail?.moduleId === "<repair>") return `修复目标检查完成；版本 ${pickString(detail, "snapshotId")}${scenarioCoverageText(detail)}`;
+      if (detail?.featureGroupId) return `功能组检查完成（${pickString(detail, "featureGroupId")}）；版本 ${pickString(detail, "snapshotId")}` +
+        `${detail?.published ? "；当前结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
       if (detail?.replay === false) return `${detail?.moduleId === "<final>" ? "最终功能组结果汇总" : "模块功能组结果汇总"}；交付版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
       return `${detail?.moduleId === "<final>" ? "最终范围验收完成" : "模块集中检查完成"}；版本 ${pickString(detail, "snapshotId")}${detail?.published ? "；当前结果已发布" : "；结果已归档"}${scenarioCoverageText(detail)}`;
     case "verifier_usage": {

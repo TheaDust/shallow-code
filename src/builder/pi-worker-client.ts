@@ -141,7 +141,9 @@ export class PiWorkerClient implements CodingAgentPort {
           }
           if (message && typeof message === "object" && "outcome" in message) res(message as PiWorkerResult);
         });
-        timer = setTimeout(() => res({ ...fallback, ...progress, outcome: "timed_out", summary: "Pi call deadline reached" }), Math.max(1, input.timeoutMs));
+        if (input.timeoutMs !== null) {
+          timer = setTimeout(() => res({ ...fallback, ...progress, outcome: "timed_out", summary: "Pi call deadline reached" }), Math.max(1, input.timeoutMs));
+        }
       });
       tree = await ownProcessTree(child);
       const { repairDiff, ...workerInput } = input;

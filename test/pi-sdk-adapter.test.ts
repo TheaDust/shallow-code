@@ -9,6 +9,12 @@ import { createPiSession, type PiSessionSnapshot } from "../src/builder/pi-sdk-a
 import { resolveRuntimeContract } from "../src/adapters/web/project-spec.js";
 import { BUILDER_SKILLS_DIR } from "../src/builder/skills.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+import { piGatewaySettings } from "../src/pi-gateway.js";
+
+test("Pi gateway settings preserve explicit timeouts and accept unlimited sessions", () => {
+  assert.equal(piGatewaySettings(20_000).getProviderRetrySettings().timeoutMs, 20_000);
+  assert.equal(piGatewaySettings(null).getProviderRetrySettings().timeoutMs, undefined);
+});
 
 function reply(res: ServerResponse, tool?: { name: string; arguments: object }) {
   res.writeHead(200, { "content-type": "text/event-stream" });

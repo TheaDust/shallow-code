@@ -42,7 +42,7 @@ test("Runtime grouping logs show its validated source, fallback reason and actua
   })), /使用确定性分组.*16.*Unknown ID/);
 });
 
-test("Module and final logs report scenario coverage alongside requirement results", () => {
+test("Feature-group and final logs report scenario coverage alongside requirement results", () => {
   const formatter = new HumanRunFormatter();
   const at = "2026-10-12T00:00:00Z";
   const moduleLine = formatLine(formatter, eventLine(at, "module_check_finished", {
@@ -300,10 +300,10 @@ test("Human logs cover Verifier queue, module checks and cancellation", () => {
     /Verifier 开始检查（g1）；版本 snap-1$/);
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "completed" } })),
-    /Verifier 检查完成（g1）；版本 snap-1；等待当前版本汇总$/);
+    /Verifier 检查完成（g1）；版本 snap-1；等待功能组汇总$/);
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "completed", archived: true, reason: "版本已收口" } })),
-    /历史结果已归档；版本已收口$/);
+    /等待功能组汇总；版本已收口$/);
   assert.match(formatLine(formatter, eventLine(base, "check_completed", { packetId: "g1",
     detail: { ...job, status: "interrupted", reason: "Execution interrupted" } })),
     /Verifier 检查未完成.*Execution interrupted/);
@@ -316,6 +316,10 @@ test("Human logs cover Verifier queue, module checks and cancellation", () => {
   assert.match(formatLine(formatter, eventLine(base, "module_check_started",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", requirementIds: ["A"] } })),
     /开始最终范围检查；版本 snap-2；需求 A$/);
+  assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
+    { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", featureGroupId: "feature-a-1", published: true,
+      requirementResults: { A: "verified" }, scenarioCoverage: { total: 2, verified: 1, failed: 0, inconclusive: 0, notRun: 1 } } })),
+    /功能组检查完成（feature-a-1）；版本 snap-2；当前结果已发布；场景覆盖 1\/2（未运行 1）$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: true, requirementResults: { A: "verified" } } })),
     /模块集中检查完成；版本 snap-2；当前结果已发布$/);

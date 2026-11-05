@@ -47,7 +47,7 @@ npm.cmd run experiment -- summarize --output-dir outputs/arc-pilot-unlimited
 
 ## 资源和模型配置
 
-实验层默认不设置生成和外部评测的总墙钟上限，协议中的 `generationTimeoutMs` 与 `evaluationTimeoutMs` 记录为 `null`。Shallow 内部各阶段的固定超时、baseline 单次开发会话的默认 90 分钟，以及 ARC 原有单项测试超时继续生效。Ctrl+C 仍会停止进程树并保留已有产物。
+实验层默认不设置生成和外部评测的总墙钟上限，协议中的 `generationTimeoutMs` 与 `evaluationTimeoutMs` 记录为 `null`。baseline 开发会话默认不限时；两组的初始化与技术检查、Shallow 内部各阶段的固定超时，以及 ARC 原有单项测试超时继续生效。Ctrl+C 仍会停止进程树并保留已有产物。
 
 需要限制总生成用时时，显式设置 `--generation-timeout-ms`；两组共用该上限，涵盖初始化、开发、内部验收与交付检查。超时后终止进程树，保留当前应用并尝试外部评测。例如：
 
@@ -57,7 +57,7 @@ npm.cmd run experiment -- run --tasks keep,bookstack --repeats 2 --output-dir ou
 
 外部评测可通过 `--evaluation-timeout-ms` 显式设置总墙钟上限，省略时不限制。两个参数均接受 1 至 2,147,483,647 的整数毫秒。相同墙钟上限并不等于相同 token 或费用；汇总分别记录两者。正常结束时读取最终用量报告；强制终止或报告缺失时用量标记为不完整，费用未知项保持空值。
 
-模型与价格沿用 `MODEL`、`OPENAI_BASE_URL`、`SHALLOW_BUILDER_*`、`SHALLOW_GROUPER_*`、`SHALLOW_VERIFIER_*` 和 `MODEL_COST_*`。比较同一底座模型时，让三种角色的模型覆盖一致；不同配置也可以运行，但须按实际配置解释结果。参考图片由 `SHALLOW_REFERENCE_IMAGES=1` 开启，两组设置相同。语义复核与最终全量重放沿用 `.env` 中的明确设置并记录到协议。`SHALLOW_VERIFIER_REPLAY` 只控制模块全部完成后的全量检查和集中修复后的最终收口；模块边界只汇总，局部程序诊断及修复目标检查始终可用；业务集中修复最多一轮。本研究实验使用 `SHALLOW_VERIFIER_REPLAY=1`、`SHALLOW_VERIFIER_SEMANTIC_REVIEW=0`。协议固定代码和配置，旧版准备目录须使用新输出目录重新 `prepare`。
+模型与价格沿用 `MODEL`、`OPENAI_BASE_URL`、`SHALLOW_BUILDER_*`、`SHALLOW_GROUPER_*`、`SHALLOW_VERIFIER_*` 和 `MODEL_COST_*`。比较同一底座模型时，让三种角色的模型覆盖一致；不同配置也可以运行，但须按实际配置解释结果。参考图片由 `SHALLOW_REFERENCE_IMAGES=1` 开启，两组设置相同。语义复核与最终全量重放沿用 `.env` 中的明确设置并记录到协议。`SHALLOW_VERIFIER_REPLAY` 只控制模块全部完成后的全量检查和集中修复后的最终收口；功能组检查完成即发布本组结果，局部程序诊断及修复目标检查始终可用；业务集中修复最多一轮。本研究实验使用 `SHALLOW_VERIFIER_REPLAY=1`、`SHALLOW_VERIFIER_SEMANTIC_REVIEW=0`。协议固定代码和配置，旧版准备目录须使用新输出目录重新 `prepare`。
 
 ## 评分和输出
 
