@@ -6,7 +6,8 @@ import { parseBuilderContextWindow, parseVerifierConfig, readEnvFile, readGatewa
 import { assertPrivateRunDirectory, digest, lockWorkspace, snapshotFiles } from "../run-record.js";
 import { atomicWrite } from "../verifier/artifacts.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
-import { csv, discoverArcTasks, implementationDigest, inside, METHODS, planCells, REPOSITORY, scoreReport, summarize,
+import { csv, deserializePlan, deserializeResult, discoverArcTasks, implementationDigest, inside, METHODS, planCells,
+  REPOSITORY, resolveStoredPath, scoreReport, serializePlan, serializeResult, storedPath, summarize,
   type CellResult, type ExperimentPlan, type Method, type TestEntry } from "./protocol.js";
 import type { WorkerRequest } from "./worker.js";
 import { normalizeArcRequirements } from "./requirements.js";
@@ -110,10 +111,10 @@ export async function writeSummary(outputDir: string, plan: ExperimentPlan) {
   const results: CellResult[] = [];
   for (const cell of plan.cells) {
     const path = join(outputDir, cell.task, `repeat-${cell.repeat}`, cell.method, "result.json");
-    if (await exists(path)) results.push(await readJson<CellResult>(path));
+    if (await exists(path)) results.push(deserializeResult(await readJson<CellResult>(path), outputDir));
   }
   const summary = summarize(plan, results);
-  await saveJson(join(outputDir, "summary.json"), summary);
+  await saveJson(join(outputDir, "summary.json"), { ...summary, cells: results.map(result => serializeResult(result, outputDir)) });
   await writeFile(join(outputDir, "summary.csv"), csv(summary.byMethod));
   await writeFile(join(outputDir, "tasks.csv"), csv(summary.byTask));
   await writeFile(join(outputDir, "runs.csv"), csv(results.map(row => ({ task: row.task, repeat: row.repeat, method: row.method,
@@ -139,10 +140,11 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
   const manifestFile = join(outputDir, "experiment.json");
   if (await exists(manifestFile)) {
     if (!resume) throw new Error("Experiment already exists; use --resume with identical options or choose a new output directory");
-    if (JSON.stringify(await readJson(manifestFile)) !== JSON.stringify(plan)) throw new Error("Experiment inputs, code or settings changed; choose a new output directory");
+    const stored = deserializePlan(await readJson<ExperimentPlan>(manifestFile), outputDir);
+    if (JSON.stringify(stored) !== JSON.stringify(plan)) throw new Error("Experiment inputs, code or settings changed; choose a new output directory");
   } else {
     if ((await readdir(outputDir)).length) throw new Error("New experiment output directory must be empty");
-    await writeFile(manifestFile, JSON.stringify(plan, null, 2) + "\n", { flag: "wx" });
+    await writeFile(manifestFile, JSON.stringify(serializePlan(plan, outputDir), null, 2) + "\n", { flag: "wx" });
   }
   const release = await lockWorkspace(outputDir);
   const controller = new AbortController();
@@ -186,7 +188,7 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
         process.stderr.write(`[ARC experiment] enumerate ${task.id}\n`);
         const result = await worker({ action: "catalog", task, setupScript, directory: attempt,
           timeoutMs: plan.evaluationTimeoutMs }, join(attempt, "worker.log"), plan.evaluationTimeoutMs);
-        if (result.exitCode !== 0 || !await exists(join(attempt, "catalog.json"))) throw new Error(`Cannot enumerate ${task.id}; see ${attempt}`);
+        if (result.exitCode !== 0 || !await exists(join(attempt, "catalog.json"))) throw new Error(`Cannot enumerate ${task.id}; see ${storedPath(outputDir, attempt)}`);
         await saveJson(catalogFile, await readJson(join(attempt, "catalog.json")));
       }
       catalogs.set(task.id, await readJson<TestEntry[]>(catalogFile));
@@ -245,14 +247,16 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
       const evaluated = await worker({ action: "evaluate", task, setupScript, projectDir,
         directory: evaluationDir, catalog, timeoutMs: plan.evaluationTimeoutMs }, join(evaluationDir, "worker.log"), plan.evaluationTimeoutMs);
       const evaluationFile = join(evaluationDir, "evaluation.json");
-      const evaluation: CellResult["evaluation"] = await exists(evaluationFile) ? await readJson(evaluationFile)
+      const storedEvaluation = await exists(evaluationFile) ? await readJson<CellResult["evaluation"]>(evaluationFile) : undefined;
+      const evaluation: CellResult["evaluation"] = storedEvaluation
+        ? { ...storedEvaluation, directory: resolveStoredPath(evaluationDir, storedEvaluation.directory) }
         : { status: evaluated.timedOut ? "timed_out" : "error", durationMs: evaluated.durationMs,
           score: scoreReport(catalog), directory: evaluationDir, error: evaluated.error ?? "Evaluation did not produce a report; see worker.log" };
       if (evaluated.timedOut) evaluation.status = "timed_out";
       evaluation.durationMs = evaluated.durationMs;
       if (JSON.stringify(await snapshotFiles(projectDir)) !== JSON.stringify(before)) throw new Error("Final application changed during external evaluation");
       const result: CellResult = { ...cell, generation, evaluation, finalDigest: digest(JSON.stringify(before)) };
-      await saveJson(join(directory, "result.json"), result);
+      await saveJson(join(directory, "result.json"), serializeResult(result, outputDir));
       summaryWrites = summaryWrites.then(() => writeSummary(outputDir, plan));
       await summaryWrites;
     };
@@ -276,7 +280,8 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
   const options = parseExperimentArgs(argv);
   if (["help", "--help", "-h"].includes(options.command)) { process.stdout.write(HELP); return 0; }
   if (options.command === "summarize") {
-    const summary = await writeSummary(options.outputDir!, await readJson<ExperimentPlan>(join(options.outputDir!, "experiment.json")));
+    const stored = await readJson<ExperimentPlan>(join(options.outputDir!, "experiment.json"));
+    const summary = await writeSummary(options.outputDir!, deserializePlan(stored, options.outputDir!));
     process.stdout.write(JSON.stringify(summary.byMethod, null, 2) + "\n"); return 0;
   }
   const env: NodeJS.ProcessEnv = { ...(envFile ? await readEnvFile(envFile) : {}) };
@@ -296,14 +301,15 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
     return 0;
   }
   if (options.command === "plan") {
-    process.stdout.write(JSON.stringify({ ...plan, tasks: plan.tasks.map(({ requirementFiles, testFiles, ...task }) => task) }, null, 2) + "\n");
+    const relative = serializePlan(plan, process.cwd());
+    process.stdout.write(JSON.stringify({ ...relative, tasks: relative.tasks.map(({ requirementFiles, testFiles, ...task }) => task) }, null, 2) + "\n");
     return 0;
   }
   if (options.command === "run") {
     const roles = options.methods.includes("shallow") ? ["builder", "grouper", "verifier"] : ["builder"];
     for (const role of roles) readGatewayConfig(env, role);
   }
-  process.stderr.write(`[ARC experiment] output ${plan.outputDir}\n`);
+  process.stderr.write(`[ARC experiment] output ${storedPath(process.cwd(), plan.outputDir)}\n`);
   const summary = await runExperiment(plan, plan.outputDir, env, options.resume,
     { ...dependencies, prepareOnly: options.command === "prepare" });
   process.stdout.write(JSON.stringify(summary.byMethod, null, 2) + "\n");

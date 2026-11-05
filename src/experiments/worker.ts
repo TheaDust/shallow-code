@@ -81,9 +81,9 @@ export async function executeWorker(request: WorkerRequest): Promise<void> {
     const report = JSON.parse(await readFile(reportFile, "utf8")) as JSONReport;
     const score = scoreReport(request.catalog!, report);
     evaluation = { status: !result.timedOut && (result.exitCode === 0 || result.exitCode === 1) && !score.errors.length ? "completed" : "error",
-      score, durationMs: Date.now() - started, directory, candidate: app.candidate };
+      score, durationMs: Date.now() - started, directory: ".", candidate: app.candidate };
   } catch (error) {
-    evaluation = { status: "error", score: scoreReport(request.catalog!), durationMs: Date.now() - started, directory, error: String(error) };
+    evaluation = { status: "error", score: scoreReport(request.catalog!), durationMs: Date.now() - started, directory: ".", error: String(error) };
   } finally { await runtime?.dispose(); }
   await writeFile(join(directory, "evaluation.json"), JSON.stringify(evaluation, null, 2) + "\n");
 }

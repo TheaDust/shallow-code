@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
@@ -67,7 +67,7 @@ function fakeProcess(calls: WorkerRequest[]) {
       await assert.rejects(readFile(join(input.projectDir!, "tests", "fixture.spec.ts")), /ENOENT/);
       await mkdir(input.directory, { recursive: true });
       await writeFile(join(input.directory, "evaluation.json"), JSON.stringify({ status: "completed", durationMs: 5,
-        directory: input.directory, score: scoreReport(input.catalog!, report(["passed", "failed"])) }));
+        directory: ".", score: scoreReport(input.catalog!, report(["passed", "failed"])) }));
     }
     return { exitCode: 0, timedOut: false, durationMs: 12 };
   };
@@ -167,8 +167,9 @@ test("prepare prints and persists its default output directory for an explicit r
       assert.match(directories[0], /^fixture-\d{8}T\d{9}Z$/);
       const output = join(root, "outputs", directories[0]);
       const manifest = JSON.parse(await readFile(join(output, "experiment.json"), "utf8"));
-      assert.equal(manifest.outputDir, output);
-      assert(stderr.mock.calls.some(call => String(call.arguments[0]).includes(`[ARC experiment] output ${output}`)));
+      assert.equal(manifest.outputDir, ".");
+      assert.equal(manifest.benchRoot, "../../bench");
+      assert(stderr.mock.calls.some(call => String(call.arguments[0]).includes(`[ARC experiment] output outputs/${directories[0]}`)));
       assert.equal(await experimentMain(["run", ...args, "--output-dir", output, "--resume"], env, { runProcess: fakeProcess(calls) }, null), 0);
       assert.equal(calls.length, 5);
       assert.equal(JSON.parse(await readFile(join(output, "summary.json"), "utf8")).cells.length, 2);
@@ -187,7 +188,15 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     assert(calls.every(call => call.timeoutMs === null));
     const manifest = JSON.parse(await readFile(join(output, "experiment.json"), "utf8"));
     assert.equal(manifest.concurrency, 1);
+    assert.equal(manifest.outputDir, ".");
+    assert.doesNotMatch(JSON.stringify(manifest), /(?<![A-Za-z])[A-Za-z]:[\\/]/);
     assert.equal(manifest.generationTimeoutMs, null); assert.equal(manifest.evaluationTimeoutMs, null);
+    const resultFile = JSON.parse(await readFile(join(output, "fixture", "repeat-1", "baseline", "result.json"), "utf8"));
+    assert.equal(resultFile.evaluation.directory, "fixture/repeat-1/baseline/evaluation-1");
+    const evaluationFile = JSON.parse(await readFile(join(output, "fixture", "repeat-1", "baseline", "evaluation-1", "evaluation.json"), "utf8"));
+    assert.equal(evaluationFile.directory, ".");
+    assert.equal(JSON.parse(await readFile(join(output, "summary.json"), "utf8")).cells[0].evaluation.directory,
+      "fixture/repeat-1/baseline/evaluation-1");
     assert.deepEqual(result.byMethod.map(row => row.macroPassRate), [0.5, 0.5]);
     assert.equal(await readFile(join(plan.tasks[0].requirementsDir, "requirements.yaml"), "utf8"), source);
     assert.equal(await readFile(join(plan.tasks[0].testsDir, "fixture.spec.ts"), "utf8"), "// private evaluator tests\n");
@@ -207,6 +216,29 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     await assert.rejects(runExperiment(plan, output, env, false), /already exists/);
     assert.match(await readFile(join(output, "runs.csv"), "utf8"), /baseline/);
     assert.equal((await writeSummary(output, plan)).cells.length, 2);
+  });
+});
+
+test("relative manifests keep resumed experiments portable and accept legacy absolute paths", async () => {
+  await withTempDir("shallow-arc-paths-", async root => {
+    const plan = await fixture(root), output = join(root, "out"), moved = join(root, "moved");
+    await runExperiment(plan, output, env, false, { runProcess: fakeProcess([]) });
+    await rename(output, moved);
+    const movedPlan = await createPlan(parseExperimentArgs(["run", "--bench-root", plan.benchRoot, "--repeats", "1",
+      "--output-dir", moved]), env);
+    const summary = await runExperiment(movedPlan, moved, env, true, { runProcess: fakeProcess([]) });
+    assert.equal(summary.cells.length, 2);
+    assert.equal(JSON.parse(await readFile(join(moved, "summary.json"), "utf8")).cells[0].evaluation.directory,
+      "fixture/repeat-1/baseline/evaluation-1");
+
+    const manifest = JSON.parse(await readFile(join(moved, "experiment.json"), "utf8"));
+    await writeFile(join(moved, "experiment.json"), JSON.stringify({ ...manifest, benchRoot: plan.benchRoot,
+      outputDir: moved, setupScript: plan.setupScript, tasks: plan.tasks }, null, 2) + "\n");
+    const resultFile = join(moved, "fixture", "repeat-1", "baseline", "result.json");
+    const result = JSON.parse(await readFile(resultFile, "utf8"));
+    await writeFile(resultFile, JSON.stringify({ ...result, evaluation: { ...result.evaluation,
+      directory: join(moved, "fixture", "repeat-1", "baseline", "evaluation-1") } }, null, 2) + "\n");
+    assert.equal((await runExperiment(movedPlan, moved, env, true, { runProcess: fakeProcess([]) })).cells.length, 2);
   });
 });
 

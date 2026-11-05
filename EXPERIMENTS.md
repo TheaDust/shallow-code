@@ -1,6 +1,6 @@
 # ARC 两组对照实验
 
-实验入口默认读取相邻的 `../arc-bench-modified`（当前路径 `E:\my-works\coding\arc-bench-modified`），运行 `baseline`（单 Agent 全需求开发与自检）和 `shallow`（完整 Grouper / Builder / Verifier 流程），用基准中的 Playwright 测试评估最终应用。两组各自使用全新工程、私有运行目录、数据和程序缓存；配对顺序在任务与重复间交替。`--concurrency N` 控制同时执行的实验单元数，默认 1。
+实验入口默认读取相邻的 `../arc-bench-modified`，运行 `baseline`（单 Agent 全需求开发与自检）和 `shallow`（完整 Grouper / Builder / Verifier 流程），用基准中的 Playwright 测试评估最终应用。两组各自使用全新工程、私有运行目录、数据和程序缓存；配对顺序在任务与重复间交替。`--concurrency N` 控制同时执行的实验单元数，默认 1。
 
 ## 环境与输入
 
@@ -31,10 +31,10 @@ npm.cmd run experiment -- plan --tasks bookstack --repeats 1 --concurrency 2
 npm.cmd run experiment -- prepare --tasks bookstack --repeats 1 --concurrency 2
 ```
 
-`prepare` 启动时打印完整输出路径。将该路径填入 `$experimentDir`，检查通过后继续此预实验，共 1 个任务 × 2 种方法 × 1 次重复，两个单元可同时运行：
+`prepare` 启动时打印相对当前目录的输出路径。将该路径填入 `$experimentDir`，检查通过后继续此预实验，共 1 个任务 × 2 种方法 × 1 次重复，两个单元可同时运行：
 
 ```powershell
-$experimentDir = "prepare 打印的完整输出路径"
+$experimentDir = "prepare 打印的输出路径"
 npm.cmd run experiment -- run --tasks bookstack --repeats 1 --concurrency 2 --output-dir $experimentDir --resume
 ```
 
@@ -50,7 +50,7 @@ npm.cmd run experiment -- run --tasks bookstack --repeats 1 --concurrency 2
 npm.cmd run experiment -- run --tasks bookstack --methods baseline --repeats 1 --concurrency 1
 ```
 
-默认在当前目录的 `outputs/` 下创建“题目名 + UTC 时间戳”目录，时间戳格式为 `YYYYMMDDTHHmmssSSSZ`，精确到毫秒。单题形如 `bookstack-<时间戳>`；多题按计划顺序用 `+` 连接，形如 `bookstack+keep-<时间戳>`。不指定 `--tasks` 时使用实际发现的全部题目名；默认每组重复 2 次。完整路径写入 `experiment.json`，并在 `run` / `prepare` 启动时打印。`--output-dir` 仍可覆盖默认目录；`--resume` 和 `summarize` 需要显式提供已有目录。正式任务集合与模型配置应在预实验结束后固定，并使用新的输出目录。
+默认在当前目录的 `outputs/` 下创建“题目名 + UTC 时间戳”目录，时间戳格式为 `YYYYMMDDTHHmmssSSSZ`，精确到毫秒。单题形如 `bookstack-<时间戳>`；多题按计划顺序用 `+` 连接，形如 `bookstack+keep-<时间戳>`。不指定 `--tasks` 时使用实际发现的全部题目名；默认每组重复 2 次。`experiment.json` 与 `result.json` 以实验目录为基准记录基准仓库、任务输入和评测目录的相对路径，输出目录记为 `.`，`evaluation.json` 的目录记为 `.`；跨盘符无法表示相对路径时保留绝对路径。旧版绝对路径清单仍可按原位置续跑和汇总。`run` / `prepare` 启动时按当前目录打印输出路径。`--output-dir` 仍可覆盖默认目录；`--resume` 和 `summarize` 需要显式提供已有目录。正式任务集合与模型配置应在预实验结束后固定，并使用新的输出目录。
 
 重新汇总已有结果：
 

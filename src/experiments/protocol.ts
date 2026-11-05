@@ -68,6 +68,37 @@ export function inside(parent: string, child: string): boolean {
   return path === "" || (!isAbsolute(path) && path !== ".." && !path.startsWith("../") && !path.startsWith("..\\"));
 }
 
+/** Persist paths relative to the experiment directory; cross-drive paths keep their absolute form. */
+export function storedPath(base: string, target: string): string {
+  if (!isAbsolute(target)) return target.replaceAll("\\", "/");
+  const path = relative(resolve(base), resolve(target));
+  return (isAbsolute(path) ? target : path || ".").replaceAll("\\", "/");
+}
+
+export function resolveStoredPath(base: string, value: string): string {
+  return isAbsolute(value) ? resolve(value) : resolve(base, value);
+}
+
+export function serializePlan(plan: ExperimentPlan, base: string): ExperimentPlan {
+  const path = (value: string) => storedPath(base, value);
+  return { ...plan, benchRoot: path(plan.benchRoot), outputDir: path(plan.outputDir), setupScript: path(plan.setupScript),
+    tasks: plan.tasks.map(task => ({ ...task, requirementsDir: path(task.requirementsDir), testsDir: path(task.testsDir) })) };
+}
+
+export function deserializePlan(plan: ExperimentPlan, base: string): ExperimentPlan {
+  const path = (value: string) => resolveStoredPath(base, value);
+  return { ...plan, benchRoot: path(plan.benchRoot), outputDir: path(plan.outputDir), setupScript: path(plan.setupScript),
+    tasks: plan.tasks.map(task => ({ ...task, requirementsDir: path(task.requirementsDir), testsDir: path(task.testsDir) })) };
+}
+
+export function serializeResult(result: CellResult, base: string): CellResult {
+  return { ...result, evaluation: { ...result.evaluation, directory: storedPath(base, result.evaluation.directory) } };
+}
+
+export function deserializeResult(result: CellResult, base: string): CellResult {
+  return { ...result, evaluation: { ...result.evaluation, directory: resolveStoredPath(base, result.evaluation.directory) } };
+}
+
 export async function discoverArcTasks(benchRoot: string): Promise<ArcTask[]> {
   const root = join(resolve(benchRoot), "arc-bench");
   const tasks: ArcTask[] = [];
