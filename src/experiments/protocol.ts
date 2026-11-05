@@ -32,6 +32,8 @@ export interface ExperimentPlan {
   playwrightVersion: string;
   settings: Record<string, string | undefined>;
   repeats: number;
+  /** Selected methods; absent in manifests written before method filtering. */
+  methods?: Method[];
   concurrency: number;
   /** null means no experiment-level wall deadline; internal stage limits still apply. */
   generationTimeoutMs: number | null;
@@ -98,9 +100,11 @@ export async function implementationDigest(): Promise<string> {
 }
 
 /** Alternating order reduces systematic baseline-first effects across paired runs. */
-export function planCells(tasks: readonly string[], repeats: number): ExperimentPlan["cells"] {
+export function planCells(tasks: readonly string[], repeats: number, methods: readonly Method[] = METHODS): ExperimentPlan["cells"] {
+  const selected = METHODS.filter(method => methods.includes(method));
+  if (!selected.length) throw new Error("At least one method is required");
   return Array.from({ length: repeats }, (_, index) => tasks.flatMap((task, taskIndex) =>
-    ((index + taskIndex) % 2 ? [...METHODS].reverse() : [...METHODS]).map(method => ({ task, repeat: index + 1, method })))).flat();
+    ((index + taskIndex) % 2 ? [...selected].reverse() : [...selected]).map(method => ({ task, repeat: index + 1, method })))).flat();
 }
 
 export function reportEntries(report: JSONReport): TestEntry[] {
@@ -130,12 +134,14 @@ export function scoreReport(expected: readonly TestEntry[], report?: JSONReport)
 
 export function summarize(plan: ExperimentPlan, results: CellResult[]) {
   const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
-  const byTask = plan.tasks.flatMap(task => METHODS.map(method => {
+  const selected = plan.methods ?? METHODS;
+  const methods = METHODS.filter(method => selected.includes(method));
+  const byTask = plan.tasks.flatMap(task => methods.map(method => {
     const rows = results.filter(row => row.task === task.id && row.method === method);
     return { task: task.id, method, completed: rows.length, planned: plan.repeats,
       passRate: rows.length === plan.repeats ? mean(rows.map(row => row.evaluation.score.passRate)) : null };
   }));
-  const byMethod = METHODS.map(method => {
+  const byMethod = methods.map(method => {
     const rows = results.filter(row => row.method === method), tasks = byTask.filter(row => row.method === method);
     const knownCosts = rows.filter(row => row.generation.modelUsage?.cost !== undefined);
     return { method, completed: rows.length, planned: plan.tasks.length * plan.repeats,

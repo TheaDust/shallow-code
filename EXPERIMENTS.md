@@ -44,6 +44,12 @@ npm.cmd run experiment -- run --tasks bookstack --repeats 1 --concurrency 2 --ou
 npm.cmd run experiment -- run --tasks bookstack --repeats 1 --concurrency 2
 ```
 
+只运行一组方法时使用 `--methods baseline` 或 `--methods shallow`；省略时运行两组。选中的方法写入 `experiment.json` 的 `methods` 与 `cells`，汇总只包含选中方法：
+
+```powershell
+npm.cmd run experiment -- run --tasks bookstack --methods baseline --repeats 1 --concurrency 1
+```
+
 默认在当前目录的 `outputs/` 下创建“题目名 + UTC 时间戳”目录，时间戳格式为 `YYYYMMDDTHHmmssSSSZ`，精确到毫秒。单题形如 `bookstack-<时间戳>`；多题按计划顺序用 `+` 连接，形如 `bookstack+keep-<时间戳>`。不指定 `--tasks` 时使用实际发现的全部题目名；默认每组重复 2 次。完整路径写入 `experiment.json`，并在 `run` / `prepare` 启动时打印。`--output-dir` 仍可覆盖默认目录；`--resume` 和 `summarize` 需要显式提供已有目录。正式任务集合与模型配置应在预实验结束后固定，并使用新的输出目录。
 
 重新汇总已有结果：

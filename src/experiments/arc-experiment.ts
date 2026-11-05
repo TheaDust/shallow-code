@@ -7,7 +7,7 @@ import { assertPrivateRunDirectory, digest, lockWorkspace, snapshotFiles } from 
 import { atomicWrite } from "../verifier/artifacts.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
 import { csv, discoverArcTasks, implementationDigest, inside, METHODS, planCells, REPOSITORY, scoreReport, summarize,
-  type CellResult, type ExperimentPlan, type TestEntry } from "./protocol.js";
+  type CellResult, type ExperimentPlan, type Method, type TestEntry } from "./protocol.js";
 import type { WorkerRequest } from "./worker.js";
 import { normalizeArcRequirements } from "./requirements.js";
 import { loadRequirementCatalog } from "../catalog.js";
@@ -18,16 +18,18 @@ npm run experiment -- list [--bench-root ../arc-bench-modified]
 npm run experiment -- plan --tasks bookstack --repeats 1 --concurrency 2
 npm run experiment -- prepare --tasks bookstack --repeats 1 --concurrency 2
 npm run experiment -- run --tasks bookstack --repeats 1 --concurrency 2
+npm run experiment -- run --tasks bookstack --methods baseline --repeats 1 --concurrency 1
 npm run experiment -- run --tasks bookstack --repeats 1 --concurrency 2 --output-dir <existing-experiment> --resume
 npm run experiment -- summarize --output-dir <existing-experiment>
 
 Options:
   --bench-root <dir>               ARC repository (default: ../arc-bench-modified relative to ShallowCode)
   --tasks <id,id>                  Selected tasks (default: all discovered tasks)
+  --methods <baseline,shallow>     Selected methods (default: baseline,shallow)
   --repeats <n>                    Independent paired repetitions (default: 2)
   --concurrency <n>                Maximum simultaneous experiment cells (default: 1)
   --output-dir <dir>               Experiment artifacts (default: outputs/<task(s)>-<UTC timestamp>)
-  --generation-timeout-ms <n>      Optional total generation wall limit for both methods (default: no limit)
+  --generation-timeout-ms <n>      Optional total generation wall limit for each cell (default: no limit)
   --evaluation-timeout-ms <n>      Optional per evaluation phase wall limit (default: no limit)
   --resume                        Continue this frozen experiment; retain all completed results
 `;
@@ -37,7 +39,7 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   if (!["help", "--help", "-h", "list", "plan", "prepare", "run", "summarize"].includes(command)) throw new Error(`Unknown command: ${command}`);
   const values = new Map<string, string>();
   let resume = false;
-  const names = ["--bench-root", "--tasks", "--repeats", "--concurrency", "--output-dir", "--generation-timeout-ms", "--evaluation-timeout-ms"];
+  const names = ["--bench-root", "--tasks", "--methods", "--repeats", "--concurrency", "--output-dir", "--generation-timeout-ms", "--evaluation-timeout-ms"];
   for (let index = 1; index < argv.length; index++) {
     const key = argv[index];
     if (key === "--resume") { resume = true; continue; }
@@ -55,10 +57,16 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   if (tasks && (tasks.some(task => !/^[a-zA-Z0-9_-]+$/.test(task)) || new Set(tasks).size !== tasks.length)) {
     throw new Error("--tasks must contain unique task IDs separated by commas");
   }
+  const methodValues = values.get("--methods")?.split(",") ?? [...METHODS];
+  if (methodValues.some(method => !METHODS.includes(method as Method)) || new Set(methodValues).size !== methodValues.length) {
+    throw new Error(`--methods must contain unique methods from ${METHODS.join(",")}`);
+  }
+  const methods = METHODS.filter(method => methodValues.includes(method));
+  if (!methods.length) throw new Error("--methods must select at least one method");
   if ((resume || command === "summarize") && !values.has("--output-dir")) {
     throw new Error("--resume and summarize require --output-dir pointing to an existing experiment");
   }
-  return { command, tasks, resume,
+  return { command, tasks, methods, resume,
     benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench-modified"),
     outputDir: values.has("--output-dir") ? resolve(cwd, values.get("--output-dir")!) : undefined,
     outputRoot: resolve(cwd, "outputs"),
@@ -90,9 +98,9 @@ export async function createPlan(options: ReturnType<typeof parseExperimentArgs>
   const playwright = JSON.parse(await readFile(join(REPOSITORY, "node_modules/@playwright/test/package.json"), "utf8"));
   return { version: 1, benchRoot: await realpath(options.benchRoot), outputDir, setupScript, setupDigest: digest(await readFile(setupScript)),
     codeDigest: await implementationDigest(), nodeVersion: process.version, playwrightVersion: playwright.version, settings,
-    repeats: options.repeats, concurrency: options.concurrency,
+    repeats: options.repeats, methods: options.methods, concurrency: options.concurrency,
     generationTimeoutMs: options.generationTimeoutMs, evaluationTimeoutMs: options.evaluationTimeoutMs,
-    tasks: selected, cells: planCells(selected.map(task => task.id), options.repeats) };
+    tasks: selected, cells: planCells(selected.map(task => task.id), options.repeats, options.methods) };
 }
 
 async function saveJson(path: string, value: unknown) { await atomicWrite(path, JSON.stringify(value, null, 2) + "\n"); }
@@ -276,10 +284,12 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
   // Resolve defaults into the frozen protocol; no hidden benchmark metadata enters generation.
   env.SHALLOW_REFERENCE_IMAGES = referenceImagesEnabled(env) ? "1" : "0";
   env.SHALLOW_BUILDER_CONTEXT_WINDOW = String(parseBuilderContextWindow(env));
-  const verifier = parseVerifierConfig(env);
-  env.SHALLOW_VERIFIER_SEMANTIC_REVIEW = verifier.semanticReview ? "1" : "0";
-  env.SHALLOW_VERIFIER_REPLAY = verifier.replay ? "1" : "0";
-  env.SHALLOW_VERIFIER_CONCURRENCY = String(verifier.concurrency);
+  if (options.methods.includes("shallow")) {
+    const verifier = parseVerifierConfig(env);
+    env.SHALLOW_VERIFIER_SEMANTIC_REVIEW = verifier.semanticReview ? "1" : "0";
+    env.SHALLOW_VERIFIER_REPLAY = verifier.replay ? "1" : "0";
+    env.SHALLOW_VERIFIER_CONCURRENCY = String(verifier.concurrency);
+  }
   const plan = await createPlan(options, env);
   if (options.command === "list") {
     process.stdout.write(plan.tasks.map(task => `${task.id}\t${task.requirements} atomic requirements\t${task.scenarios} scenarios`).join("\n") + "\n");
@@ -289,7 +299,10 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
     process.stdout.write(JSON.stringify({ ...plan, tasks: plan.tasks.map(({ requirementFiles, testFiles, ...task }) => task) }, null, 2) + "\n");
     return 0;
   }
-  if (options.command === "run") for (const role of ["builder", "grouper", "verifier"]) readGatewayConfig(env, role);
+  if (options.command === "run") {
+    const roles = options.methods.includes("shallow") ? ["builder", "grouper", "verifier"] : ["builder"];
+    for (const role of roles) readGatewayConfig(env, role);
+  }
   process.stderr.write(`[ARC experiment] output ${plan.outputDir}\n`);
   const summary = await runExperiment(plan, plan.outputDir, env, options.resume,
     { ...dependencies, prepareOnly: options.command === "prepare" });

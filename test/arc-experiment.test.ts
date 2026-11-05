@@ -27,14 +27,15 @@ function report(statuses: string[]): JSONReport {
   })) }], errors: [] } as unknown as JSONReport;
 }
 
-async function fixture(root: string): Promise<ExperimentPlan> {
+async function fixture(root: string, methods?: readonly string[]): Promise<ExperimentPlan> {
   const bench = join(root, "bench"), task = join(bench, "arc-bench", "fixture");
   await mkdir(join(task, "requirements", "reference"), { recursive: true }); await mkdir(join(task, "tests"));
   await writeFile(join(task, "requirements", "requirements.yaml"), source);
   await writeFile(join(task, "requirements", "reference", "a.png"), "reference bytes");
   await writeFile(join(task, "tests", "fixture.spec.ts"), "// private evaluator tests\n");
   await writeFile(join(bench, "setup-playwright.cjs"), "// fixture setup\n");
-  return createPlan(parseExperimentArgs(["run", "--bench-root", bench, "--repeats", "1", "--output-dir", join(root, "out")]), env);
+  return createPlan(parseExperimentArgs(["run", "--bench-root", bench, "--repeats", "1", "--output-dir", join(root, "out"),
+    ...(methods ? ["--methods", methods.join(",")] : [])]), env);
 }
 
 function fakeProcess(calls: WorkerRequest[]) {
@@ -107,13 +108,20 @@ test("experiment CLI validates tasks and limits and alternates paired method ord
   assert.equal(defaults.concurrency, 1);
   assert.equal(defaults.generationTimeoutMs, null);
   assert.equal(defaults.evaluationTimeoutMs, null);
-  const explicit = parseExperimentArgs(["run", "--generation-timeout-ms", "60000", "--evaluation-timeout-ms", "30000", "--concurrency", "3", "--bench-root", "custom-bench"], "/work");
+  assert.deepEqual(defaults.methods, ["baseline", "shallow"]);
+  const explicit = parseExperimentArgs(["run", "--generation-timeout-ms", "60000", "--evaluation-timeout-ms", "30000",
+    "--concurrency", "3", "--bench-root", "custom-bench", "--methods", "baseline"], "/work");
   assert.equal(explicit.benchRoot, resolve("/work", "custom-bench"));
   assert.equal(explicit.concurrency, 3);
   assert.equal(explicit.generationTimeoutMs, 60000);
   assert.equal(explicit.evaluationTimeoutMs, 30000);
+  assert.deepEqual(explicit.methods, ["baseline"]);
   assert.deepEqual(planCells(["a", "b"], 2).map(cell => cell.method), ["baseline", "shallow", "shallow", "baseline", "shallow", "baseline", "baseline", "shallow"]);
+  assert.deepEqual(planCells(["a", "b"], 2, ["baseline"]).map(cell => cell.method), ["baseline", "baseline", "baseline", "baseline"]);
+  assert.deepEqual(planCells(["a"], 1, ["shallow", "baseline"]).map(cell => cell.method), ["baseline", "shallow"]);
   for (const args of [["run", "--tasks", "../keep"], ["run", "--tasks", "keep,keep"], ["run", "--repeats", "0"],
+    ["run", "--methods", ""], ["run", "--methods", "other"], ["run", "--methods", "baseline,baseline"],
+    ["run", "--methods", "baseline", "--methods", "shallow"],
     ["run", "--generation-timeout-ms", "NaN"], ["run", "--generation-timeout-ms", "0"],
     ["run", "--evaluation-timeout-ms", "-1"], ["run", "--repeats", "1", "--repeats", "2"],
     ["run", "--concurrency", "0"], ["run", "--concurrency", "1.5"], ["run", "--concurrency", "NaN"],
@@ -135,6 +143,10 @@ test("default experiment directories use discovered task names and a UTC timesta
     assert.match(basename(multiple.outputDir), /^fixture\+second-\d{8}T\d{9}Z$/);
     const selected = await createPlan({ ...options, tasks: ["second"] }, env);
     assert.match(basename(selected.outputDir), /^second-\d{8}T\d{9}Z$/);
+    const baselineOnly = await createPlan(parseExperimentArgs(["plan", "--bench-root", original.benchRoot, "--tasks", "fixture",
+      "--methods", "baseline", "--repeats", "1"], root), env);
+    assert.deepEqual(baselineOnly.methods, ["baseline"]);
+    assert.deepEqual(baselineOnly.cells.map(cell => cell.method), ["baseline"]);
     const explicit = parseExperimentArgs(["run", "--bench-root", original.benchRoot, "--output-dir", "custom", "--resume"], root);
     assert.equal((await createPlan(explicit, env)).outputDir, join(root, "custom"));
     assert.equal(parseExperimentArgs(["summarize", "--output-dir", "custom"], root).outputDir, join(root, "custom"));
@@ -195,6 +207,39 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     await assert.rejects(runExperiment(plan, output, env, false), /already exists/);
     assert.match(await readFile(join(output, "runs.csv"), "utf8"), /baseline/);
     assert.equal((await writeSummary(output, plan)).cells.length, 2);
+  });
+});
+
+test("method selection runs and summarizes only the requested method", async () => {
+  await withTempDir("shallow-arc-methods-", async root => {
+    const plan = await fixture(root, ["baseline"]), output = join(root, "out"), calls: WorkerRequest[] = [];
+    const result = await runExperiment(plan, output, env, false, { runProcess: fakeProcess(calls) });
+    assert.deepEqual(calls.map(call => call.action), ["catalog", "generate", "evaluate"]);
+    assert.deepEqual(result.byMethod.map(row => row.method), ["baseline"]);
+    assert.equal(result.byMethod[0].planned, 1);
+    assert.deepEqual(result.byTask.map(row => [row.task, row.method]), [["fixture", "baseline"]]);
+    assert.doesNotMatch(await readFile(join(output, "runs.csv"), "utf8"), /shallow/);
+    await assert.rejects(stat(join(output, "fixture", "repeat-1", "shallow")), /ENOENT/);
+  });
+});
+
+test("baseline-only CLI ignores unused Verifier configuration", async t => {
+  await withTempDir("shallow-arc-baseline-config-", async root => {
+    const original = await fixture(root), calls: WorkerRequest[] = [];
+    const stdout = t.mock.method(process.stdout, "write", () => true);
+    const stderr = t.mock.method(process.stderr, "write", () => true);
+    const invalid = { ...env, SHALLOW_VERIFIER_CONCURRENCY: "9" };
+    const args = (methods: string, outputDir: string) => ["run", "--bench-root", original.benchRoot, "--tasks", "fixture",
+      "--methods", methods, "--repeats", "1", "--concurrency", "1", "--output-dir", outputDir];
+    try {
+      const output = join(root, "baseline-out");
+      assert.equal(await experimentMain(args("baseline", output), invalid, { runProcess: fakeProcess(calls) }, null), 0);
+      assert.deepEqual(calls.map(call => call.action), ["catalog", "generate", "evaluate"]);
+      assert.deepEqual(JSON.parse(await readFile(join(output, "experiment.json"), "utf8")).methods, ["baseline"]);
+      await assert.rejects(experimentMain(args("baseline,shallow", join(root, "both-out")), invalid,
+        { runProcess: fakeProcess(calls) }, null), /CONCURRENCY must be 1 or 2/);
+      assert.equal(calls.length, 3);
+    } finally { stdout.mock.restore(); stderr.mock.restore(); }
   });
 });
 

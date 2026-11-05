@@ -170,6 +170,6 @@ npm.cmd run baseline -- --requirements-dir <需求目录> --project <已有项�
 
 退出码 0 表示 Agent 正常结束且最终技术检查通过；退出码 1 包括执行失败、超时、运行配置改变或技术检查失败。技术检查在独立副本中安装、构建并打开应用入口，不向 Agent 反馈。需求满足率须由另行准备的隐藏测试在最终版本评估。对照实验使用相同输入和初始工程、固定模型及配置，记录各方法实际总投入；此入口自身不保证与完整 Shallow 管线等预算。
 
-ARC 两组实验使用 `npm.cmd run experiment -- <list|plan|prepare|run|summarize>`，默认输入为相邻的 `../arc-bench-modified`，输出目录自动命名为 `outputs/<题目名>-<UTC时间戳>/`，通过 `--concurrency N` 并行运行独立实验单元。任务筛选、统一生成时限、独立评分、断点续跑与结果汇总见 [实验说明](EXPERIMENTS.md)。
+ARC 两组实验使用 `npm.cmd run experiment -- <list|plan|prepare|run|summarize>`，默认输入为相邻的 `../arc-bench-modified`，输出目录自动命名为 `outputs/<题目名>-<UTC时间戳>/`，通过 `--concurrency N` 并行运行独立实验单元，通过 `--methods baseline` 可只跑单组。任务筛选、统一生成时限、独立评分、断点续跑与结果汇总见 [实验说明](EXPERIMENTS.md)。
 
 源码索引、修改约定与局部验证入口见 [AGENTS.md](AGENTS.md)。完整检查使用 `npm.cmd run test:all`；真实网关冒烟需设置 `RUN_CREDENTIAL_SMOKE=1` 并提供凭证，默认跳过。
