@@ -247,6 +247,6 @@ test("Web adapter binds schemas, fixed inputs, independent case data and full as
     await assert.rejects(adapter.prepare({ ...job, binding: { ...job.binding, executor: { ...job.binding.executor, version: "forged" } } }, new AbortController().signal), /binding mismatch/);
     const { declaration: fixed } = await createWebExecutionAdapter({ artifacts, snapshots, workspace, initialDataSnapshot: baseline.ref,
       spec: { ...spec, adapterConfig: { extraPorts: [3001] } } });
-    assert.deepEqual(fixed.resourceKeys, ["local-port:3001"]);
+    assert.deepEqual(fixed.resourceKeys, []);
   });
 });

@@ -74,7 +74,8 @@ export async function createWebExecutionAdapter(options: WebAdapterOptions): Pro
   const execution = await store.putTypedJson({ spec, normalizationVersion: 1, port: "allocated-per-job-slot", dataDirectory: "allocated-per-case" }, objectSchema);
   const declaration: AdapterDeclaration = {
     schemaVersion: 1, id: "shallow.web", version: "1", implementation: executor, execution, initialStates: [initialState],
-    resourceKeys: [...new Set(webSettings(spec).extraPorts)].sort((a, b) => a - b).map((port) => `local-port:${port}`),
+    // Candidate cases disable fixed extra ports and use private application ports.
+    resourceKeys: [],
     capabilities: [
       { id: "inspect", version: "1", description: "Read the current actor page as untrusted observation data.", inputSchema: inspectSchema, outputSchema: objectSchema },
       { id: "run", version: "7", description: "Run isolated JavaScript with controlled native Playwright locators, browser events, localStorage state fixtures, isolated downloaded HTML/PDF/image rendering and host contract receipts.", inputSchema: runSchema, outputSchema: objectSchema },

@@ -149,6 +149,42 @@ test("Declared port verification is skipped when the contract declares no extra 
   });
 });
 
+test("Concurrent candidates disable fixed extra ports and leave them available for delivery", async () => {
+  await withTempDir("shallow-isolated-ports-", async outputDir => {
+    const port = await reservePort(), secondPort = await reservePort(), extra = await reservePort();
+    const contract = contractFor(port, [], []);
+    webRuntimeConfig(contract).extraPorts = [extra];
+    await writeFile(join(outputDir, "server.mjs"), `
+      import { createServer } from "node:http";
+      const handler = (req, res) => { res.writeHead(req.url === "/health" ? 200 : 404); res.end("ok"); };
+      createServer(handler).listen(Number(process.env.PORT), "127.0.0.1");
+      if (process.env.SHALLOW_EXTRA_PORTS !== "0") createServer(handler).listen(${extra}, "127.0.0.1");
+    `);
+    const secondContract = { ...contract, adapterConfig: { ...webRuntimeConfig(contract),
+      port: secondPort, baseUrl: `http://127.0.0.1:${secondPort}` } };
+    const lifecycle = new WebAppLifecycle();
+    const candidates: Awaited<ReturnType<WebAppLifecycle["start"]>>[] = [];
+    try {
+      candidates.push(await lifecycle.start(outputDir, contract));
+      candidates.push(await lifecycle.start(outputDir, secondContract));
+      assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200);
+      assert.equal((await fetch(`http://127.0.0.1:${secondPort}/health`)).status, 200);
+      const probe = createServer();
+      try {
+        await new Promise<void>((resolveListen, reject) => {
+          probe.once("error", reject);
+          probe.listen(extra, "127.0.0.1", resolveListen);
+        });
+      } finally {
+        if (probe.listening) await new Promise<void>((resolveClose, reject) => probe.close(error => error ? reject(error) : resolveClose()));
+      }
+    } finally { await Promise.all(candidates.map(candidate => candidate.stop())); }
+    const delivery = await verifyDeclaredPorts(outputDir, contract);
+    assert.equal(delivery.ok, true, delivery.message);
+    await assert.rejects(fetch(`http://127.0.0.1:${extra}/health`));
+  });
+});
+
 function contractFor(
   port: number,
   installCommands: ProcessCommand[],
