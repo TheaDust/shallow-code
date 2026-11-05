@@ -91,10 +91,10 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
           const seats=await bob.getByRole('status',{name:'Train T-6 seats',exact:true}).innerText();await check.expect('${clauses[1]!.id}',[seats.id]);
           await alice.reload();const persisted=await alice.getByRole('status',{name:'Order O-17',exact:true}).innerText();await check.expect('${clauses[2]!.id}',[persisted.id]);`;
         const preview = await invoke("check_program", { contract, source: programSource }) as {
-          program: unknown;
+          programId: string;
           checks: Array<{ receipt: { digest: string }; kind: string; checkpointId: string; payload: { result: string; actual: unknown } }>;
         };
-        const program = preview.program;
+        const programId = preview.programId;
         assert.equal(preview.checks.length, 4, "exploration sees each GIVEN and result check before submission");
         assert.equal(preview.checks[0]!.payload.result, "satisfied");
         assert.deepEqual(preview.checks.slice(1).map(check => check.payload.result), mutant ? ["satisfied", "violated", "satisfied"] : ["satisfied", "satisfied", "satisfied"]);
@@ -102,7 +102,7 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
         assert.equal(preview.checks[0]!.payload.actual, undefined, "passed precondition values are not repeated to the model");
         assert.equal(preview.checks[1]!.payload.actual, undefined);
         if (mutant) assert.equal(preview.checks[2]!.payload.actual, "4", "small failure values remain exact");
-        await invoke("finish", { programs: [program] });
+        await invoke("finish", { programs: [programId] });
       }
       return { totalTokens: 100 };
     } };

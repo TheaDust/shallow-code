@@ -111,7 +111,7 @@ async function fixture(config: { initialState?: unknown; failures?: number[]; om
       await assert.rejects(tool("invoke", { capabilityId: "shell", input: {} }), /Undeclared/);
       await assert.rejects(tool("invoke", { capabilityId: "inspect", input: "{not json" }), /not valid JSON/);
       await tool("invoke", { capabilityId: "inspect", input: argument({}) });
-      const programs: unknown[] = [];
+      const programs: string[] = [];
       const grouped = new Map<string, SourceClause[]>();
       for (const clause of clauses) {
         const key = JSON.stringify([clause.requirementId, clause.scenarioId]);
@@ -127,8 +127,8 @@ async function fixture(config: { initialState?: unknown; failures?: number[]; om
           contract.checkpoints = contract.checkpoints.filter(item => item.kind === "assertion");
           contract.checkpoints.forEach(item => { item.dependsOn = []; });
         }
-        const { program } = await tool("check_program", { contract: argument(contract), source: config.source ?? "await check.expect('source-result', [observation.id]);" }) as { program: ProgramRef };
-        programs.push(program);
+        const { programId } = await tool("check_program", { contract: argument(contract), source: config.source ?? "await check.expect('source-result', [observation.id]);" }) as { programId: string };
+        programs.push(programId);
       }
       await tool("finish", { programs: argument(programs) });
     }
@@ -572,6 +572,8 @@ test("Verifier tool schemas keep an object root because the gateway rejects a ro
     assert.equal(((invoke.parameters as { properties: Record<string, { type?: string }> }).properties.input.type), "object");
     assert.deepEqual((invoke.parameters as { properties: { capabilityId: { enum: string[] } } }).properties.capabilityId.enum, ["inspect"]);
     assert.equal(((save.parameters as { properties: Record<string, { type?: string }> }).properties.contract.type), "object");
+    const finish = f.toolSchemas.find(item => item.role === "exploration" && item.name === "finish")!;
+    assert.equal((finish.parameters as { properties: { programs: { items: { type: string } } } }).properties.programs.items.type, "string");
   } finally { await f.cleanup(); }
 });
 
@@ -590,7 +592,8 @@ test("Verifier assembles final-program self-check guidance with its exploration 
         assert.match(request.systemPrompt, /check_program.*独立干净环境/);
         assert.match(request.systemPrompt, /源码或合同修改后，重新调用 check_program/);
         assert.match(request.systemPrompt, /业务断言失败不要求把正确程序改到通过/);
-        assert.match(request.systemPrompt, /verifier-tools@7/);
+        assert.match(request.systemPrompt, /verifier-tools@8/);
+        assert.match(request.systemPrompt, /返回 \{programId,outcomes,checks,diagnostics,feedbackRef\}/);
         assert.match(request.systemPrompt, /不等待全组源码读完/);
         assert.match(request.systemPrompt, /避免先用 invoke 逐步跑通同一路径/);
         assert.match(request.systemPrompt, /摘要缺失排错所需信息时才用 read_feedback/);
@@ -679,6 +682,41 @@ test("Verifier rejects finish that omits a source AND clause", async () => {
   } finally { await f.cleanup(); }
 });
 
+test("exploration submits local program IDs while the host retains exact identities and rejects invalid selections", async () => {
+  const f = await fixture();
+  let selected: ProgramRef | undefined;
+  const model: VerifierModel = { async run(request) {
+    const finish = request.tools.find(tool => tool.name === "finish")!;
+    await assert.rejects(finish.execute({ programs: ["p1"] }), /programs\[0\].*this exploration session.*Available programIds: none/);
+    return f.model.run({ ...request, tools: request.tools.map(tool => tool.name === "check_program" ? { ...tool, async execute(raw) {
+      const first = await tool.execute(raw) as { programId: string; feedbackRef: ContentRef };
+      const revised = await tool.execute({ ...(raw as object), source: "// revised program" }) as { programId: string; feedbackRef: ContentRef };
+      assert.equal(first.programId, "p1");
+      assert.equal(revised.programId, "p2");
+      assert.equal("program" in revised, false, "the model submits short IDs instead of copying complete references");
+      const original = await f.store.getJson<{ program: ProgramRef }>(revised.feedbackRef);
+      selected = original.program;
+      assert.equal(selected.binding.id, f.job.binding.id);
+      assert.equal(selected.format, "fake.javascript@1");
+      await assert.rejects(finish.execute({ programs: ["p2", "p999"] }), /programs\[1\].*p999.*Available programIds: p1, p2/);
+      await assert.rejects(finish.execute({ programs: ["p2", "p2"] }), /programs\[1\] duplicates programId "p2"/);
+      await assert.rejects(finish.execute({ programs: [selected] }), /programs\[0\] is not a programId/);
+      await assert.rejects(finish.execute({ programs: ["p1", "p2"] }), /programs\[1\] \(p2\) overlaps source clause r1:cancel/);
+      return revised;
+    } } : tool) });
+  } };
+  try {
+    const report = await createVerifierAgent({ artifacts: f.store, adapter: f.adapter, model }).check(f.job, new AbortController().signal);
+    assert(report.outcomes.every(item => item.status === "pass"));
+    assert.deepEqual(report.activePrograms, [selected]);
+    assert.equal(f.replays, 2, "invalid finish selections and successful submission do not rerun saved executions");
+    for (const outcome of report.outcomes) for (const ref of outcome.evidence) {
+      const receipt = await f.store.getJson<EvidenceReceipt>(ref);
+      if (receipt.kind !== "readiness") assert.deepEqual(receipt.program, selected);
+    }
+  } finally { await f.cleanup(); }
+});
+
 test("finish lists omitted requirements and permits completion in the same exploration without persisting partial gaps", async () => {
   const f = await fixture();
   const input = await f.store.getJson<VerifierRequirements>(f.job.requirements);
@@ -696,12 +734,13 @@ test("finish lists omitted requirements and permits completion in the same explo
         { id: "when", kind: "action", ...identity, basis: "Cancel the order", dependsOn: ["given"] },
         ...clauses.map((clause, index) => ({ id: `result-${index}`, kind: "assertion" as const, ...identity, clauseId: clause.id, basis: clause.basis, dependsOn: ["when"] })),
       ], clauses: clauses.map((clause, index) => ({ ...clause, checkpointId: `result-${index}`, expected: { operator: "equal", value: 5 } })) };
-      return (await call("check_program", { contract, source: "test saved program" }) as { program: ProgramRef }).program;
+      return (await call("check_program", { contract, source: "test saved program" }) as { programId: string }).programId;
     };
     const first = await save(sources.slice(0, 1));
     await assert.rejects(call("finish", { programs: [first] }), error => {
       assert.match(String(error), /Finish omitted 3/);
       assert.match(String(error), /r2:cancel/);
+      assert.match(String(error), /complete program list in one call; rejected calls do not accumulate/);
       return true;
     });
     attempts++;

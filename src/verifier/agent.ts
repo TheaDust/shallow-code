@@ -20,8 +20,6 @@ async function promptAsset(name: string): Promise<string> {
   return (await readFile(fileURLToPath(new URL(`../../prompts/verifier/${name}.md`, import.meta.url)), "utf8")).trimEnd();
 }
 const refSchema = Type.Object({ id: Type.String(), digest: Type.String() });
-const programSchema = Type.Object({ descriptor: Type.Object({ id: Type.String(), digest: Type.String(), schema: refSchema, mediaType: Type.String() }),
-  format: Type.String(), contract: refSchema, binding: Type.Object({ id: Type.String(), digest: Type.String(), executor: Type.Object({ id: Type.String(), version: Type.String(), digest: Type.String() }) }) });
 /** Values with an application-defined shape still advertise an object root to the model and gateway. */
 const toolObjectSchema = Type.Object({}, { additionalProperties: true });
 const PROGRAM_REPAIR_MS = 10 * 60_000;
@@ -301,7 +299,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
           const feedback = rejectedPrograms.filter(program => program.clauseIds.some(id => discoverySources.some(source => source.id === id)));
           await progress({ stage: job.mode === "diagnose" ? "diagnosis" : feedback.length ? "rediscovery" : "exploration", clauseIds: discoverySources.map(source => source.id) });
           let finished = false;
-          const savedPrograms: ProgramRef[] = [];
+          const savedPrograms = new Map<string, ProgramRef>();
           const feedbackRefs = new Map<string, ContentRef>();
           const executionFeedback = async (value: ExecutionFeedback) => {
             const ref = await store.putJson(value);
@@ -335,7 +333,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 }
                 return executionFeedback({ output, receipts: result.receipts, ...(checks.length ? { checks } : {}) });
               } },
-            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Once entry, initial state and object identity are located, use this tool directly instead of separately probing the same path. Inspect outcomes status/reason for formal evidence conclusions, then compact checks and diagnostics; matching checks alone do not establish a complete evidence chain. Use read_feedback only for missing diagnostic detail. Revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled.",
+            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Once entry, initial state and object identity are located, use this tool directly instead of separately probing the same path. Inspect outcomes status/reason for formal evidence conclusions, then compact checks and diagnostics; matching checks alone do not establish a complete evidence chain. Use read_feedback only for missing diagnostic detail. Revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled. Returns a session-local programId for finish; use the new ID after revisions.",
               parameters: Type.Object({ contract: toolObjectSchema, source: Type.String({ minLength: 1 }),
                 basisExplanation: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })) }),
               prepareArguments: prepareCheckArguments,
@@ -371,7 +369,8 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                   outcomes = await evaluateProgramEvidence(store, job, program, contract, deduplicate(refs));
                 } finally { await close(execution); }
                 executions.set(canonicalJson(program), refs);
-                savedPrograms.push(program);
+                const programId = `p${savedPrograms.size + 1}`;
+                savedPrograms.set(programId, program);
                 const checks = [], diagnostics = [];
                 for (const ref of refs) {
                   const receipt = await store.getJson<EvidenceReceipt>(ref);
@@ -380,24 +379,32 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                     checkpointId: receipt.checkpointId, ...(receipt.assertion ? { assertion: receipt.assertion } : {}), payload });
                   else if (receipt.kind === "diagnostic" || receipt.kind === "readiness" && receipt.readiness?.result !== "ready") diagnostics.push(payload);
                 }
-                return executionFeedback({ program, outcomes, checks, diagnostics });
+                const { program: _program, ...feedback } = await executionFeedback({ program, outcomes, checks, diagnostics });
+                return { programId, ...feedback };
               } },
-            { name: "finish", description: "Submit exact program references returned by check_program after inspecting its outcomes, checks and diagnostics, or explain unverifiable clauses. Submitted programs and unsupported entries must cover every source clause exactly once; omissions are returned for correction in this session. When enabled, independent review uses those executions without another replay; faithful business failures are independently confirmed.",
-              parameters: Type.Object({ programs: Type.Array(programSchema), unsupported: Type.Optional(Type.Array(Type.Object({
+            { name: "finish", description: "Submit the session-local programId strings returned by check_program after inspecting its outcomes, checks and diagnostics, or explain unverifiable clauses. Include the complete program list in one call; rejected calls do not accumulate submissions. Submitted programs and unsupported entries must cover every source clause exactly once. When enabled, independent review uses those executions without another replay; faithful business failures are independently confirmed.",
+              parameters: Type.Object({ programs: Type.Array(Type.String({ minLength: 1, description: "programId returned by check_program in this exploration session, e.g. p1" })), unsupported: Type.Optional(Type.Array(Type.Object({
                 clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
                 attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
                 retryable: Type.Optional(Type.Boolean({ description: "Defaults to false. Set true only when the reason explains a transient problem and why another attempt may obtain evidence." })),
               }))) }), prepareArguments: prepareFinishArguments, async execute(raw) {
                 if (finished) throw new Error("Verifier exploration already finished");
                 const args = raw as { programs: unknown; unsupported?: unknown };
-                const submittedPrograms = toolArray(args.programs, "programs") as ProgramRef[];
+                const programIds = toolArray(args.programs, "programs");
                 const gaps = args.unsupported === undefined ? [] : toolArray(args.unsupported, "unsupported") as UnsupportedClause[];
-                if ((!submittedPrograms.length && !gaps.length) || submittedPrograms.some(program => !savedPrograms.some(saved => canonicalJson(saved) === canonicalJson(program)))) throw new Error("Finish must reference saved programs or explain unverifiable source clauses");
+                const available = () => `Available programIds: ${[...savedPrograms.keys()].join(", ") || "none"}`;
+                if (!programIds.length && !gaps.length) throw new Error(`Finish must submit programIds from check_program or explain unverifiable source clauses. ${available()}`);
+                const submittedPrograms = programIds.map((id, index) => {
+                  const program = typeof id === "string" ? savedPrograms.get(id) : undefined;
+                  if (!program) throw new Error(`Finish programs[${index}] is not a programId returned by check_program in this exploration session: ${JSON.stringify(id)}. ${available()}`);
+                  if (programIds.indexOf(id) !== index) throw new Error(`Finish programs[${index}] duplicates programId ${JSON.stringify(id)}; submit each program once`);
+                  return program;
+                });
                 const claimed = new Set<string>();
-                for (const program of submittedPrograms) {
+                for (const [index, program] of submittedPrograms.entries()) {
                   const descriptor = await store.readTypedJson<VerifierProgramDescriptor>(program.descriptor);
                   for (const mapping of descriptor.clauses) {
-                    if (claimed.has(mapping.clauseId)) throw new Error("Submitted programs overlap source clauses");
+                    if (claimed.has(mapping.clauseId)) throw new Error(`Finish programs[${index}] (${programIds[index]}) overlaps source clause ${mapping.clauseId}; select one saved revision per clause`);
                     claimed.add(mapping.clauseId);
                   }
                 }
@@ -406,7 +413,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                   claimed.add(gap.clauseId);
                 }
                 const missing = discoverySources.filter(source => !claimed.has(source.id));
-                if (missing.length) throw new Error(`Finish omitted ${missing.length} source result clauses; submit programs or explain unsupported clauses: ${missing.map(source => source.id).join(", ")}`);
+                if (missing.length) throw new Error(`Finish omitted ${missing.length} source result clauses; submit programs or explain unsupported clauses: ${missing.map(source => source.id).join(", ")}. Resubmit the complete program list in one call; rejected calls do not accumulate submissions. ${available()}`);
                 for (const gap of gaps) {
                   if (gap.retryable !== true) {
                     const cache = gapCache(gap.clauseId);
