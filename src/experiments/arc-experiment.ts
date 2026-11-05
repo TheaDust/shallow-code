@@ -14,18 +14,19 @@ import { loadRequirementCatalog } from "../catalog.js";
 
 const HELP = `ARC two-method experiments
 
-npm run experiment -- list [--bench-root ../arc-bench]
-npm run experiment -- plan --tasks keep,bookstack --repeats 1
-npm run experiment -- prepare --tasks keep,bookstack --repeats 1 --output-dir outputs/arc-pilot
-npm run experiment -- run --tasks keep,bookstack --repeats 1 --output-dir outputs/arc-pilot
-npm run experiment -- run --tasks keep,bookstack --repeats 1 --output-dir outputs/arc-pilot --resume
-npm run experiment -- summarize --output-dir outputs/arc-pilot
+npm run experiment -- list [--bench-root ../arc-bench-modified]
+npm run experiment -- plan --tasks bookstack --repeats 1 --concurrency 2
+npm run experiment -- prepare --tasks bookstack --repeats 1 --concurrency 2
+npm run experiment -- run --tasks bookstack --repeats 1 --concurrency 2
+npm run experiment -- run --tasks bookstack --repeats 1 --concurrency 2 --output-dir <existing-experiment> --resume
+npm run experiment -- summarize --output-dir <existing-experiment>
 
 Options:
-  --bench-root <dir>               ARC repository (default: ../arc-bench relative to ShallowCode)
+  --bench-root <dir>               ARC repository (default: ../arc-bench-modified relative to ShallowCode)
   --tasks <id,id>                  Selected tasks (default: all discovered tasks)
   --repeats <n>                    Independent paired repetitions (default: 2)
-  --output-dir <dir>               Experiment artifacts (default: outputs/arc-experiment)
+  --concurrency <n>                Maximum simultaneous experiment cells (default: 1)
+  --output-dir <dir>               Experiment artifacts (default: outputs/<task(s)>-<UTC timestamp>)
   --generation-timeout-ms <n>      Optional total generation wall limit for both methods (default: no limit)
   --evaluation-timeout-ms <n>      Optional per evaluation phase wall limit (default: no limit)
   --resume                        Continue this frozen experiment; retain all completed results
@@ -36,7 +37,7 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   if (!["help", "--help", "-h", "list", "plan", "prepare", "run", "summarize"].includes(command)) throw new Error(`Unknown command: ${command}`);
   const values = new Map<string, string>();
   let resume = false;
-  const names = ["--bench-root", "--tasks", "--repeats", "--output-dir", "--generation-timeout-ms", "--evaluation-timeout-ms"];
+  const names = ["--bench-root", "--tasks", "--repeats", "--concurrency", "--output-dir", "--generation-timeout-ms", "--evaluation-timeout-ms"];
   for (let index = 1; index < argv.length; index++) {
     const key = argv[index];
     if (key === "--resume") { resume = true; continue; }
@@ -54,10 +55,15 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   if (tasks && (tasks.some(task => !/^[a-zA-Z0-9_-]+$/.test(task)) || new Set(tasks).size !== tasks.length)) {
     throw new Error("--tasks must contain unique task IDs separated by commas");
   }
+  if ((resume || command === "summarize") && !values.has("--output-dir")) {
+    throw new Error("--resume and summarize require --output-dir pointing to an existing experiment");
+  }
   return { command, tasks, resume,
-    benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench"),
-    outputDir: resolve(cwd, values.get("--output-dir") ?? "outputs/arc-experiment"),
+    benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench-modified"),
+    outputDir: values.has("--output-dir") ? resolve(cwd, values.get("--output-dir")!) : undefined,
+    outputRoot: resolve(cwd, "outputs"),
     repeats: integer("--repeats", 2, 100),
+    concurrency: integer("--concurrency", 1),
     generationTimeoutMs: values.has("--generation-timeout-ms") ? integer("--generation-timeout-ms", 0) : null,
     evaluationTimeoutMs: values.has("--evaluation-timeout-ms") ? integer("--evaluation-timeout-ms", 0) : null };
 }
@@ -73,16 +79,19 @@ export async function createPlan(options: ReturnType<typeof parseExperimentArgs>
   const tasks = await discoverArcTasks(options.benchRoot);
   for (const id of options.tasks ?? []) if (!tasks.some(task => task.id === id)) throw new Error(`Unknown ARC task: ${id}`);
   const selected = options.tasks ? options.tasks.map(id => tasks.find(task => task.id === id)!) : tasks;
-  if (inside(options.benchRoot, options.outputDir)) throw new Error("Experiment output must be outside arc-bench");
+  const timestamp = new Date().toISOString().replace(/[-:.]/g, "");
+  const outputDir = options.outputDir ?? join(options.outputRoot, `${selected.map(task => task.id).join("+")}-${timestamp}`);
+  if (inside(options.benchRoot, outputDir)) throw new Error("Experiment output must be outside arc-bench");
   const settingEntries = Object.entries(env).filter(([key]) =>
     /^(MODEL$|MODEL_COST_|OPENAI_BASE_URL$|SHALLOW_)/.test(key) &&
     !/API_KEY|SECRET|PASSWORD|TOKEN|SHALLOW_RUN_DIR|SHALLOW_CAPTURE_SSE|SHALLOW_PROBE_PORT|SHALLOW_EVAL_PORT/i.test(key));
   const settings = Object.fromEntries(settingEntries.sort(([a], [b]) => a.localeCompare(b)));
   const setupScript = join(await realpath(options.benchRoot), "setup-playwright.cjs");
   const playwright = JSON.parse(await readFile(join(REPOSITORY, "node_modules/@playwright/test/package.json"), "utf8"));
-  return { version: 1, benchRoot: await realpath(options.benchRoot), setupScript, setupDigest: digest(await readFile(setupScript)),
+  return { version: 1, benchRoot: await realpath(options.benchRoot), outputDir, setupScript, setupDigest: digest(await readFile(setupScript)),
     codeDigest: await implementationDigest(), nodeVersion: process.version, playwrightVersion: playwright.version, settings,
-    repeats: options.repeats, generationTimeoutMs: options.generationTimeoutMs, evaluationTimeoutMs: options.evaluationTimeoutMs,
+    repeats: options.repeats, concurrency: options.concurrency,
+    generationTimeoutMs: options.generationTimeoutMs, evaluationTimeoutMs: options.evaluationTimeoutMs,
     tasks: selected, cells: planCells(selected.map(task => task.id), options.repeats) };
 }
 
@@ -128,13 +137,18 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
     await writeFile(manifestFile, JSON.stringify(plan, null, 2) + "\n", { flag: "wx" });
   }
   const release = await lockWorkspace(outputDir);
+  const controller = new AbortController();
+  const signal = dependencies.signal ? AbortSignal.any([dependencies.signal, controller.signal]) : controller.signal;
   const childEnv: NodeJS.ProcessEnv = { ...env, SHALLOW_CAPTURE_SSE: "0" };
   delete childEnv.SHALLOW_PROBE_PORT;
   delete childEnv.SHALLOW_EVAL_PORT;
-  const worker = async (message: WorkerRequest, logFile: string, timeoutMs: number | null, generation = false) => run({
-    executable: process.execPath, args: ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("worker.ts", import.meta.url))],
-    cwd: REPOSITORY, env: generation ? childEnv : Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/API_KEY|TOKEN|SECRET|PASSWORD/i.test(key))),
-    logFile, timeoutMs, message, signal: dependencies.signal });
+  const worker = async (message: WorkerRequest, logFile: string, timeoutMs: number | null, generation = false) => {
+    signal.throwIfAborted();
+    return run({
+      executable: process.execPath, args: ["--import", import.meta.resolve("tsx"), fileURLToPath(new URL("worker.ts", import.meta.url))],
+      cwd: REPOSITORY, env: generation ? childEnv : Object.fromEntries(Object.entries(childEnv).filter(([key]) => !/API_KEY|TOKEN|SECRET|PASSWORD/i.test(key))),
+      logFile, timeoutMs, message, signal });
+  };
   try {
     const setupScript = join(outputDir, "private", "setup-playwright.cjs");
     if (!await exists(setupScript)) {
@@ -170,11 +184,12 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
       catalogs.set(task.id, await readJson<TestEntry[]>(catalogFile));
     }
     if (dependencies.prepareOnly) return await writeSummary(outputDir, plan);
-    for (const cell of plan.cells) {
-      dependencies.signal?.throwIfAborted();
+    let summaryWrites: Promise<unknown> = Promise.resolve();
+    const runCell = async (cell: ExperimentPlan["cells"][number]) => {
+      signal.throwIfAborted();
       const task = plan.tasks.find(task => task.id === cell.task)!;
       const directory = join(outputDir, task.id, `repeat-${cell.repeat}`, cell.method);
-      if (await exists(join(directory, "result.json"))) continue;
+      if (await exists(join(directory, "result.json"))) return;
       process.stderr.write(`[ARC experiment] ${task.id} repeat=${cell.repeat} ${cell.method}\n`);
       await mkdir(directory, { recursive: true });
       const projectDir = join(directory, "app"), privateDir = join(directory, "private");
@@ -230,7 +245,19 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
       if (JSON.stringify(await snapshotFiles(projectDir)) !== JSON.stringify(before)) throw new Error("Final application changed during external evaluation");
       const result: CellResult = { ...cell, generation, evaluation, finalDigest: digest(JSON.stringify(before)) };
       await saveJson(join(directory, "result.json"), result);
-      await writeSummary(outputDir, plan);
+      summaryWrites = summaryWrites.then(() => writeSummary(outputDir, plan));
+      await summaryWrites;
+    };
+    const cells = plan.cells.values();
+    const runners = Array.from({ length: Math.min(plan.concurrency, plan.cells.length) }, async () => {
+      for (const cell of cells) await runCell(cell);
+    });
+    try {
+      await Promise.all(runners);
+    } catch (error) {
+      controller.abort(error);
+      await Promise.allSettled(runners);
+      throw error;
     }
     return await writeSummary(outputDir, plan);
   } finally { await release(); }
@@ -241,7 +268,7 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
   const options = parseExperimentArgs(argv);
   if (["help", "--help", "-h"].includes(options.command)) { process.stdout.write(HELP); return 0; }
   if (options.command === "summarize") {
-    const summary = await writeSummary(options.outputDir, await readJson<ExperimentPlan>(join(options.outputDir, "experiment.json")));
+    const summary = await writeSummary(options.outputDir!, await readJson<ExperimentPlan>(join(options.outputDir!, "experiment.json")));
     process.stdout.write(JSON.stringify(summary.byMethod, null, 2) + "\n"); return 0;
   }
   const env: NodeJS.ProcessEnv = { ...(envFile ? await readEnvFile(envFile) : {}) };
@@ -259,11 +286,12 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
     return 0;
   }
   if (options.command === "plan") {
-    process.stdout.write(JSON.stringify({ ...plan, tasks: plan.tasks.map(({ requirementFiles, testFiles, ...task }) => task), outputDir: options.outputDir }, null, 2) + "\n");
+    process.stdout.write(JSON.stringify({ ...plan, tasks: plan.tasks.map(({ requirementFiles, testFiles, ...task }) => task) }, null, 2) + "\n");
     return 0;
   }
   if (options.command === "run") for (const role of ["builder", "grouper", "verifier"]) readGatewayConfig(env, role);
-  const summary = await runExperiment(plan, options.outputDir, env, options.resume,
+  process.stderr.write(`[ARC experiment] output ${plan.outputDir}\n`);
+  const summary = await runExperiment(plan, plan.outputDir, env, options.resume,
     { ...dependencies, prepareOnly: options.command === "prepare" });
   process.stdout.write(JSON.stringify(summary.byMethod, null, 2) + "\n");
   return summary.byMethod.some(method => method.generationFailures || method.evaluationErrors) ? 2 : 0;

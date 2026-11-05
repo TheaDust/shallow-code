@@ -8,7 +8,7 @@ import type { WorkerRequest } from "../src/experiments/worker.js";
 import { toolEnvironment } from "../src/process-lifecycle.js";
 import { withTempDir } from "./helpers/temp-dir.js";
 
-test("experiment evaluator builds and serves isolated final applications and scores real Playwright results", { timeout: 90_000 }, async () => {
+test("parallel experiment evaluators serve separate ports and score real Playwright results", { timeout: 90_000 }, async () => {
   await withTempDir("shallow-arc-evaluator-", async root => {
     const bench = join(root, "bench"), task = join(bench, "arc-bench", "fixture");
     await mkdir(join(task, "requirements"), { recursive: true }); await mkdir(join(task, "tests"));
@@ -22,10 +22,19 @@ test('missing heading fails', async ({ page }) => { await page.goto('/'); await 
 fs.writeFileSync(path.join(process.argv[2], 'playwright.config.ts'), "import {defineConfig} from '@playwright/test'; export default defineConfig({testDir:'./tests',workers:1,retries:0,timeout:2000,expect:{timeout:100},use:{baseURL:" + JSON.stringify(process.argv[3]) + "},projects:[{name:'chromium',use:{browserName:'chromium'}}]});");
 `);
     const plan = await createPlan(parseExperimentArgs(["run", "--bench-root", bench, "--output-dir", join(root, "out"),
-      "--repeats", "1"]), {});
+      "--repeats", "1", "--concurrency", "2"]), {});
     assert.equal(plan.generationTimeoutMs, null); assert.equal(plan.evaluationTimeoutMs, null);
+    let active = 0, peak = 0, started = 0;
+    let releaseEvaluators!: () => void;
+    const bothEvaluators = new Promise<void>(resolve => { releaseEvaluators = resolve; });
     const result = await runExperiment(plan, join(root, "out"), toolEnvironment(), false, { runProcess: async request => {
       const input = request.message as WorkerRequest;
+      if (input.action === "evaluate") {
+        active++; peak = Math.max(peak, active);
+        if (++started === 2) releaseEvaluators();
+        try { await bothEvaluators; return await runProcess(request); }
+        finally { active--; }
+      }
       if (input.action !== "generate") return runProcess(request);
       // Deterministic fixture generation belongs only to the test; the evaluator is real.
       await writeFile(join(input.projectDir, "server.cjs"), `require('node:http').createServer((req,res)=>{
@@ -35,6 +44,9 @@ if(req.url==='/health') return res.end('ok'); res.setHeader('content-type','text
         start: { executable: process.execPath, args: ["server.cjs"] }, readyPath: "/health" }));
       return { exitCode: 0, timedOut: false, durationMs: 1 };
     } });
+    assert.equal(peak, 2);
+    assert.equal(active, 0);
+    const urls = new Set<string>();
     for (const cell of result.cells) {
       if (cell.evaluation.status !== "completed") {
         assert.fail(JSON.stringify(cell.evaluation));
@@ -43,7 +55,10 @@ if(req.url==='/health') return res.end('ok'); res.setHeader('content-type','text
       assert.equal(cell.evaluation.score.failed, 1); assert.equal(cell.evaluation.score.passRate, 0.5);
       const report = JSON.parse(await readFile(join(cell.evaluation.directory, "playwright.json"), "utf8"));
       assert.equal(report.stats.unexpected, 1);
+      const config = await readFile(join(cell.evaluation.directory, "playwright.config.ts"), "utf8");
+      urls.add(JSON.parse(config.match(/baseURL:("[^"]+")/)![1]));
     }
+    assert.equal(urls.size, 2);
   });
 });
 

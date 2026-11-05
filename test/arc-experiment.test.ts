@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { cp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { parse } from "yaml";
 import type { JSONReport } from "@playwright/test/reporter";
-import { createPlan, parseExperimentArgs, runExperiment, writeSummary } from "../src/experiments/arc-experiment.js";
-import { csv, planCells, reportEntries, scoreReport, summarize, type CellResult, type ExperimentPlan } from "../src/experiments/protocol.js";
+import { createPlan, experimentMain, parseExperimentArgs, runExperiment, writeSummary } from "../src/experiments/arc-experiment.js";
+import { csv, planCells, reportEntries, REPOSITORY, scoreReport, summarize, type CellResult, type ExperimentPlan } from "../src/experiments/protocol.js";
+import { lockWorkspace } from "../src/run-record.js";
 import { normalizeArcRequirements } from "../src/experiments/requirements.js";
 import type { ProcessRequest } from "../src/experiments/process.js";
 import type { WorkerRequest } from "../src/experiments/worker.js";
@@ -100,17 +101,67 @@ test("experimental scoring includes failed, skipped, interrupted and unexecuted 
 
 test("experiment CLI validates tasks and limits and alternates paired method order", () => {
   const defaults = parseExperimentArgs(["run"]);
+  assert.equal(defaults.benchRoot, resolve(REPOSITORY, "../arc-bench-modified"));
+  assert.equal(defaults.outputDir, undefined);
+  assert.equal(defaults.outputRoot, resolve("outputs"));
+  assert.equal(defaults.concurrency, 1);
   assert.equal(defaults.generationTimeoutMs, null);
   assert.equal(defaults.evaluationTimeoutMs, null);
-  const explicit = parseExperimentArgs(["run", "--generation-timeout-ms", "60000", "--evaluation-timeout-ms", "30000"]);
+  const explicit = parseExperimentArgs(["run", "--generation-timeout-ms", "60000", "--evaluation-timeout-ms", "30000", "--concurrency", "3", "--bench-root", "custom-bench"], "/work");
+  assert.equal(explicit.benchRoot, resolve("/work", "custom-bench"));
+  assert.equal(explicit.concurrency, 3);
   assert.equal(explicit.generationTimeoutMs, 60000);
   assert.equal(explicit.evaluationTimeoutMs, 30000);
   assert.deepEqual(planCells(["a", "b"], 2).map(cell => cell.method), ["baseline", "shallow", "shallow", "baseline", "shallow", "baseline", "baseline", "shallow"]);
   for (const args of [["run", "--tasks", "../keep"], ["run", "--tasks", "keep,keep"], ["run", "--repeats", "0"],
     ["run", "--generation-timeout-ms", "NaN"], ["run", "--generation-timeout-ms", "0"],
-    ["run", "--evaluation-timeout-ms", "-1"], ["run", "--repeats", "1", "--repeats", "2"]]) {
+    ["run", "--evaluation-timeout-ms", "-1"], ["run", "--repeats", "1", "--repeats", "2"],
+    ["run", "--concurrency", "0"], ["run", "--concurrency", "1.5"], ["run", "--concurrency", "NaN"],
+    ["run", "--concurrency", "2", "--concurrency", "3"], ["run", "--resume"], ["summarize"]]) {
     assert.throws(() => parseExperimentArgs(args));
   }
+});
+
+test("default experiment directories use discovered task names and a UTC timestamp, with an explicit override", async () => {
+  await withTempDir("shallow-arc-output-", async root => {
+    const original = await fixture(root);
+    const options = parseExperimentArgs(["plan", "--bench-root", original.benchRoot], root);
+    const single = await createPlan(options, env);
+    assert.equal(dirname(single.outputDir), join(root, "outputs"));
+    assert.match(basename(single.outputDir), /^fixture-\d{8}T\d{9}Z$/);
+    await assert.rejects(stat(single.outputDir), /ENOENT/, "planning does not create an output directory");
+    await cp(join(original.benchRoot, "arc-bench", "fixture"), join(original.benchRoot, "arc-bench", "second"), { recursive: true });
+    const multiple = await createPlan(options, env);
+    assert.match(basename(multiple.outputDir), /^fixture\+second-\d{8}T\d{9}Z$/);
+    const selected = await createPlan({ ...options, tasks: ["second"] }, env);
+    assert.match(basename(selected.outputDir), /^second-\d{8}T\d{9}Z$/);
+    const explicit = parseExperimentArgs(["run", "--bench-root", original.benchRoot, "--output-dir", "custom", "--resume"], root);
+    assert.equal((await createPlan(explicit, env)).outputDir, join(root, "custom"));
+    assert.equal(parseExperimentArgs(["summarize", "--output-dir", "custom"], root).outputDir, join(root, "custom"));
+  });
+});
+
+test("prepare prints and persists its default output directory for an explicit resume", async t => {
+  await withTempDir("shallow-arc-default-output-", async root => {
+    const original = await fixture(root), calls: WorkerRequest[] = [];
+    const stdout = t.mock.method(process.stdout, "write", () => true);
+    const stderr = t.mock.method(process.stderr, "write", () => true);
+    const cwd = t.mock.method(process, "cwd", () => root);
+    try {
+      const args = ["--bench-root", original.benchRoot, "--repeats", "1", "--concurrency", "2"];
+      assert.equal(await experimentMain(["prepare", ...args], env, { runProcess: fakeProcess(calls) }, null), 0);
+      const directories = await readdir(join(root, "outputs"));
+      assert.equal(directories.length, 1);
+      assert.match(directories[0], /^fixture-\d{8}T\d{9}Z$/);
+      const output = join(root, "outputs", directories[0]);
+      const manifest = JSON.parse(await readFile(join(output, "experiment.json"), "utf8"));
+      assert.equal(manifest.outputDir, output);
+      assert(stderr.mock.calls.some(call => String(call.arguments[0]).includes(`[ARC experiment] output ${output}`)));
+      assert.equal(await experimentMain(["run", ...args, "--output-dir", output, "--resume"], env, { runProcess: fakeProcess(calls) }, null), 0);
+      assert.equal(calls.length, 5);
+      assert.equal(JSON.parse(await readFile(join(output, "summary.json"), "utf8")).cells.length, 2);
+    } finally { stdout.mock.restore(); stderr.mock.restore(); cwd.mock.restore(); }
+  });
 });
 
 test("experiment runs two independent workspaces, preserves inputs and resumes without rerunning finalized cells", async () => {
@@ -120,8 +171,10 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     assert.equal(plan.generationTimeoutMs, null); assert.equal(plan.evaluationTimeoutMs, null);
     const result = await runExperiment(plan, output, env, false, { runProcess: fakeProcess(calls) });
     assert.equal(calls.length, 5);
+    assert.deepEqual(calls.map(call => call.action), ["catalog", "generate", "evaluate", "generate", "evaluate"]);
     assert(calls.every(call => call.timeoutMs === null));
     const manifest = JSON.parse(await readFile(join(output, "experiment.json"), "utf8"));
+    assert.equal(manifest.concurrency, 1);
     assert.equal(manifest.generationTimeoutMs, null); assert.equal(manifest.evaluationTimeoutMs, null);
     assert.deepEqual(result.byMethod.map(row => row.macroPassRate), [0.5, 0.5]);
     assert.equal(await readFile(join(plan.tasks[0].requirementsDir, "requirements.yaml"), "utf8"), source);
@@ -138,11 +191,102 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     await runExperiment(plan, output, env, true, { runProcess: fakeProcess(calls) });
     assert.equal(calls.length, 5);
     await assert.rejects(runExperiment({ ...plan, generationTimeoutMs: 1 }, output, env, true), /settings changed/);
+    await assert.rejects(runExperiment({ ...plan, concurrency: 2 }, output, env, true), /settings changed/);
     await assert.rejects(runExperiment(plan, output, env, false), /already exists/);
     assert.match(await readFile(join(output, "runs.csv"), "utf8"), /baseline/);
     assert.equal((await writeSummary(output, plan)).cells.length, 2);
   });
 });
+
+test("parallel experiments bound active cells, isolate attempts and resume completed results", { timeout: 15_000 }, async () => {
+  await withTempDir("shallow-arc-parallel-", async root => {
+    const plan = { ...await fixture(root), repeats: 3, concurrency: 3, cells: planCells(["fixture"], 3) };
+    const output = join(root, "out"), calls: WorkerRequest[] = [];
+    const run = fakeProcess(calls);
+    let active = 0, peak = 0, started = 0;
+    let releaseBatch!: () => void;
+    const firstBatch = new Promise<void>(resolve => { releaseBatch = resolve; });
+    const result = await runExperiment(plan, output, { ...env, SHALLOW_PROBE_PORT: "31000", SHALLOW_EVAL_PORT: "32000" }, false, {
+      runProcess: async request => {
+        assert.equal(request.env.SHALLOW_PROBE_PORT, undefined);
+        assert.equal(request.env.SHALLOW_EVAL_PORT, undefined);
+        active++; peak = Math.max(peak, active);
+        try {
+          if ((request.message as WorkerRequest).action === "generate" && ++started <= 3) {
+            if (started === 3) releaseBatch();
+            await firstBatch;
+          }
+          return await run(request);
+        } finally { active--; }
+      },
+    });
+    assert.equal(peak, 3);
+    assert.equal(active, 0);
+    assert.equal(result.cells.length, 6);
+    assert.deepEqual(result.byMethod.map(row => row.macroPassRate), [0.5, 0.5]);
+    const generations = calls.filter(call => call.action === "generate");
+    assert.equal(new Set(generations.map(call => call.projectDir)).size, 6);
+    assert.equal(new Set(generations.map(call => call.privateDir)).size, 6);
+    assert.equal(calls.filter(call => call.action === "catalog").length, 1);
+    assert.equal(calls.filter(call => call.action === "evaluate").length, 6);
+    const saved = JSON.parse(await readFile(join(output, "summary.json"), "utf8"));
+    assert.equal(saved.cells.length, 6);
+    assert.equal((await readFile(join(output, "runs.csv"), "utf8")).trim().split("\n").length, 7);
+    await runExperiment(plan, output, env, true, { runProcess: fakeProcess(calls) });
+    assert.equal(calls.length, 13);
+  });
+});
+
+for (const stop of ["failure", "abort"] as const) {
+  test(`parallel experiment ${stop} drains active workers before releasing the workspace lock`, { timeout: 15_000 }, async () => {
+    await withTempDir("shallow-arc-parallel-stop-", async root => {
+      const plan = { ...await fixture(root), repeats: 2, concurrency: 2, cells: planCells(["fixture"], 2) };
+      const output = join(root, "out"), calls: WorkerRequest[] = [];
+      const run = fakeProcess(calls), controller = new AbortController();
+      const failure = new Error(`fixture parallel ${stop}`);
+      let started = 0, cleaning = 0, settled = false;
+      let releaseStarted!: () => void, releaseCleaning!: () => void, releaseCleanup!: () => void;
+      const bothStarted = new Promise<void>(resolve => { releaseStarted = resolve; });
+      const workersCleaning = new Promise<void>(resolve => { releaseCleaning = resolve; });
+      const cleanup = new Promise<void>(resolve => { releaseCleanup = resolve; });
+      const execution = runExperiment(plan, output, env, false, { signal: controller.signal, runProcess: async request => {
+        const input = request.message as WorkerRequest;
+        if (input.action !== "generate") return run(request);
+        calls.push(input);
+        if (++started === 2) releaseStarted();
+        if (stop === "failure" && input.method === "baseline") {
+          await bothStarted;
+          throw failure;
+        }
+        await new Promise<void>(resolve => request.signal!.addEventListener("abort", () => resolve(), { once: true }));
+        if (++cleaning === (stop === "failure" ? 1 : 2)) releaseCleaning();
+        await cleanup;
+        throw request.signal!.reason;
+      } });
+      void execution.then(() => { settled = true; }, () => { settled = true; });
+      const rejected = assert.rejects(execution, error => error === failure);
+      try {
+        await bothStarted;
+        if (stop === "abort") controller.abort(failure);
+        await workersCleaning;
+        assert.equal(settled, false);
+        await assert.rejects(lockWorkspace(output), /Workspace is in use/);
+      } finally { releaseCleanup(); }
+      await rejected;
+      assert.equal(started, 2);
+      assert.equal(calls.filter(call => call.action === "evaluate").length, 0);
+      for (const method of ["baseline", "shallow"]) {
+        await assert.rejects(readFile(join(output, "fixture", "repeat-2", method, "started.json")), /ENOENT/);
+      }
+      const release = await lockWorkspace(output);
+      await release();
+      const resumed = await runExperiment(plan, output, env, true, { runProcess: run });
+      assert.equal(resumed.cells.length, 4);
+      assert.equal(resumed.cells.filter(cell => cell.generation.status === "interrupted").length, 2);
+      assert.equal(calls.filter(call => call.action === "generate").length, 4);
+    });
+  });
+}
 
 test("ARC preparation rejects missing and external reference images before generation", async () => {
   await withTempDir("shallow-arc-images-", async root => {

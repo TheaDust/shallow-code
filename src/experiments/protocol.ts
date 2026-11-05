@@ -24,6 +24,7 @@ export interface ArcTask {
 export interface ExperimentPlan {
   version: 1;
   benchRoot: string;
+  outputDir: string;
   setupScript: string;
   setupDigest: string;
   codeDigest: string;
@@ -31,6 +32,7 @@ export interface ExperimentPlan {
   playwrightVersion: string;
   settings: Record<string, string | undefined>;
   repeats: number;
+  concurrency: number;
   /** null means no experiment-level wall deadline; internal stage limits still apply. */
   generationTimeoutMs: number | null;
   evaluationTimeoutMs: number | null;
