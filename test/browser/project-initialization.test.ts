@@ -32,7 +32,7 @@ test("a custom single-process Web project passes real runtime and browser initia
       },
       async close() {},
     };
-    const result = await initializeProject({ outputDir, privateDir: join(root, "private"),
+    const result = await initializeProject({ outputDir, privateDir: join(root, "private", "x".repeat(140)),
       requirementsContext: "A Web app", intent: "使用不含默认模板的单进程服务", env: {},
       applications, createBuilder: () => builder,
       verify: verifyInitializedWebProject });
