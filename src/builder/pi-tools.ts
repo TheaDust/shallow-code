@@ -152,8 +152,17 @@ export function createShellExecutor(cwd: string, contract?: ApplicationContract,
     await assertToolPath(cwd, directory);
     signal?.throwIfAborted();
     const windows = process.platform === "win32";
+    // Windows PowerShell treats redirected native stderr as NativeCommandError,
+    // even when the native process succeeded. Preserve real PowerShell errors
+    // and explicit exits while using the native exit code for that case.
+    const script = windows ? `${command}
+$shallowShellSucceeded = $?
+if ($shallowShellSucceeded) { exit 0 }
+if ($Error.Count -gt 0 -and $Error[0].FullyQualifiedErrorId -notmatch '^NativeCommandError(?:Message)?$') { exit 1 }
+if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
+exit 1` : command;
     const child = spawn(windows ? "powershell.exe" : "/bin/bash",
-      windows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command] : ["--noprofile", "--norc", "-c", command],
+      windows ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script] : ["--noprofile", "--norc", "-c", script],
       { cwd: directory, env: { ...toolEnvironment(), ...contract?.env,
         ...(contract?.dataDirectory ? { [contract.dataEnvVar ?? "SHALLOW_DATA_DIR"]: contract.dataDirectory } : {}) },
         windowsHide: true, detached: false, stdio: ["ignore", "pipe", "pipe"] });

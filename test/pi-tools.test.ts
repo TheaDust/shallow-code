@@ -15,8 +15,39 @@ test("Shell guards use the actual private run directory while allowing absolute 
   });
 });
 
-import { assertNotTestCommand, assertToolCommand, assertToolPath, assertToolReadPath } from "../src/builder/pi-tools.js";
+import { assertNotTestCommand, assertToolCommand, assertToolPath, assertToolReadPath, createShellExecutor } from "../src/builder/pi-tools.js";
 import { withTempDir } from "./helpers/temp-dir.js";
+
+test("Windows shell preserves native exit status through stderr pipelines and still reports PowerShell errors",
+  { skip: process.platform !== "win32", timeout: 30_000 }, async t => {
+    await withTempDir("shallow-shell-status-", async root => {
+      const execute = createShellExecutor(root);
+      const node = `& '${process.execPath.replaceAll("'", "''")}'`;
+      const warning = `${node} -e "console.error('build-warning');console.log('build-ok')" 2>&1 | Select-Object -Last 2`;
+      const cases = [
+        { name: "stderr warning is not a failed build", command: warning, expected: 0 },
+        { name: "native failure without stderr", command: `${node} -e "process.exit(7)"`, expected: 7 },
+        { name: "native failure through a pipeline", command: `${node} -e "console.error('failed');process.exit(7)" 2>&1 | Select-Object -Last 2`, expected: 7 },
+        { name: "PowerShell error after native success", command: `${node} -e "console.log('ok')"; Write-Error 'actual-failure'`, expected: 1 },
+        { name: "PowerShell error after a native warning", command: `${warning}; Write-Error 'actual-failure'`, expected: 1 },
+        { name: "PowerShell-only error", command: "Write-Error 'actual-failure'", expected: 1 },
+        { name: "handled error before successful native command", command: `try { throw 'handled' } catch {}; ${warning}`, expected: 0 },
+        { name: "later successful command recovers an earlier failure", command: `${node} -e "process.exit(7)"; Write-Output 'recovered'`, expected: 0 },
+        { name: "explicit exit", command: "exit 9", expected: 9 },
+        { name: "terminating error", command: "throw 'actual-failure'", expected: 1 },
+        { name: "syntax error", command: "if (", expected: 1 },
+      ];
+      for (const { name, command, expected } of cases) await t.test(name, async () => {
+        let output = "";
+        const result = await execute(command, root, { onData: data => { output += data.toString(); }, timeout: 10 });
+        assert.equal(result.exitCode, expected, output);
+        if (command === warning) {
+          assert.match(output, /build-ok/);
+          assert.match(output, /build-warning/);
+        }
+      });
+    });
+  });
 
 test("Loaded skill files remain read-only even when located inside the target workspace", async () => {
   await withTempDir("shallow-skill-guard-", async root => {
