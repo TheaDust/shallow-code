@@ -256,7 +256,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     startingPoint: options.startingPoint ?? "unknown",
     externalPrerequisiteIds: packet.externalPrerequisiteIds ?? [] });
   const build = async (request: BuilderRequest, resumeInterrupted = false, repairDiff?: RepairDiffReader): Promise<BuilderResult> => {
-    // Fixed services declared by a project must also be exclusive with Builder self-tests.
+    // Adapter-declared exclusive resources must also be exclusive with Builder self-tests.
     if (runtime.resourceKeys.length) await coordinator.drain();
     const packetId = "packet" in request ? request.packet.id : "delivery";
     await state.record({ at: now(), type: "builder_started", packetId, detail: { mode: request.mode } });

@@ -17,6 +17,7 @@ import { verifierSourceClauses, type VerifierRequirements } from "../src/verifie
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { readImplementationDigests, requirementDigest } from "../src/requirement-progress.js";
 import type { RunEvent } from "../src/types.js";
+import { createWebExecutionAdapter } from "../src/verifier/adapters/web/index.js";
 
 async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSignal) => Promise<void>,
   status?: (job: CheckJob) => Promise<CheckOutcome["status"]>): Promise<VerifierRuntime> {
@@ -451,7 +452,7 @@ test("replay off excludes rejected repair reports when aggregating the restored 
   });
 });
 
-for (const continued of [false, true]) for (const replay of [false, true]) test(`Group checks overlap Builder across modules and join before delivery (continued=${continued}, replay=${replay})`, { timeout: 20_000 }, async () => {
+for (const continued of [false, true]) for (const replay of [false, true]) test(`Web extra ports allow group checks to overlap Builder across modules and join before delivery (continued=${continued}, replay=${replay})`, { timeout: 20_000 }, async () => {
   await withModulePipeline(async f => {
     if (continued) {
       await mkdir(f.options.outputDir, { recursive: true });
@@ -459,14 +460,16 @@ for (const continued of [false, true]) for (const replay of [false, true]) test(
       f.options.resumedRequirementIds = ["A"];
     }
     const jobs: CheckJob[] = [];
-    let started!: () => void, release!: () => void, sealedAll!: () => void;
+    let started!: () => void, startedB!: () => void, release!: () => void, sealedAll!: () => void;
     const checking = new Promise<void>(resolve => { started = resolve; });
+    const checkingB = new Promise<void>(resolve => { startedB = resolve; });
     const released = new Promise<void>(resolve => { release = resolve; });
     const implementationFinished = new Promise<void>(resolve => { sealedAll = resolve; });
     let checkingA = false, overlapped = false;
     const runtime = await attach(f, async (job, signal) => {
       jobs.push(job);
       if (job.mode === "replay") assert.equal(checkingA, false, "final replay waits for background checks");
+      if (job.mode === "discover" && job.requirementIds[0] === "B") startedB();
       if (job.requirementIds[0] !== "A" || job.moduleEpoch !== 0) return;
       checkingA = true;
       started();
@@ -476,6 +479,13 @@ for (const continued of [false, true]) for (const replay of [false, true]) test(
       assert.equal(await readFile(join(sealed.sourceDirectory, "marker.txt"), "utf8"), "A");
       checkingA = false;
     });
+    const initialSource = join(runtime.directory, "port-input");
+    await mkdir(initialSource, { recursive: true });
+    const initial = await runtime.snapshots.seal({ sourceDirectory: initialSource, sourceSha: "initial", packetId: "initial-data" });
+    const { declaration } = await createWebExecutionAdapter({ artifacts: runtime.artifacts, snapshots: runtime.snapshots,
+      workspace: join(runtime.directory, "web-workers"), initialDataSnapshot: initial.ref,
+      spec: { start: { executable: process.execPath }, adapterConfig: { extraPorts: [4321] } } });
+    runtime.resourceKeys = declaration.resourceKeys;
     f.options.verifier!.replay = replay;
     const verifyDelivery = runtime.verifyDelivery.bind(runtime);
     runtime.verifyDelivery = async (job, signal) => {
@@ -513,6 +523,8 @@ for (const continued of [false, true]) for (const replay of [false, true]) test(
     try {
       await Promise.race([implementationFinished, running, timeout]);
       assert.equal(checkingA, true, "all implementation finishes before the slow group check");
+      await Promise.race([checkingB, running, timeout]);
+      assert.equal(checkingA, true, "another Verifier job starts while the first check is still running");
       assert.equal((await f.events()).some(event => event.type === "delivery_started"), false);
       release();
       result = await Promise.race([running, timeout]);
@@ -551,7 +563,7 @@ for (const continued of [false, true]) for (const replay of [false, true]) test(
   });
 });
 
-test("Fixed shared resources still serialize Verifier checks with Builder self-tests", { timeout: 20_000 }, async () => {
+test("Adapter-declared shared resources still serialize Verifier checks with Builder self-tests", { timeout: 20_000 }, async () => {
   await withModulePipeline(async f => {
     let started!: () => void, release!: () => void;
     const checking = new Promise<void>(resolve => { started = resolve; });
@@ -563,7 +575,7 @@ test("Fixed shared resources still serialize Verifier checks with Builder self-t
       await released;
       finishedA = true;
     });
-    runtime.resourceKeys = ["local-port:4321"];
+    runtime.resourceKeys = ["test:shared-resource"];
     const build = f.builder.run.bind(f.builder);
     f.builder.run = async (request, options) => {
       if (request.mode === "implement" && !request.packet.requirementIds.includes("A")) {
