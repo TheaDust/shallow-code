@@ -166,7 +166,7 @@ test("Pi Grouper corrects scenario prerequisite order and binds finish to the re
     if (calls === 0) {
       assert.match(text(payload.messages[0]), /模块连续性让位于场景前置/);
       const source = JSON.parse(text(payload.messages.find(message => message.role === "user")!));
-      assert.match(source.prerequisiteReview, /given/);
+      assert.match(text(payload.messages[0]), /逐个检查 scenarioFacts 中 given 阶段的全部 sources/);
       assert.deepEqual(source.requirements[0].scenarioFacts[0].sources, [{ scenarioId: "move", stepIndex: 0 }]);
     }
     if (calls === 1) { assert.equal(observation(payload).valid, false); assert.match(observation(payload).error, /must precede MOVE/); }

@@ -174,10 +174,10 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
       const genericPrompts = await Promise.all(["exploration", "review", "tools", "submission", "diagnosis"].map(promptAsset));
       const adapterPrompts = await Promise.all(declaration.prompts.map(ref => store.getBytes(ref).then(bytes => bytes.toString("utf8"))));
       const promptDigest = hashBytes(genericPrompts.join("\n\n"));
-      // Review uses only review/tools/adapter prompts. Keep its cache key independent
+      // Review uses only review/adapter prompts. Keep its cache key independent
       // from exploration and submission edits so unrelated prompt changes do not
       // invalidate already approved review decisions.
-      const reviewPromptDigest = hashBytes([genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"));
+      const reviewPromptDigest = hashBytes([genericPrompts[1], ...adapterPrompts].join("\n\n"));
       // The content-addressed binding also covers exploration/submission prompt
       // edits. Use a review-specific binding identity so only execution semantics
       // and prompts visible to review invalidate its decisions.
@@ -333,7 +333,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 }
                 return executionFeedback({ output, receipts: result.receipts, ...(checks.length ? { checks } : {}) });
               } },
-            { name: "check_program", description: "Save a complete contract and program, derive clause mappings, and execute the saved program in an independent clean environment. Once entry, initial state and object identity are located, use this tool directly instead of separately probing the same path. Inspect outcomes status/reason for formal evidence conclusions, then compact checks and diagnostics; matching checks alone do not establish a complete evidence chain. Use read_feedback only for missing diagnostic detail. Revise through this same tool if needed. This execution supplies formal evidence; finish does not run it again. Business violations remain valid test results, subject to failure confirmation and independent semantic review when enabled. Returns a session-local programId for finish; use the new ID after revisions.",
+            { name: "check_program", description: "Save and execute a complete contract and program in a clean environment. Inspect outcomes, checks and diagnostics; returns a session-local programId for finish. Submit revisions through this tool.",
               parameters: Type.Object({ contract: toolObjectSchema, source: Type.String({ minLength: 1 }),
                 basisExplanation: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })) }),
               prepareArguments: prepareCheckArguments,
@@ -382,7 +382,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
                 const { program: _program, ...feedback } = await executionFeedback({ program, outcomes, checks, diagnostics });
                 return { programId, ...feedback };
               } },
-            { name: "finish", description: "Submit the session-local programId strings returned by check_program after inspecting its outcomes, checks and diagnostics, or explain unverifiable clauses. Include the complete program list in one call; rejected calls do not accumulate submissions. Submitted programs and unsupported entries must cover every source clause exactly once. When enabled, independent review uses those executions without another replay; faithful business failures are independently confirmed.",
+            { name: "finish", description: "Submit the complete selection of checked programId strings and unsupported explanations, covering every source clause exactly once.",
               parameters: Type.Object({ programs: Type.Array(Type.String({ minLength: 1, description: "programId returned by check_program in this exploration session, e.g. p1" })), unsupported: Type.Optional(Type.Array(Type.Object({
                 clauseId: Type.String({ enum: discoverySources.map(source => source.id) }), reason: Type.String({ minLength: 1, maxLength: 2000 }),
                 attempts: Type.Array(Type.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
@@ -509,7 +509,6 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
               capabilities: orderedCapabilities,
               programFormat: declaration.programFormat,
               initialState: await store.readTypedJson(job.initialState),
-              semanticReview,
               requirements: context,
               sourceClauses: discoverySources,
               ...(sourceIndexInfo ? { sourceIndex: sourceIndexInfo } : {}),
@@ -667,7 +666,7 @@ export function createVerifierAgent(options: { artifacts: ArtifactStore; adapter
             let proposal: Decision[] | undefined;
             try {
               for (const item of batch) await progress({ stage: "semantic_review", programId: item.program.descriptor.id, clauseIds: item.contract.clauses.map(clause => clause.id) });
-              await runModel("semantic_review", [genericPrompts[1], genericPrompts[2], ...adapterPrompts].join("\n\n"), batchPayload(batch), [{
+              await runModel("semantic_review", [genericPrompts[1], ...adapterPrompts].join("\n\n"), batchPayload(batch), [{
                 name: "finish", description: "Submit one whole-program decision per programId in this batch. Enumerate every clause of each program exactly once. JSON text is not a submission.",
                 parameters: Type.Object({ reviews: Type.Array(Type.Object({ programId: Type.String({ enum: batch.map(item => contentDigest(item.program)) }),
                   approved: Type.Boolean(), reasons: Type.Array(Type.String()), clauseIds: Type.Array(Type.String(), { uniqueItems: true }) }),

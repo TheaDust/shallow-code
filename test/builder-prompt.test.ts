@@ -46,7 +46,7 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /Builder 开发检查/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /传统测试/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /保留种子数据/);
-  assert.match(compiled.systemPrompt + compiled.taskPrompt, /释放进程/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /重建前 stop，构建后重启，结束时 stop/);
   assert.doesNotMatch(compiled.systemPrompt, /MCP/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /SHALLOW_DATA_DIR/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /持续增量扩展/);
@@ -54,7 +54,7 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /全新的独立会话/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /唯一交接面/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /复杂或边界逻辑必须编写传统测试并用 run_tests 运行/);
-  assert.match(compiled.systemPrompt + compiled.taskPrompt, /browser 是昂贵工具/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /browser 启动真实浏览器，属于昂贵操作/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /清晰稳定的模块与接口边界/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /延续既有栈，不得换栈重写/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /通用最小脚手架提供运行配置/);
@@ -161,9 +161,10 @@ test("Development context reaches implementation and repair with one starting-po
       assert.match(taskPrompt, /## 开发上下文/);
       assert.ok(taskPrompt.includes(`本轮起点：${expected}`));
       assert.match(taskPrompt, /前序能力 ID：OLD-A、OLD-B/);
-      assert.match(taskPrompt, /验收覆盖当前需求树中的全部条目，包括沿用项/);
-      assert.match(taskPrompt, /当前需求摘要和已封存的实现进度/);
-      assert.match(taskPrompt, /变更或未完成的需求继续开发/);
+      assert.match(taskPrompt, /按本包全文与场景逐条对照现有实现/);
+      assert.match(taskPrompt, /旧需求 ID 或历史通过结论不能替代当前核对/);
+      assert.match(taskPrompt, /前序能力 ID 是依赖上下文，不纳入本轮单独验收/);
+      assert.match(taskPrompt, /新增预置对象按稳定标识幂等补充或迁移/);
       assert.equal(taskPrompt.split(loadPrompt("builder", assetName)).length, 2);
       assert.ok(systemPrompt.includes(loadPrompt("builder", "self-test")));
       assert.doesNotMatch(taskPrompt, /Evolution|当前阶段：Stage/);
@@ -174,17 +175,18 @@ test("Development context reaches implementation and repair with one starting-po
   }
 });
 
-test("Development packets share the static context before their prerequisite ids", () => {
-  const prompts = ["OLD-A", "OLD-B"].map(id => {
+test("Development packets share fixed guidance before starting points and prerequisite ids", () => {
+  const prompts = (["inherited_application", "blank_template"] as const).map((startingPoint, index) => {
     const request = implementRequest();
     if (request.mode !== "implement") throw new Error("unexpected mode");
-    request.projectContext.startingPoint = "inherited_application";
-    request.projectContext.externalPrerequisiteIds = [id];
+    request.projectContext.startingPoint = startingPoint;
+    request.projectContext.externalPrerequisiteIds = [`OLD-${index}`];
     return compileBuilderPrompt(request).taskPrompt;
   });
-  const boundary = prompts[0]!.indexOf("前序能力 ID：");
+  const boundary = prompts[0]!.indexOf("本轮起点：");
   assert.ok(boundary > 0);
   assert.equal(prompts[0]!.slice(0, boundary), prompts[1]!.slice(0, boundary));
+  assert.match(prompts[0]!.slice(0, boundary), /按本包全文与场景逐条对照现有实现/);
   assert.notEqual(prompts[0]!.slice(boundary), prompts[1]!.slice(boundary));
 });
 

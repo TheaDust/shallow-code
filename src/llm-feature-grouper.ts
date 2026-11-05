@@ -161,7 +161,5 @@ function groupingPrompt(catalog: RequirementCatalog, options: FeatureGroupingOpt
   return JSON.stringify({ limits: DEFAULT_FEATURE_GROUP_THRESHOLDS, product: catalog.requirements[0]?.product,
     ancestors: [...ancestors.values()], modules: [...modules].map(([moduleId, requirementIds]) => ({ moduleId, requirementIds })),
     referenceGroups: featureGroupPackets(catalog).packets.map(packet => packet.requirementIds), agentLimits: { maxTurns: MAX_AGENT_TURNS },
-    scenarioInput: "scenarioFacts 按 GIVEN/WHEN/THEN 阶段保留原文摘录与全部来源；重复原文只在同一阶段合并。容量仍用原始场景计数与完整文本长度。",
-    prerequisiteReview: "逐个检查 given 阶段的全部 sources。当前需求中有明确提供该前置能力的需求时，以 scenarioPrerequisites 记录来源和提供方原文，并安排提供方在前；包括没有 dependencyIds 的跨模块前置。",
     requirements, ...(options.feedback ? { previousAttempt: options.feedback } : {}) });
 }

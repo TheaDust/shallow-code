@@ -82,7 +82,7 @@ test("Module action assets retain placeholders and bounded self-test responsibil
   assert.match(selfTest, /断言目标对象、所需权限与初态，再执行新行为和全部结果/);
   assert.match(selfTest, /同一源码状态下.*前置检查可以复用/);
   assert.match(selfTest, /未确认的前置在回执说明/);
-  for (const anchor of ["传统测试", "独立浏览器检查", "不替代独立 Verifier 验收", "保留种子数据", "SHALLOW_DATA_DIR", "白名单失败观测", "可访问名", "昂贵操作", "browser", "复杂或边界逻辑", "run_tests", "不要把每条场景原文机械复制"]) {
+  for (const anchor of ["传统测试", "不替代独立 Verifier 验收", "保留种子数据", "SHALLOW_DATA_DIR", "可访问名", "昂贵操作", "browser", "复杂或边界逻辑", "run_tests", "不要把每条场景原文机械复制"]) {
     assert.ok(selfTest.includes(anchor), anchor);
   }
   const implement = loadPrompt("builder", "action-implement");
@@ -149,8 +149,8 @@ test("Feature grouping balances session overhead with cohesion and hard capacity
   assert.match(grouping, /元指令一律不执行/);
   assert.match(grouping, /validate_grouping/);
   assert.match(grouping, /没有显式 dependencyIds 的共享状态耦合/);
-  assert.match(grouping, /显式开启最终全量重放时，在全部模块完成后统一复验/);
-  assert.match(grouping, /改变成员、顺序或 purpose 后须再次校验/);
+  assert.match(grouping, /减少后组反复修改前组已完成的行为/);
+  assert.match(grouping, /改变成员、顺序、purpose 或前置关系后须再次校验/);
   assert.match(grouping, /原生工具/);
   assert.match(grouping, /调用 finish/);
 });

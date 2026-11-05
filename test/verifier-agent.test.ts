@@ -579,7 +579,7 @@ test("Verifier tool schemas keep an object root because the gateway rejects a ro
 
 test("Verifier assembles final-program self-check guidance with its exploration submission tools", async () => {
   const f = await fixture();
-  let explored = false;
+  let explored = false, reviewed = false;
   try {
     const verifier = createVerifierAgent({ semanticReview: true, artifacts: f.store, adapter: f.adapter, model: { async run(request) {
       if (request.role === "exploration") {
@@ -590,20 +590,29 @@ test("Verifier assembles final-program self-check guidance with its exploration 
         assert.match(request.systemPrompt, /提交前自检/);
         assert.doesNotMatch(request.systemPrompt, /先检查应用并建立规定的初始状态。用 invoke/);
         assert.match(request.systemPrompt, /check_program.*独立干净环境/);
-        assert.match(request.systemPrompt, /源码或合同修改后，重新调用 check_program/);
+        assert.match(request.systemPrompt, /源码或合同修改后重新调用/);
         assert.match(request.systemPrompt, /业务断言失败不要求把正确程序改到通过/);
         assert.match(request.systemPrompt, /verifier-tools@8/);
         assert.match(request.systemPrompt, /返回 \{programId,outcomes,checks,diagnostics,feedbackRef\}/);
         assert.match(request.systemPrompt, /不等待全组源码读完/);
         assert.match(request.systemPrompt, /避免先用 invoke 逐步跑通同一路径/);
         assert.match(request.systemPrompt, /摘要缺失排错所需信息时才用 read_feedback/);
-        assert.match(request.tools.find(tool => tool.name === "check_program")!.description, /execute the saved program in an independent clean environment/);
-        assert.match(request.tools.find(tool => tool.name === "finish")!.description, /returned by check_program/);
+        assert.match(request.tools.find(tool => tool.name === "check_program")!.description, /execute.*in a clean environment/);
+        assert.match(request.tools.find(tool => tool.name === "finish")!.description, /every source clause exactly once/);
+        assert.equal("semanticReview" in JSON.parse(request.prompt), false);
+      } else {
+        reviewed = true;
+        assert.deepEqual(request.tools.map(tool => tool.name), ["finish"]);
+        assert.match(request.systemPrompt, /调用 finish \{reviews:/);
+        assert.match(request.systemPrompt, /动作 WHEN.*action 收据/);
+        assert.match(request.systemPrompt, /passed:false.*不单独构成拒绝理由/);
+        assert.doesNotMatch(request.systemPrompt, /verifier-tools@|invoke \{|read_feedback|source_tree/);
       }
       return f.model.run(request);
     } } });
     const report = await verifier.check(f.job, new AbortController().signal);
     assert(explored);
+    assert(reviewed);
     assert(report.outcomes.every(outcome => outcome.status === "pass"));
   } finally { await f.cleanup(); }
 });

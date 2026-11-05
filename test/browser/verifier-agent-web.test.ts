@@ -65,7 +65,7 @@ for (const semanticReview of [false, true]) for (const mutant of [false, true]) 
         await invoke("finish", { reviews: [{ programId: evidence.programId, approved: true, reasons: [], clauseIds: clauses.map(clause => clause.id) }] });
       } else {
         assert.match(request.systemPrompt, /最终场景使用 check_program/);
-        assert.match(request.systemPrompt, /独立干净 case 中运行/);
+        assert.match(request.systemPrompt, /独立干净环境执行/);
         const tree = await invoke("source_tree", { depth: 1 }) as { entries: Array<{ path: string; kind: string }> };
         assert(tree.entries.some(entry => entry.path === "server.cjs" && entry.kind === "file"));
         assert(!tree.entries.some(entry => entry.path === "data"));
