@@ -182,7 +182,8 @@ class WebBuildSlot {
   contract?: ReturnType<typeof resolveRuntimeContract>;
   private port?: number;
   constructor(private readonly options: WebAdapterOptions, private readonly source: string, private readonly baseline: ContentRef) {
-    this.root = join(options.workspace, "web-" + randomUUID());
+    // Short names keep candidate dependency paths below Windows MAX_PATH.
+    this.root = join(options.workspace, "w" + randomUUID().replaceAll("-", "").slice(0, 12));
   }
   async prepare(signal: AbortSignal): Promise<void> {
     if (this.candidate) return;

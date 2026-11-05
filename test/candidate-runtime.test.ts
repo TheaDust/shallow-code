@@ -378,6 +378,21 @@ test("late source writes during a build cannot produce a credential", async () =
   });
 });
 
+test("Windows rejects candidate paths whose dependency tree would exceed MAX_PATH", { skip: process.platform !== "win32" }, async () => {
+  await withTempDir("shallow-candidate-long-", async (root) => {
+    const output = join(root, "output");
+    await mkdir(output);
+    const contract: ApplicationContract = {
+      adapterId: "web", adapterConfig: {}, installCommands: [], buildCommands: [],
+      startCommand: { executable: process.execPath, args: ["server.cjs"], cwd: "." },
+      buildTimeoutMs: 5_000, startTimeoutMs: 5_000,
+    };
+    const candidate = new CandidateRuntime(output, join(root, "x".repeat(200)), contract, new WebAppLifecycle());
+    try { await assert.rejects(candidate.prepare(), /too long for Windows/); }
+    finally { await candidate.close(); }
+  });
+});
+
 test("an old healthy process occupying the target port cannot pass verification", async () => {
   await fixture(async ({ output, candidate, contract }) => {
     await candidate.prepare();

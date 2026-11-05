@@ -87,6 +87,7 @@ test("Job slots reuse builds and one browser while cases keep independent proces
       assert.equal(launches, 2, "jobs do not share retained resources");
       await next.close();
       const [directory] = await readdir(workspace);
+      assert.match(directory!, /^w[0-9a-f]{12}$/, "worker names stay short for Windows path budgets");
       await writeFile(join(workspace, directory!, "candidate", "app", "built.txt"), "tampered");
       const rebuilt = await adapter.prepare(nextJob, signal);
       assert.notEqual((await identity(rebuilt)).candidate.buildId, nextBuild, "a modified artifact cannot reuse its build identity");

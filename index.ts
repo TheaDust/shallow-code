@@ -1,4 +1,4 @@
-import { access, copyFile, mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -304,6 +304,7 @@ async function executeProduction(
   const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY && process.stderr.isTTY && process.env.TERM !== "dumb");
   let tui: BuildTui | undefined = context.tui;
   let keepTui = false;
+  let verifierWorkspace: string | undefined;
   try {
     if (interactive && !tui) {
       tui = new BuildTui({
@@ -385,8 +386,12 @@ async function executeProduction(
           generatedPaths: pipelineOptions.applicationContract.generatedPaths, dataPaths: pipelineOptions.applicationContract.dataPaths })).ref;
         await atomicWrite(join(directory, "baseline.json"), JSON.stringify(initialDataSnapshot) + "\n");
       }
+      // Candidate builds create deep node_modules paths. Keep the disposable
+      // worker area under the short OS temp root instead of the run directory;
+      // otherwise Windows MAX_PATH can truncate esbuild's executable path.
+      verifierWorkspace = await mkdtemp(join(tmpdir(), "scw-"));
       const execution = await verifierAdapters.get(pipelineOptions.applicationContract.adapterId)({ artifacts, snapshots, spec: context.runRecord.projectSpec,
-        workspace: join(directory, "workers"), initialDataSnapshot,
+        workspace: verifierWorkspace, initialDataSnapshot,
         applicationContract: pipelineOptions.applicationContract });
       if (context.runRecord.bindingDigest && context.runRecord.bindingDigest !== execution.adapter.binding.digest) throw new Error("Verifier execution binding changed; start a new run");
       context.runRecord.bindingDigest = execution.adapter.binding.digest;
@@ -447,6 +452,7 @@ async function executeProduction(
     keepTui = true;
     return summary;
   } finally {
+    if (verifierWorkspace) await rm(verifierWorkspace, { recursive: true, force: true }).catch(() => {});
     if (!keepTui) tui?.stop();
   }
 }

@@ -14,6 +14,9 @@ import type { CandidateEvidence, RunEvent } from "../types.js";
 /** Headroom reserved before candidate dependency installs and production builds. */
 const CANDIDATE_INSTALL_HEADROOM_BYTES = 600 * 1_048_576;
 const CANDIDATE_BUILD_HEADROOM_BYTES = 500 * 1_048_576;
+/** Leave room for `frontend/node_modules/...` under the candidate on Windows. */
+const WINDOWS_MAX_PATH = 260;
+const WINDOWS_CANDIDATE_PATH_HEADROOM = 100;
 
 type Snapshot = Map<string, { digest: string; mode: number }>;
 type RunningApp = Awaited<ReturnType<ApplicationLifecycle["start"]>>;
@@ -110,6 +113,10 @@ export class CandidateRuntime implements ApplicationRuntimePort {
   }
 
   private async prepareBuild(): Promise<void> {
+    if (process.platform === "win32" && this.directory.length + WINDOWS_CANDIDATE_PATH_HEADROOM >= WINDOWS_MAX_PATH) {
+      throw new CandidatePreparationError("install",
+        `Candidate path is too long for Windows (${this.directory.length} characters): ${this.directory}. Use a shorter run or output directory.`);
+    }
     const started = Date.now();
     let stage: "install" | "build" | "candidate" = "candidate";
     this.commandAbort = new AbortController();
