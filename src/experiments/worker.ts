@@ -10,6 +10,7 @@ import { snapshotFiles } from "../run-record.js";
 import { runtimeEnvironment } from "../process-lifecycle.js";
 import { runProcess } from "./process.js";
 import { REPOSITORY, reportEntries, scoreReport, type ArcTask, type Method, type TestEntry } from "./protocol.js";
+import { evaluateScenarios, scenarioArguments } from "./scenario-evaluation.js";
 
 export type WorkerRequest =
   | { action: "generate"; method: Method; requirementsDir: string; projectDir: string; privateDir: string; timeoutMs: number | null }
@@ -47,11 +48,12 @@ export async function executeWorker(request: WorkerRequest): Promise<void> {
   await symlink(join(REPOSITORY, "node_modules"), join(directory, "node_modules"), process.platform === "win32" ? "junction" : "dir");
   const setup = join(directory, "setup-playwright.cjs");
   await copyFile(request.setupScript, setup);
-  const command = async (args: string[], name: string, extra: NodeJS.ProcessEnv = {}) => runProcess({ executable: process.execPath,
-    args, cwd: directory, env: runtimeEnvironment(extra), logFile: join(directory, `${name}.log`), timeoutMs: request.timeoutMs });
+  const command = async ([script, ...args]: string[], name: string, extra: NodeJS.ProcessEnv = {}) => runProcess({ executable: process.execPath,
+    args: [join(REPOSITORY, "src", "experiments", "node-command.mjs")], message: { script, args },
+    cwd: directory, env: runtimeEnvironment(extra), logFile: join(directory, `${name}.log`), timeoutMs: request.timeoutMs });
   const configure = async (url: string) => {
     const result = await command([setup, directory, url], "setup");
-    if (result.exitCode !== 0) throw new Error("ARC Playwright configuration failed; see setup.log");
+    if (result.exitCode !== 0) throw new Error(`ARC Playwright configuration failed: ${result.error ?? "see setup.log"}`);
   };
   await configure("http://127.0.0.1:1");
   const cli = join(REPOSITORY, "node_modules", "@playwright", "test", "cli.js");
@@ -79,17 +81,33 @@ export async function executeWorker(request: WorkerRequest): Promise<void> {
         env: { ...app.env, ARC_DB_FILE: join(app.dataDirectory!, "database.db") } }),
     } : adapter.lifecycle;
     runtime = new CandidateRuntime(request.projectDir!, join(directory, "candidate"), contract, lifecycle);
-    const app = await runtime.start(request.projectDir!, contract);
+    await runtime.prepare();
     const reportFile = join(directory, "playwright.json");
-    const result = await command([cli, "test", "--reporter=json"], "tests", { PLAYWRIGHT_JSON_OUTPUT_NAME: reportFile });
-    await app.assertUnchanged?.();
-    const report = JSON.parse(await readFile(reportFile, "utf8")) as JSONReport;
-    const score = scoreReport(request.catalog!, report);
-    evaluation = { status: !result.timedOut && (result.exitCode === 0 || result.exitCode === 1) && !score.errors.length ? "completed" : "error",
-      score, durationMs: Date.now() - started, directory: ".", candidate: app.candidate };
+    const result = await evaluateScenarios({ catalog: request.catalog!,
+      start: () => runtime!.start(request.projectDir!, contract),
+      record: cases => writeFile(join(directory, "cases.json"), JSON.stringify(cases, null, 2) + "\n"),
+      execute: async (entry, index) => {
+        const caseDirectory = join(directory, "cases", String(index + 1).padStart(4, "0"));
+        await mkdir(caseDirectory, { recursive: true });
+        const report = join(caseDirectory, "playwright.json");
+        const processResult = await command([cli, "test", ...scenarioArguments(entry), "--reporter=json", "--output", join(caseDirectory, "artifacts")],
+          `case-${index + 1}`, { PLAYWRIGHT_JSON_OUTPUT_NAME: report });
+        if (processResult.timedOut || ![0, 1].includes(processResult.exitCode ?? -1)) {
+          throw new Error(processResult.error ?? "Scenario runner did not complete; see case log");
+        }
+        return { report: JSON.parse(await readFile(report, "utf8")) as JSONReport, process: processResult };
+      } });
+    await writeFile(reportFile, JSON.stringify(result.report, null, 2) + "\n");
+    evaluation = { status: result.score.errors.length ? "error" : "completed", score: result.score,
+      durationMs: Date.now() - started, directory: ".", caseIsolation: "application-per-scenario", cases: "cases.json" };
   } catch (error) {
     evaluation = { status: "error", score: scoreReport(request.catalog!), durationMs: Date.now() - started, directory: ".", error: String(error) };
-  } finally { await runtime?.dispose(); }
+  } finally {
+    try { await runtime?.dispose(); }
+    catch (error) {
+      evaluation = { ...evaluation!, status: "error", error: `Application disposal failed: ${String(error)}` };
+    }
+  }
   await writeFile(join(directory, "evaluation.json"), JSON.stringify(evaluation, null, 2) + "\n");
 }
 

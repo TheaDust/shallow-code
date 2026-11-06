@@ -93,7 +93,7 @@ test("Runtime config supports independent Grouper, Builder and Verifier gateway 
 });
 
 test("Runtime config bounds the mainline Builder context window", () => {
-  assert.equal(parseBuilderContextWindow({}), 256_000);
+  assert.equal(parseBuilderContextWindow({}), 512_000);
   assert.equal(parseBuilderContextWindow({ SHALLOW_BUILDER_CONTEXT_WINDOW: "400000" }), 400_000);
   for (const value of ["131071", "1000001", "262144.5", "unbounded"]) {
     assert.throws(

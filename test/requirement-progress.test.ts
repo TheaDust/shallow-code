@@ -101,6 +101,19 @@ test("Only complete controller checkpoints with unambiguous requirement fields s
   });
 });
 
+test("Historical checkpoint identity accepts progress-bearing headers", async () => {
+  await withTempDir("shallow-progress-header-", async directory => {
+    const formatter = new HumanRunFormatter();
+    formatter.format(JSON.stringify({ at: "2026-11-06T00:00:00Z", type: "pipeline_started", detail: { requirements: 4 } }));
+    const line = formatter.format(JSON.stringify({ at: "2026-11-06T00:01:00Z", type: "checkpoint_saved",
+      sequence: 1, acceptedSha: "b".repeat(40), detail: { requirementIds: ["A.1", "A_1"], reason: "feature-history" } }));
+    assert.ok(line);
+    assert.match(line, /· 已实现 2\/4（50%）\]/);
+    await writeFile(join(directory, "progress.log"), `${line}\n`);
+    assert.deepEqual([...(await readHistoricalRequirementIds(directory)).requirementIds], ["A.1", "A_1"]);
+  });
+});
+
 test("Historical identity retains either readable source when the other is missing or unreadable", async () => {
   await withTempDir("shallow-partial-history-", async directory => {
     const missing = await readHistoricalRequirementIds(join(directory, "missing"));

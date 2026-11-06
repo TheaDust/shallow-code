@@ -9,6 +9,29 @@ test("Continuation logs distinguish existing implementation from new behavior ev
 
 import { HumanRunFormatter } from "../src/human-log.js";
 
+test("Human logs carry the implemented requirement percentage once the audit scope is known", () => {
+  const at = "2026-11-06T00:00:00Z";
+  const withoutScope = new HumanRunFormatter();
+  assert.doesNotMatch(formatLine(withoutScope, eventLine(at, "snapshot_sealed", {
+    detail: { snapshotId: "s0", sourceSha: "sha", requirementIds: ["A"], implementedRequirementIds: ["A"], sequence: 0 },
+  })), /已实现 \d+\/\d+/);
+  const formatter = new HumanRunFormatter();
+  assert.match(formatLine(formatter, eventLine(at, "pipeline_started", { detail: { requirements: 8 } })),
+    /\+0s · 已实现 0\/8（0%）\]/);
+  assert.match(formatLine(formatter, eventLine(at, "snapshot_sealed", { packetId: "g1",
+    detail: { snapshotId: "s1", sourceSha: "sha", requirementIds: ["A", "B", "C"], implementedRequirementIds: ["A", "B", "C"], sequence: 1 } })),
+    /· 已实现 3\/8（37%）\] 源码已封存/);
+  assert.match(formatLine(formatter, eventLine(at, "run_resumed", { detail: { requirementIds: ["A", "B"] } })),
+    /· 已实现 2\/8（25%）\]/);
+  assert.match(formatLine(formatter, eventLine(at, "checkpoint_saved", { acceptedSha: "a".repeat(40),
+    detail: { requirementIds: ["A", "B", "C", "D"], reason: "Verifier readiness" } })),
+    /· 已实现 4\/8（50%）\]/);
+  assert.match(formatLine(formatter, eventLine(at, "pipeline_finished", { detail: {
+    status: "partial", implementedRequirementIds: ["A", "B", "C", "D", "E", "F", "G", "H"],
+    verifiedRequirementIds: [], blockedRequirementIds: [], pendingRequirementIds: [], acceptedSha: "sha" } })),
+    /· 已实现 8\/8（100%）\]/);
+});
+
 function eventLine(at: string, type: string, rest: Record<string, unknown> = {}): string {
   return `${JSON.stringify({ at, type, ...rest })}\n`;
 }
@@ -201,10 +224,10 @@ test("HumanRunFormatter distinguishes bounded infrastructure recovery from Build
 test("HumanRunFormatter renders feature grouping stats at pipeline start", () => {
   const formatter = new HumanRunFormatter();
   const line = formatLine(formatter, eventLine("2026-09-16T00:00:00.000Z", "pipeline_started", {
-    detail: { requirements: 24, adapterId: "web", builderContextWindow: 256_000,
+    detail: { requirements: 24, adapterId: "web", builderContextWindow: 512_000,
       grouping: { packets: 6, requirements: 24, maxPacketSize: 5, crossModulePackets: 0, cohesionRate: 0.347, thresholdLimitedPackets: 0 } },
   }));
-  assert.match(line, /流水线启动；原子需求 24；应用适配器 web；Builder 上下文 256000；功能组 6$/);
+  assert.match(line, /流水线启动；原子需求 24；应用适配器 web；Builder 上下文 512000；功能组 6$/);
 });
 
 test("HumanRunFormatter exposes complete request waiting and failed attempts", () => {

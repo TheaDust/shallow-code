@@ -40,8 +40,8 @@ export function parseVerifierConfig(env: Record<string, string | undefined>): Ve
 export const MIN_BUILDER_CONTEXT_WINDOW = 131_072;
 export const MAX_BUILDER_CONTEXT_WINDOW = 1_000_000;
 
-/** Mainline Pi context limit. Keeping this below the gateway maximum prevents
- * repeated full-history input from overwhelming the cost of small packets. */
+/** Mainline Builder context limit. Verifier, Grouper and the requirements agent
+ * share the same 512K default; a run may override only the Builder window. */
 export function parseBuilderContextWindow(
   env: Record<string, string | undefined>,
 ): number {

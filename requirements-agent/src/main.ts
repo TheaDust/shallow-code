@@ -32,8 +32,8 @@ import { createDocumentReadTool } from "./read-tool.js";
 import { RequirementsTui } from "./tui.js";
 import { shellArgument, terminalTheme } from "../../src/terminal/theme.js";
 import { formatUsageSummary, type ModelRates } from "../../src/model-usage.js";
+import { DEFAULT_CONTEXT_WINDOW } from "../../src/builder/pi-model-config.js";
 
-const DEFAULT_CONTEXT_WINDOW = 256_000;
 const PROVIDER = "requirements-gateway";
 /** 自定义 read 与内置 ls 的工具名；通过 createAgentSession 的 tools 白名单启用。 */
 const READ_TOOL_NAME = "read";

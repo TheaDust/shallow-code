@@ -44,7 +44,7 @@ test("Worker waits for SDK overflow compaction and its delayed continuation befo
     requests.push((body.tools as unknown[] | undefined)?.length ?? 0);
     if (n === 2) {
       res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: { message: "maximum context length is 256000 tokens", code: "context_length_exceeded" } }));
+      res.end(JSON.stringify({ error: { message: "maximum context length is 512000 tokens", code: "context_length_exceeded" } }));
     } else {
       if (n === 3) await new Promise(resolve => setTimeout(resolve, 250));
       reply(res, n === 3 ? "Summary: the file exists. Finish the task." : "Implementation finished after recovery.", "stop", n === 1);
@@ -74,7 +74,7 @@ for (const reason of ["overflow", "threshold"] as const) {
         if (n === 4) assert.match(JSON.stringify(body.messages), /完成回执/);
         const content = n === 3 ? "Compaction summary, not a completion receipt."
           : n === 2 && empty ? "" : "Implementation finished with the original receipt.";
-        reply(res, content, "stop", n === 1, n === 2 ? reason === "overflow" ? 257_000 : 250_000 : n === 1 ? 230_000 : 100);
+        reply(res, content, "stop", n === 1, n === 2 ? reason === "overflow" ? 513_000 : 500_000 : n === 1 ? 230_000 : 100);
       }, async (client, app) => {
         const result = await client.run({ ...prompt, outputDir: app });
         assert.equal(result.outcome, "completed", result.summary);

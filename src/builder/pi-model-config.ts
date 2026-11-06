@@ -2,12 +2,13 @@ import type { ModelRates } from "../model-usage.js";
 
 /**
  * In-process gateway provider descriptor. The context window is the only
- * per-run tunable. Sequential implementation retains its conversation and
- * uses SDK compaction at this window. Cost rates (USD per million
- * tokens) come from the controller's price resolution so the SDK can report
- * per-session spend; an unset price keeps the historical zero rates.
+ * per-run tunable. Grouper, Builder, Verifier and the requirements agent share
+ * this default; Builder may override it for a run. Sequential implementation
+ * retains its conversation and uses SDK compaction at this window. Cost rates
+ * (USD per million tokens) come from the controller's price resolution so the
+ * SDK can report per-session spend; an unset price keeps the historical zero rates.
  */
-export const DEFAULT_CONTEXT_WINDOW = 256_000;
+export const DEFAULT_CONTEXT_WINDOW = 512_000;
 
 export function piProviderModel(model: string, contextWindow: number = DEFAULT_CONTEXT_WINDOW,
   headers?: Record<string, string>, cost?: ModelRates | null) {

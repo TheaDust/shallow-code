@@ -82,7 +82,8 @@ export async function readHistoricalRequirementIds(progressDirectory: string) {
 function historicalCheckpointIds(log: string): Set<string> {
   const ids = new Set<string>();
   // Match a complete HumanRunFormatter checkpoint event, not embedded receipt text.
-  const checkpoint = /^\[(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d \+(?:\d+s|\d+m[0-5]?\ds)\] 保存可运行检查点；[^；\r\n]+；需求 ([^；\r\n]*)；SHA [a-f0-9]{40}（功能验收状态单独记录） \[#[1-9]\d*\]$/;
+  // Newer lines carry a display-only "已实现 N/M（P%）" progress suffix in the header.
+  const checkpoint = /^\[(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d \+(?:\d+s|\d+m[0-5]?\ds)(?: · 已实现 \d+\/\d+（\d+%）)?\] 保存可运行检查点；[^；\r\n]+；需求 ([^；\r\n]*)；SHA [a-f0-9]{40}（功能验收状态单独记录） \[#[1-9]\d*\]$/;
   for (const line of log.split(/\r?\n/)) {
     const field = checkpoint.exec(line)?.[1];
     if (!field) continue;

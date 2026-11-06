@@ -17,19 +17,24 @@ export function verifierProgressLabel(progress: VerifierProgress): string {
 
 export class HumanRunFormatter {
   private firstAtMs: number | null = null;
+  private totalRequirements: number | null = null;
+  /** Builder-implemented requirements carried by the latest authoritative event; independent of verification. */
+  private readonly implemented = new Set<string>();
 
   format(rawLine: string): string | null {
     const event = parseEvent(rawLine);
     if (!event) return null;
+    this.trackProgress(event);
     const at = typeof event.at === "string" ? Date.parse(event.at) : Number.NaN;
     const elapsed = this.trackElapsed(at);
     const message = describe(event);
     if (message === null) return null;
     const elapsedSuffix = elapsed === null ? "" : ` +${elapsed}`;
+    const progress = this.progressText();
     const context = event.sequence ? ` [#${event.sequence}${event.attempt ? ` 尝试 ${event.attempt}` : ""}]` : "";
     const duration = pickNumber(event.detail, "durationMs");
     const durationText = duration === null ? "" : `；本阶段耗时 ${renderDuration(duration)}`;
-    return `[${renderClock(at)}${elapsedSuffix}] ${message.replace(/[\r\n]+/g, " ↵ ")}${durationText}${context}`;
+    return `[${renderClock(at)}${elapsedSuffix}${progress === null ? "" : ` · ${progress}`}] ${message.replace(/[\r\n]+/g, " ↵ ")}${durationText}${context}`;
   }
 
   private trackElapsed(atMs: number): string | null {
@@ -39,6 +44,46 @@ export class HumanRunFormatter {
       return "0s";
     }
     return renderDuration(atMs - this.firstAtMs);
+  }
+
+  /**
+   * Tracks the audit scope and cumulative implemented requirements so every
+   * human log line carries the current percentage. Implementation is a Builder
+   * claim; this is display-only and never grants verification.
+   */
+  private trackProgress(event: RunEvent): void {
+    const detail = event.detail as Record<string, unknown> | undefined;
+    if (event.type === "pipeline_started") {
+      const total = asNumber(detail?.requirements);
+      if (total !== null && total > 0) this.totalRequirements = total;
+      return;
+    }
+    if (event.type === "snapshot_sealed" && detail?.authoritative !== false) {
+      this.replaceImplemented(detail?.implementedRequirementIds);
+      return;
+    }
+    if (event.type === "checkpoint_saved" || event.type === "run_resumed") {
+      this.replaceImplemented(detail?.requirementIds);
+      return;
+    }
+    if (event.type === "module_rescued") {
+      for (const id of strings(detail?.requirementIds)) this.implemented.add(id);
+      return;
+    }
+    if (event.type === "pipeline_finished") this.replaceImplemented(detail?.implementedRequirementIds);
+  }
+
+  private replaceImplemented(value: unknown): void {
+    if (!Array.isArray(value)) return;
+    this.implemented.clear();
+    for (const id of strings(value)) this.implemented.add(id);
+  }
+
+  private progressText(): string | null {
+    const total = this.totalRequirements;
+    if (total === null || total <= 0) return null;
+    const implemented = Math.min(this.implemented.size, total);
+    return `已实现 ${implemented}/${total}（${Math.floor(implemented * 100 / total)}%）`;
   }
 }
 

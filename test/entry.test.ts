@@ -232,7 +232,7 @@ test("Agent entry picks a non-3000 probe port when the override is absent", asyn
     assert.ok(contract);
     assert.notEqual(webRuntimeConfig(contract).port, 3000);
     assert.equal(webRuntimeConfig(contract).baseUrl, `http://127.0.0.1:${webRuntimeConfig(contract).port}`);
-    assert.equal(received?.builderContextWindow, 256_000);
+    assert.equal(received?.builderContextWindow, 512_000);
   });
 });
 
