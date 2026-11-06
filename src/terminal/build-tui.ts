@@ -290,7 +290,8 @@ export class BuildView implements Component {
       if (typeof raw !== "object" || raw === null) continue;
       const item = raw as Partial<RunScenarioResult>;
       if (typeof item.requirementId !== "string" || typeof item.scenarioId !== "string") continue;
-      if (item.status !== "verified" && item.status !== "failed" && item.status !== "inconclusive" && item.status !== "not_run") continue;
+      if (item.status !== "verified" && item.status !== "failed" && item.status !== "inconclusive" &&
+        item.status !== "pending" && item.status !== "not_run") continue;
       this.scenarioStatuses.set(scenarioKey(item.requirementId, item.scenarioId), item.status);
     }
   }
@@ -779,7 +780,7 @@ export class BuildTui {
     this.treeViewer = undefined;
     const viewer = new TextViewer(this.tui, this.theme, "运行帮助",
       "d  查看详细日志，包含安装、构建与模型用量\nt  查看需求树与每个需求的实现/验收状态；按 v 切换完整 requirements.yaml\n   子树按聚合状态着色：已实现 / 已验证 / 失败 / 证据不足 / 阻塞 / 未实现\nc  展开或收起花费明细；默认只显示总计\n↑↓ / 滚轮 / PgUp / PgDn  滚动页面\nEsc  返回运行状态\nCtrl+C  运行中中断，运行结束后退出\n\n" +
-      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，功能组检查完成时累计，直到后续检查明确失败或无法判断\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Verifier：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告与项目路径追加在详细日志末尾；在项目目录再次执行 shallow build 可继续开发，按 Ctrl+C 退出。",
+      "已实现：Builder 已写出该需求的实现，独立验收尚未给出结果；进度条按已实现计数\n已验证：最近一次独立验收通过，交付前仍会复验；新模块封存不会清空已有覆盖\n场景覆盖：需求内场景通过独立验收的比例，功能组检查完成时累计，直到后续检查明确失败或无法判断；已实现但尚未返回结果计入待验收\n证据不足：本轮验收无法确定行为结果，需求仍算已实现\n未实现：Builder 尚未实现该需求\n可运行检查点：保存了可运行实现，功能验收单独记录\n沿用跳过：不计入本轮验收通过\n后台 Verifier：与 Builder 并行，单独显示检查阶段与排队数量\n程序复核通过：测试程序合格，需求结果仍由当前版本重放确定\n\n完整日志持续保存到 run-log.txt；运行结束后 TUI 保持打开，报告与项目路径追加在详细日志末尾；在项目目录再次执行 shallow build 可继续开发，按 Ctrl+C 退出。",
       () => this.closeViewer());
     setMouseTracking(this.tui.terminal, true);
     this.overlay = this.tui.showOverlay(viewer, { width: "100%", anchor: "top-left" });
@@ -799,7 +800,7 @@ export function buildResult(summary: RunSummary, runDirectory: string, patch: st
     : summary.status === "partial" ? t.warning("◐ 部分完成") : t.error("× 交付失败");
   const scenarios = summary.scenarioResults ?? [];
   const scenarioVerified = scenarios.filter(item => item.status === "verified").length;
-  const scenarioDetails = [["失败", "failed"], ["无法判断", "inconclusive"], ["未运行", "not_run"]]
+  const scenarioDetails = [["失败", "failed"], ["待验收", "pending"], ["无法判断", "inconclusive"], ["未运行", "not_run"]]
     .map(([label, key]) => ({ label, count: scenarios.filter(item => item.status === key).length }))
     .filter(item => item.count > 0).map(item => `${item.label} ${item.count}`).join(" · ");
   const lines = ["", ...terminalHeader("Result", width, t), "", " " + t.strong(status),

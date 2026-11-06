@@ -123,8 +123,8 @@ export async function writeRunReport(runDirectory: string, summary: RunSummary):
     "| 需求 | 当前状态 |", "| --- | --- |", ...rows, "",
     ...((summary.scenarioResults?.length ?? 0) > 0 ? [
       `场景覆盖：已验证 ${summary.scenarioResults!.filter(item => item.status === "verified").length}/${summary.scenarioResults!.length}` +
-        (["failed", "inconclusive", "not_run"] as const).map(status => {
-          const labels = { failed: "失败", inconclusive: "无法判断", not_run: "未运行" } as const;
+        (["failed", "pending", "inconclusive", "not_run"] as const).map(status => {
+          const labels = { failed: "失败", pending: "待验收", inconclusive: "无法判断", not_run: "未运行" } as const;
           const count = summary.scenarioResults!.filter(item => item.status === status).length;
           return count ? `，${labels[status]} ${count}` : "";
         }).join(""), "",

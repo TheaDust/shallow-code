@@ -90,7 +90,7 @@
 <text x="828" y="604" class="label" text-anchor="middle">业务失败</text>
 <g id="confirm" data-node="true"><rect x="840" y="684" width="328" height="110" rx="2" fill="#f8eae5" stroke="#b5664e" stroke-width="1.2"/>
 <text x="858" y="714" class="node-title" text-anchor="start">业务失败独立复现</text>
-<text x="858" y="742" class="small" text-anchor="start">全新应用 / 数据 / 浏览器</text>
+<text x="858" y="742" class="small" text-anchor="start">全新应用 / 数据 / 浏览器上下文</text>
 <text x="858" y="768" class="small" text-anchor="start">复现后 fail；否则 inconclusive</text>
 </g>
 <path d="M 840 740 H 764" class="edge" style="stroke: #b5664e; marker-end: url(#arrow-red)"/>
@@ -101,9 +101,9 @@
 <text x="454" y="768" class="small" text-anchor="start">全部结果子句 pass → verified</text>
 </g>
 <line x1="32" y1="684" x2="32" y2="767" stroke="#527ba4" stroke-width="2"/>
-<text x="48" y="704" class="section" text-anchor="start">历史程序重放 · 可选</text>
-<text x="48" y="732" class="small" text-anchor="start">模块 / 修复 / 最终阶段</text>
-<text x="48" y="758" class="small" text-anchor="start">兼容程序直接执行，跳过探索</text>
+<text x="48" y="704" class="section" text-anchor="start">程序复用与全量重放</text>
+<text x="48" y="732" class="small" text-anchor="start">跨次兼容程序直接执行</text>
+<text x="48" y="758" class="small" text-anchor="start">全量重放仅最终阶段</text>
 <line x1="32" y1="834" x2="1168" y2="834" stroke="#d8dde1" stroke-width="1"/>
-<text x="32" y="863" class="small" text-anchor="start">默认关闭独立语义复核与历史程序重放；验收依据始终是所标注快照的真实执行收据。</text>
+<text x="32" y="863" class="small" text-anchor="start">默认关闭独立语义复核与最终全量重放；跨次程序复用不受重放开关控制，验收依据始终是所标注快照的真实执行收据。</text>
 </svg>

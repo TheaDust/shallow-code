@@ -24,8 +24,14 @@ export interface ToolCallCount {
 
 export interface ExecutionTiming {
   turns: number;
-  /** Time the model spent producing assistant messages, excluding tool execution. */
+  /** Time between SDK stream-start and message-end; excludes waiting for stream-start. */
   modelMsTotal: number;
+  /** Full conversational requests, including pre-stream waiting and failed attempts. */
+  modelRequestMsTotal: number;
+  modelWaitMsTotal: number;
+  modelRequestCount: number;
+  modelErrorCount: number;
+  modelErrorMsTotal: number;
   toolMsTotal: number;
   longestTools: ToolDuration[];
   /** Per-tool invocation counts, highest first. Names only, never arguments or output. */
@@ -41,23 +47,41 @@ export interface ExecutionSummary {
 
 /** Aggregates Pi session events into bounded token/duration diagnostics. */
 export class PiExecutionCollector {
+  private requestStartMs: number | undefined;
   private modelStartMs: number | undefined;
   private readonly runningTools = new Map<string, { name: string; startMs: number }>();
   private readonly toolDurations: ToolDuration[] = [];
   private readonly toolCounts = new Map<string, number>();
   private turns = 0;
   private modelMsTotal = 0;
+  private modelRequestMsTotal = 0;
+  private modelRequestCount = 0;
+  private modelErrorCount = 0;
+  private modelErrorMsTotal = 0;
   private toolMsTotal = 0;
   private outputBytes = 0;
 
+  requestStarted(atMs: number): void {
+    if (this.requestStartMs !== undefined) return;
+    this.requestStartMs = atMs;
+    this.modelRequestCount += 1;
+  }
+
   modelStarted(atMs: number): void {
+    this.requestStarted(atMs);
     if (this.modelStartMs !== undefined) return;
     this.modelStartMs = atMs;
   }
 
-  modelEnded(atMs: number): void {
-    if (this.modelStartMs === undefined) return;
-    this.modelMsTotal += Math.max(0, atMs - this.modelStartMs);
+  modelEnded(atMs: number, requestDurationMs?: number, failed = false): void {
+    if (this.requestStartMs === undefined) return;
+    const streamedMs = this.modelStartMs === undefined ? 0 : Math.max(0, atMs - this.modelStartMs);
+    // SDK duration starts when the provider stream is created, before network waiting.
+    const requestMs = Math.max(streamedMs, requestDurationMs ?? Math.max(0, atMs - this.requestStartMs));
+    this.modelMsTotal += streamedMs;
+    this.modelRequestMsTotal += requestMs;
+    if (failed) { this.modelErrorCount += 1; this.modelErrorMsTotal += requestMs; }
+    this.requestStartMs = undefined;
     this.modelStartMs = undefined;
   }
 
@@ -85,7 +109,10 @@ export class PiExecutionCollector {
     this.turns += 1;
   }
 
-  summarize(tokens?: TokenCounts, longestLimit = 5): ExecutionSummary {
+  summarize(tokens?: TokenCounts, longestLimit = 5, atMs = Date.now()): ExecutionSummary {
+    // Heartbeats also account for a request still waiting when the worker is interrupted.
+    const requestMs = this.modelRequestMsTotal + (this.requestStartMs === undefined ? 0 : Math.max(0, atMs - this.requestStartMs));
+    const streamedMs = this.modelMsTotal + (this.modelStartMs === undefined ? 0 : Math.max(0, atMs - this.modelStartMs));
     const longestTools = [...this.toolDurations]
       .sort((a, b) => b.durationMs - a.durationMs)
       .slice(0, Math.max(0, longestLimit));
@@ -96,7 +123,12 @@ export class PiExecutionCollector {
       usage: tokens ? { status: "available", ...tokens } : { status: "unavailable" },
       timing: {
         turns: this.turns,
-        modelMsTotal: this.modelMsTotal,
+        modelMsTotal: streamedMs,
+        modelRequestMsTotal: requestMs,
+        modelWaitMsTotal: Math.max(0, requestMs - streamedMs),
+        modelRequestCount: this.modelRequestCount,
+        modelErrorCount: this.modelErrorCount,
+        modelErrorMsTotal: this.modelErrorMsTotal,
         toolMsTotal: this.toolMsTotal,
         longestTools,
         toolCounts,

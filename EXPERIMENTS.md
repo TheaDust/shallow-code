@@ -1,6 +1,37 @@
-# ARC 两组对照实验
+# ARC-Bench 对照实验
 
 实验入口默认读取相邻的 `../arc-bench-modified`，运行 `baseline`（单 Agent 全需求开发与自检）和 `shallow`（完整 Grouper / Builder / Verifier 流程），用基准中的 Playwright 测试评估最终应用。两组各自使用全新工程、私有运行目录、数据和程序缓存；配对顺序在任务与重复间交替。`--concurrency N` 控制同时执行的实验单元数，默认 1。
+
+通过 `--methods baseline,arc,shallow` 加入 Agentic Requirement Compiler（ARC）方法，或用 `--methods arc` 单独运行。默认仍选择 `baseline,shallow`。多方法按题目与重复序号轮换执行顺序；两方法保留原有的交替顺序。
+
+## ARC baseline
+
+ARC 与 ShallowCode 源码仓库保持同级。默认读取 `../agentic-requirement-compiler`，可用 `--arc-root` 指定其他位置；`--arc-python` 指定已安装 ARC 依赖的 Python 3.11+，缺省为 `python`。首次使用先在 ARC 仓库初始化模板子模块，并安装其 `pyproject.toml` 中的依赖：
+
+```powershell
+git -C ../agentic-requirement-compiler submodule update --init --recursive
+python -m pip install -e ../agentic-requirement-compiler
+npm.cmd run experiment -- prepare --tasks bookstack --methods arc,shallow --repeats 1
+```
+
+也可在独立虚拟环境安装依赖，然后传入 `--arc-python <虚拟环境的python路径>`；实验实际从封存源码运行，不要求 editable 安装。`prepare` 在 `private/inputs/<task>/arc-requirements.yaml` 同时保存 ARC 实际使用的格式，便于生成前检查。
+
+检查 `prepare` 打印的目录后，用相同参数续跑；`--arc-python`、`--arc-root` 如有指定也须保持一致：
+
+```powershell
+$experimentDir = "prepare 打印的输出路径"
+npm.cmd run experiment -- run --tasks bookstack --methods arc,shallow --repeats 1 --output-dir $experimentDir --resume
+```
+
+ARC 使用同一基准需求包的独立副本。实验层只做确定性语法兼容：`description.text` 作为描述、图片映射到 `visual_reference`，每个 `Given/When/Then/And/But` 子句映射到原生 `keyword/content` 步骤。保留需求与场景 ID、源步骤 ID、图片身份和引用；拆分步骤 ID 为 `<源步骤ID>::<子句名>`，原 ID 另存于 `source_step_id`。不推断依赖、种子或业务预期。原始 YAML 和步骤映射仍在该单元的 `private/source-requirements/` 留档，实际输入在 `private/requirements/`。
+
+准备阶段将 ARC 源码和模板按逐文件摘要封存到 `private/arc-source/`，排除 `.env`、Git 元数据、Python 缓存和 `node_modules`；运行调用此副本的原生 CLI，记录其实际工作流结果。协议保存源码摘要、Python 路径/版本及 Python 依赖版本，续跑检查版本与输入是否改变。ARC 算法及生成流程属于外部仓库，实验层维护桥接和运行合同。
+
+ARC 默认沿用 Builder 的网关/模型配置，也可通过 `ARC_MODEL`、`ARC_BASE_URL`、`ARC_API_KEY` 单独覆盖。`ARC_OPENAI_API_MODE`、`ARC_OPENAI_REASONING_EFFORT` 等 ARC 原生设置直接传递；`VISUAL_MODEL`、`VISUAL_BASE_URL`、`VISUAL_API_KEY` 可配置视觉模型，缺省与 ARC 文本模型相同。`SHALLOW_REFERENCE_IMAGES` 控制所有选中方法是否使用图片，关闭时 ARC 跳过视觉分析。非密钥配置写入协议，凭证只经环境传递。ARC 单价使用 `ARC_COST_*` 覆盖，视觉模型使用 `VISUAL_COST_*`，否则沿用 `MODEL_COST_*` 或已知模型目录。
+
+每个 ARC 单元使用独立的动态端口、工作区与生成数据库。评测复用同一外部 Playwright 测试清单及候选运行器，按 ARC Web 模板合同安装依赖、构建 frontend、在 backend 执行 `npm run start`；在独立副本使用全新 SQLite 文件，并由生成应用正常初始化需求数据。实验层写入 `shallowcode.config.json` 声明此运行合同，不将生成过程的数据库带入评分。ARC 编译失败或超时仍尝试评分。
+
+ARC 内部工作流成功记 `completed`，完成但存在失败节点记 `partial`，初始化等阶段失败记 `failed`；原生 CLI 返回 0 不单独作为成功依据。用量读取 ARC 自己的 `.arc/model_usage.jsonl`，缓存 token 从普通输入中扣除后分别计费；缺失字段、截断记录、超时或中断标为统计不完整。`arc` 与其他方法并列进入现有 CSV/JSON 汇总。真实模型质量、耗时及费用须通过实际实验测量。
 
 ## 环境与输入
 

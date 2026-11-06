@@ -50,9 +50,15 @@ test("Feature-group and final logs report scenario coverage alongside requiremen
       requirementResults: { A: "verified", B: "failed" },
       scenarioResults: [{ requirementId: "A", scenarioId: "a-1", status: "verified" },
         { requirementId: "B", scenarioId: "b-1", status: "failed" }],
-      scenarioCoverage: { total: 3, verified: 1, failed: 1, inconclusive: 0, notRun: 1 } },
+      scenarioCoverage: { total: 3, verified: 1, failed: 1, inconclusive: 0, pending: 0, notRun: 1 } },
   }));
   assert.match(moduleLine, /场景覆盖 1\/3（失败 1，未运行 1）/);
+  const pendingLine = formatLine(formatter, eventLine(at, "module_check_finished", {
+    detail: { moduleId: "orders", snapshotId: "s2", published: true,
+      requirementResults: { A: "verified" },
+      scenarioCoverage: { total: 3, verified: 1, failed: 0, inconclusive: 0, pending: 1, notRun: 1 } },
+  }));
+  assert.match(pendingLine, /场景覆盖 1\/3（待验收 1，未运行 1）/);
   const finalLine = formatLine(formatter, eventLine(at, "pipeline_finished", {
     detail: { status: "partial", implementedRequirementIds: ["A", "B"], verifiedRequirementIds: ["A"],
       failedRequirementIds: ["B"], blockedRequirementIds: [], inconclusiveRequirementIds: [], pendingRequirementIds: [],
@@ -201,6 +207,18 @@ test("HumanRunFormatter renders feature grouping stats at pipeline start", () =>
   assert.match(line, /流水线启动；原子需求 24；应用适配器 web；Builder 上下文 256000；功能组 6$/);
 });
 
+test("HumanRunFormatter exposes complete request waiting and failed attempts", () => {
+  const line = formatLine(new HumanRunFormatter(), eventLine("2026-09-17T00:00:00.000Z", "builder_finished", {
+    packetId: "p", detail: { outcome: "failed", execution: { timing: {
+      modelRequestMsTotal: 12_000, modelWaitMsTotal: 9_000, modelMsTotal: 3_000,
+      modelRequestCount: 2, modelErrorCount: 1, modelErrorMsTotal: 5_000, toolMsTotal: 1_000,
+    } } },
+  }));
+  assert.match(line, /模型请求 12s.*流开始前等待 9s.*流式响应 3s.*工具 1s/);
+  assert.match(line, /模型请求 2 次/);
+  assert.match(line, /失败请求 1 次 \/ 5s/);
+});
+
 test("HumanRunFormatter breaks Builder time into model and tool and reports tokens", () => {
   const formatter = new HumanRunFormatter();
   const detailed = formatLine(formatter, eventLine("2026-09-17T00:00:00.000Z", "builder_finished", {
@@ -318,7 +336,7 @@ test("Human logs cover Verifier queue, module checks and cancellation", () => {
     /开始最终范围检查；版本 snap-2；需求 A$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", featureGroupId: "feature-a-1", published: true,
-      requirementResults: { A: "verified" }, scenarioCoverage: { total: 2, verified: 1, failed: 0, inconclusive: 0, notRun: 1 } } })),
+      requirementResults: { A: "verified" }, scenarioCoverage: { total: 2, verified: 1, failed: 0, inconclusive: 0, pending: 0, notRun: 1 } } })),
     /功能组检查完成（feature-a-1）；版本 snap-2；当前结果已发布；场景覆盖 1\/2（未运行 1）$/);
   assert.match(formatLine(formatter, eventLine(base, "module_check_finished",
     { detail: { moduleId: "M", moduleEpoch: 2, snapshotId: "snap-2", published: true, requirementResults: { A: "verified" } } })),

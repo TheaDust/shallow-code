@@ -204,6 +204,19 @@ test("Every Builder mode includes shared handoff and public-entry contracts", ()
   }
 });
 
+test("Builder prompt ties domain lookup to the architecture handoff", () => {
+  const compiled = compileBuilderPrompt(implementRequest());
+  assert.match(compiled.systemPrompt, /超过约 300 行的文件只读相关片段/);
+  assert.match(compiled.systemPrompt, /不递归扫描无关源码/);
+  assert.match(compiled.taskPrompt, /按 ARCHITECTURE\.md 中本包领域的入口、同步点和测试定位相关代码/);
+  assert.match(compiled.taskPrompt, /预计读取的入口\/测试和需要同步修改的调用方/);
+  assert.match(compiled.taskPrompt, /更新了哪些 ARCHITECTURE\.md 条目/);
+
+  const repair = compileBuilderPrompt(repairRequest("repair"));
+  assert.match(repair.taskPrompt, /按失败涉及的领域读取 ARCHITECTURE\.md 条目/);
+  assert.match(repair.taskPrompt, /只更新实际改变的条目/);
+});
+
 test("Module and consolidated repair prompts bound self-test and maintain architecture handoff notes", () => {
   for (const request of [implementRequest(), repairRequest("repair")]) {
     const compiled = compileBuilderPrompt(request);
@@ -212,6 +225,14 @@ test("Module and consolidated repair prompts bound self-test and maintain archit
     assert.match(compiled.taskPrompt, /不超过十行/);
     assert.doesNotMatch(compiled.taskPrompt, /再重新 `prepare` 并完成关键路径检查/);
   }
+});
+
+test("Only the final implementation packet requests application-wide self-test finalization", () => {
+  const request = implementRequest();
+  if (request.mode !== "implement") throw new Error("unexpected mode");
+  assert.match(compileBuilderPrompt(request).taskPrompt, /开发阶段：功能组增量/);
+  request.finalImplementation = true;
+  assert.match(compileBuilderPrompt(request).taskPrompt, /开发阶段：本轮最后一个实现包/);
 });
 
 test("Builder includes all seed data in implementation and both packet repair modes", () => {

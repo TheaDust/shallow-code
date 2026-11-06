@@ -60,6 +60,17 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   return runtime;
 }
 
+test("Only the last pending implementation packet is marked for self-test finalization", async () => {
+  await withModulePipeline(async f => {
+    await attach(f);
+    await f.run();
+    const requests = f.builder.requests.filter(request => request.mode === "implement");
+    assert.ok(requests.length >= 2);
+    assert.ok(requests.slice(0, -1).every(request => request.finalImplementation === false));
+    assert.equal(requests.at(-1)!.finalImplementation, true);
+  });
+});
+
 test("Fresh builds continue interrupted or completed work in place and reimplement changed requirements", async () => {
   for (const interrupted of [true, false]) await withModulePipeline(async f => {
     await attach(f);
@@ -743,14 +754,15 @@ test("Feature-group and final events report cumulative scenario coverage", async
     assert.equal(first.detail?.scenarioCoverage?.total, 3);
     assert.equal(first.detail?.scenarioCoverage?.verified, 2);
     assert.equal(first.detail?.scenarioCoverage?.failed, 0);
-    assert.equal((first.detail?.scenarioCoverage?.inconclusive ?? 0) + (first.detail?.scenarioCoverage?.notRun ?? 0), 1,
+    assert.equal((first.detail?.scenarioCoverage?.inconclusive ?? 0) + (first.detail?.scenarioCoverage?.pending ?? 0) +
+      (first.detail?.scenarioCoverage?.notRun ?? 0), 1,
       "only the feature group that just finished is verified");
     assert.deepEqual(first.detail?.scenarioResults?.map(item => [item.requirementId, item.scenarioId, item.status]),
       [["A", "A-1", "verified"], ["A", "A-2", "verified"]]);
     const final = events.find(event => event.type === "pipeline_finished");
     assert.equal(final?.type, "pipeline_finished");
     if (final?.type !== "pipeline_finished") return;
-    assert.deepEqual(final.detail?.scenarioCoverage, { total: 3, verified: 3, failed: 0, inconclusive: 0, notRun: 0 });
+    assert.deepEqual(final.detail?.scenarioCoverage, { total: 3, verified: 3, failed: 0, inconclusive: 0, pending: 0, notRun: 0 });
     assert.equal(result.scenarioResults?.filter(item => item.status === "verified").length, 3);
   });
 });

@@ -14,7 +14,7 @@ import { ModelUsageTotals } from "./model-usage.js";
 import type { PipelineDeps, PipelineOptions, RunCheckOutcome, RunSummary } from "./pipeline.js";
 import { BUILDER_TIMEOUT_MS } from "./runtime-config.js";
 import { RunStateStore } from "./run-state.js";
-import { auditPackets, featureGroupPackets, featureGroupingFromIds, makePacket, requirementModuleId } from "./scheduler.js";
+import { auditPackets, DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets, featureGroupingFromIds, makePacket, requirementModuleId } from "./scheduler.js";
 import type { AtomicRequirement, RequirementCatalog, RequirementStatus, RunEvent, RunScenarioResult,
   ScenarioCoverageCounts, WorkPacket } from "./types.js";
 import type { ArtifactStore } from "./verifier/artifacts.js";
@@ -434,7 +434,7 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
     const grouper = deps.grouper;
     if (!savedGroups && grouper && implementationCatalog.requirements.length) {
       await state.record({ at: now(), type: "feature_grouping_started", detail: { requirements: implementationCatalog.requirements.length,
-        limits: { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20_000 } } });
+        limits: DEFAULT_FEATURE_GROUP_THRESHOLDS } });
       const at = Date.now(); let reason: string | undefined; let source: "llm" | "deterministic" = "deterministic";
       try {
         // The grouper owns its Pi session and retries without discarding tool history.
@@ -480,7 +480,8 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       }
       await emitPhase("implementation");
       await state.record({ at: now(), type: "packet_selected", packetId: packet.id, detail: { requirementIds: packet.requirementIds, names: requirements.map(item => item.name) } });
-      const request: BuilderRequest = { mode: "implement", packet, projectContext: contextFor(packet), outputDir: options.outputDir, applicationContract: options.applicationContract };
+      const request: BuilderRequest = { mode: "implement", packet, projectContext: contextFor(packet), outputDir: options.outputDir, applicationContract: options.applicationContract,
+        finalImplementation: catalog.requirements.every(item => implemented.has(item.id) || packet.requirementIds.includes(item.id)) };
       let result = await build(request);
       if (result.outcome !== "completed" && !result.gatewayFailure) result = await build(request, true);
       if (result.outcome !== "completed") {
@@ -712,7 +713,9 @@ function scenarioResults(requirements: AtomicRequirement[], outcomes: CheckOutco
     const clauses = outcomes.filter(item => item.requirementId === requirement.id && item.scenarioId === scenario.id);
     const status = outcomeStatus(clauses);
     return { requirementId: requirement.id, scenarioId: scenario.id, name: scenario.name,
-      status: !implemented.has(requirement.id) ? "not_run" as const : status === "verified" ? "verified" as const
+      status: !implemented.has(requirement.id) ? "not_run" as const
+        : clauses.length === 0 ? "pending" as const
+        : status === "verified" ? "verified" as const
         : status === "failed" ? "failed" as const : "inconclusive" as const,
       caseIds: [...new Set(clauses.map(item => item.clauseId))],
       reason: clauses.filter(item => item.status !== "pass").map(item => item.reason).filter(Boolean).join("; ") };
@@ -723,7 +726,7 @@ function scenarioCoverage(requirements: AtomicRequirement[], outcomes: CheckOutc
   const results = scenarioResults(requirements, outcomes, implemented);
   const count = (status: RunScenarioResult["status"]) => results.filter(item => item.status === status).length;
   return { total: results.length, verified: count("verified"), failed: count("failed"),
-    inconclusive: count("inconclusive"), notRun: count("not_run") };
+    inconclusive: count("inconclusive"), pending: count("pending"), notRun: count("not_run") };
 }
 function outcomeKey(item: ScopedOutcome): string { return JSON.stringify([item.requirementId, item.scenarioId, item.clauseId, item.initialState?.digest]); }
 async function repairObservation(artifacts: ArtifactStore, packet: WorkPacket, outcomes: CheckOutcome[], startup: boolean,

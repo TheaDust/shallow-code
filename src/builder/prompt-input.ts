@@ -37,6 +37,7 @@ export interface DeliveryFailureObservation {
 export type BuilderPromptInput = (
   | {
       mode: "implement";
+      finalImplementation?: boolean;
       packet: WorkPacket;
       projectContext: BuilderProjectContext;
       outputDir: string;

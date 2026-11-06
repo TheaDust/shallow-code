@@ -49,6 +49,7 @@ export function buildBuilderTaskPrompt(request: BuilderPromptInput): string {
           PACKET_ATTEMPT: String(request.packet.attempt),
           OUTPUT_DIR: request.outputDir,
           ACTION: implementAction(),
+          DEVELOPMENT_STAGE: request.finalImplementation ? "本轮最后一个实现包" : "功能组增量",
           PRODUCT_CONTEXT: productContextSection(request.projectContext.product),
           PROJECT_CONTEXT: projectContextSection(request.projectContext),
           WORK_PACKET: workPacketSection(request.packet),

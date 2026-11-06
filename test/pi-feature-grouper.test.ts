@@ -78,7 +78,7 @@ test("Pi Grouper preserves original inputs and output, exposes only its two nati
     assert.deepEqual(await grouper.group(input, { timeoutMs: 10_000, onUsage: item => { usage.push(item); } }), proposal);
     assert.equal(requests.length, 2);
     const source = JSON.parse(text(requests[0].messages.find(message => message.role === "user")!));
-    assert.deepEqual(source.limits, { maxRequirements: 4, maxScenarios: 12, maxTextChars: 20000 });
+    assert.deepEqual(source.limits, { maxRequirements: 6, maxScenarios: 12, maxTextChars: 30000 });
     assert.equal(source.requirements.length, input.requirements.length);
     for (let i = 0; i < input.requirements.length; i++) {
       assert.equal(source.requirements[i].text, input.requirements[i].text);

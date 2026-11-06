@@ -13,7 +13,7 @@ import { REPOSITORY, reportEntries, scoreReport, type ArcTask, type Method, type
 
 export type WorkerRequest =
   | { action: "generate"; method: Method; requirementsDir: string; projectDir: string; privateDir: string; timeoutMs: number | null }
-  | { action: "catalog" | "evaluate"; task: ArcTask; setupScript: string; directory: string; projectDir?: string;
+  | { action: "catalog" | "evaluate"; method?: Method; task: ArcTask; setupScript: string; directory: string; projectDir?: string;
       catalog?: TestEntry[]; timeoutMs: number | null };
 
 async function copyInputs(source: string, files: Record<string, string>, target: string): Promise<void> {
@@ -26,6 +26,7 @@ async function copyInputs(source: string, files: Record<string, string>, target:
 
 export async function executeWorker(request: WorkerRequest): Promise<void> {
   if (request.action === "generate") {
+    if (request.method === "arc") throw new Error("ARC generation must use the experiment's frozen compiler runner");
     process.env.SHALLOW_RUN_DIR = join(request.privateDir, "runs");
     process.env.SHALLOW_CAPTURE_SSE = "0";
     if (request.method === "baseline") {
@@ -73,7 +74,11 @@ export async function executeWorker(request: WorkerRequest): Promise<void> {
     const adapter = applications.get(spec.adapter ?? "web");
     const contract = await adapter.configure(spec, {});
     await configure(new URL(webRuntimeConfig(contract).browserPath, webRuntimeConfig(contract).baseUrl).href);
-    runtime = new CandidateRuntime(request.projectDir!, join(directory, "candidate"), contract, adapter.lifecycle);
+    const lifecycle = request.method === "arc" ? {
+      start: (appDir: string, app: typeof contract) => adapter.lifecycle.start(appDir, { ...app,
+        env: { ...app.env, ARC_DB_FILE: join(app.dataDirectory!, "database.db") } }),
+    } : adapter.lifecycle;
+    runtime = new CandidateRuntime(request.projectDir!, join(directory, "candidate"), contract, lifecycle);
     const app = await runtime.start(request.projectDir!, contract);
     const reportFile = join(directory, "playwright.json");
     const result = await command([cli, "test", "--reporter=json"], "tests", { PLAYWRIGHT_JSON_OUTPUT_NAME: reportFile });

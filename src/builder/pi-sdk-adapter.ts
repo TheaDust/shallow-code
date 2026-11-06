@@ -118,6 +118,12 @@ export async function createPiSession(input: PiSessionOptions,
   let toolCallsAtOverflowCompaction: number | undefined;
   let recoveryError: string | undefined;
   const collector = new PiExecutionCollector();
+  const onPayload = session.agent.onPayload;
+  session.agent.onPayload = async (payload, model) => {
+    const transformed = await onPayload?.(payload, model);
+    collector.requestStarted(Date.now());
+    return transformed;
+  };
   const snapshot = (): PiSessionSnapshot => {
     const stats = session.getSessionStats();
     const tokens = stats.tokens;
@@ -145,7 +151,8 @@ export async function createPiSession(input: PiSessionOptions,
     else if (event.type === "turn_end") collector.turnEnded();
     else if (event.type === "message_start" && event.message.role === "assistant") collector.modelStarted(atMs);
     else if (event.type === "message_end" && event.message.role === "assistant") {
-      collector.modelEnded(atMs);
+      collector.modelEnded(atMs, event.message.durationMs,
+        event.message.stopReason === "error" || event.message.stopReason === "aborted");
       // Failed attempts may be omitted from projected history before settlement.
       lastAssistantResponse = event.message;
       collector.outputProduced(event.message.content.filter(part => part.type === "text")

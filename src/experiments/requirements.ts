@@ -6,6 +6,30 @@ export interface ArcSourceMap {
     normalizedStepIndices: number[]; references: string[] }>;
 }
 
+/** ARC's native input contract; retain source identities and references on every clause. */
+export function normalizeArcCompilerRequirements(source: string): string {
+  normalizeArcRequirements(source); // Share the benchmark field/identity validation.
+  const root = parse(source);
+  if (root.type) return source;
+  const convert = (node: any): object => ({
+    ...node,
+    type: node.children?.length ? "FOLDER" : "ATOMIC",
+    description: [node.description.text, ...(node.description.image ?? []).map((image: any) =>
+      `![${image.id}${image.page ? `; page=${image.page}` : ""}](${image.reference})`)].join("\n\n"),
+    visual_reference: (node.description.image ?? []).map((image: any) => ({
+      reference_id: image.id, image_path: image.reference, ...(image.page === undefined ? {} : { page: image.page }),
+    })),
+    scenarios: (node.scenarios ?? []).map((scenario: any) => ({ ...scenario,
+      steps: scenario.steps.flatMap((step: any) => Object.entries(step)
+        .filter(([key]) => key !== "id" && key !== "references")
+        .map(([key, content]) => ({ id: `${step.id}::${key}`, source_step_id: step.id,
+          keyword: key.toUpperCase(), content, references: step.references ?? [] }))),
+    })),
+    children: (node.children ?? []).map(convert),
+  });
+  return stringify({ ...convert(root), type: "FOLDER" }, { lineWidth: 0 });
+}
+
 /** Syntax conversion only. Source wording and reference relationships remain development inputs. */
 export function normalizeArcRequirements(source: string): {
   yaml: string; requirements: number; scenarios: number; sourceMap: ArcSourceMap | null;

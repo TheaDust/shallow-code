@@ -18,7 +18,7 @@ test("ROOT-direct atomics share a module while preserving scenario capacity and 
   const catalog = makeCatalog([
     requirement("ADJUST", 0, { folder: ["ROOT"], scenarios: Array(8).fill("Adjust scenario") }),
     requirement("RESET", 1, { folder: ["ROOT"], dependencies: ["ADJUST"], scenarios: Array(3).fill("Reset scenario") }),
-    requirement("LAYOUT", 2, { folder: ["ROOT"], scenarios: Array(3).fill("Layout scenario") }),
+    requirement("LAYOUT", 2, { folder: ["ROOT"], scenarios: Array(6).fill("Layout scenario") }),
   ]);
   assert.deepEqual(featureGroupPackets(catalog).packets.map(packet => packet.requirementIds),
     [["ADJUST", "RESET"], ["LAYOUT"]]);
@@ -56,13 +56,13 @@ test("Cross-module dependency chains schedule atomics in order without merging m
 });
 
 test("The requirement-count threshold closes a group and overflow forms the next one", () => {
-  const catalog = makeCatalog(Array.from({ length: 7 }, (_, i) =>
+  const catalog = makeCatalog(Array.from({ length: 13 }, (_, i) =>
     requirement(`G${i + 1}`, i, { folder: ["ROOT", "M", "P"] })));
   const { packets, stats } = featureGroupPackets(catalog);
   assert.deepEqual(packets.map(item => item.requirementIds),
-    [["G1", "G2", "G3", "G4"], ["G5", "G6", "G7"]]);
-  assert.equal(stats.maxPacketSize, 4);
-  assert.equal(stats.thresholdLimitedPackets, 1);
+    [["G1", "G2", "G3", "G4", "G5", "G6"], ["G7", "G8", "G9", "G10", "G11", "G12"], ["G13"]]);
+  assert.equal(stats.maxPacketSize, 6);
+  assert.equal(stats.thresholdLimitedPackets, 2);
 });
 
 test("The scenario-count threshold skips an overflowing candidate but keeps extending", () => {
@@ -150,9 +150,9 @@ test("Earlier-stage dependencies neither block grouping nor become current-stage
 });
 
 test("Real requirement trees group deterministically with unique coverage", async () => {
-  const expectedPackets: Record<string, number> = { "12306": 33, bookstack: 13, ctrip: 36,
-    keep: 11, prestashop: 25, stackoverflow: 21, ticketbooking: 1,
-    "official-competition/hackathon--github": 14, "official-competition/hackathon--sheet": 13 };
+  const expectedPackets: Record<string, number> = { "12306": 24, bookstack: 11, ctrip: 27,
+    keep: 9, prestashop: 19, stackoverflow: 16, ticketbooking: 1,
+    "official-competition/hackathon--github": 13, "official-competition/hackathon--sheet": 13 };
   for (const [name, count] of Object.entries(expectedPackets)) {
     const catalog = await loadRequirementCatalog(resolve(`data/${name}/requirements.yaml`));
     const { packets, stats } = featureGroupPackets(catalog);

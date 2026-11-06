@@ -6,14 +6,15 @@ import { parseBuilderContextWindow, parseVerifierConfig, readEnvFile, readGatewa
 import { assertPrivateRunDirectory, digest, lockWorkspace, snapshotFiles } from "../run-record.js";
 import { atomicWrite } from "../verifier/artifacts.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
-import { csv, deserializePlan, deserializeResult, discoverArcTasks, implementationDigest, inside, METHODS, planCells,
+import { csv, DEFAULT_METHODS, deserializePlan, deserializeResult, discoverArcTasks, implementationDigest, inside, METHODS, planCells,
   REPOSITORY, resolveStoredPath, scoreReport, serializePlan, serializeResult, storedPath, summarize,
   type CellResult, type ExperimentPlan, type Method, type TestEntry } from "./protocol.js";
 import type { WorkerRequest } from "./worker.js";
-import { normalizeArcRequirements } from "./requirements.js";
+import { normalizeArcCompilerRequirements, normalizeArcRequirements } from "./requirements.js";
 import { loadRequirementCatalog } from "../catalog.js";
+import { arcEnvironment, freezeArcBaseline, inspectArcBaseline, runArcBaseline } from "./arc-baseline.js";
 
-const HELP = `ARC two-method experiments
+const HELP = `ARC-Bench experiments
 
 npm run experiment -- list [--bench-root ../arc-bench-modified]
 npm run experiment -- plan --tasks bookstack --repeats 1 --concurrency 2
@@ -26,7 +27,9 @@ npm run experiment -- summarize --output-dir <existing-experiment>
 Options:
   --bench-root <dir>               ARC repository (default: ../arc-bench-modified relative to ShallowCode)
   --tasks <id,id>                  Selected tasks (default: all discovered tasks)
-  --methods <baseline,shallow>     Selected methods (default: baseline,shallow)
+  --methods <baseline,arc,shallow> Selected methods (default: baseline,shallow)
+  --arc-root <dir>                ARC compiler checkout (default: ../agentic-requirement-compiler)
+  --arc-python <executable>       Python 3.11+ with ARC dependencies (default: python)
   --repeats <n>                    Independent paired repetitions (default: 2)
   --concurrency <n>                Maximum simultaneous experiment cells (default: 1)
   --output-dir <dir>               Experiment artifacts (default: outputs/<task(s)>-<UTC timestamp>)
@@ -40,7 +43,7 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   if (!["help", "--help", "-h", "list", "plan", "prepare", "run", "summarize"].includes(command)) throw new Error(`Unknown command: ${command}`);
   const values = new Map<string, string>();
   let resume = false;
-  const names = ["--bench-root", "--tasks", "--methods", "--repeats", "--concurrency", "--output-dir", "--generation-timeout-ms", "--evaluation-timeout-ms"];
+  const names = ["--bench-root", "--tasks", "--methods", "--repeats", "--concurrency", "--output-dir", "--generation-timeout-ms", "--evaluation-timeout-ms", "--arc-root", "--arc-python"];
   for (let index = 1; index < argv.length; index++) {
     const key = argv[index];
     if (key === "--resume") { resume = true; continue; }
@@ -58,7 +61,7 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   if (tasks && (tasks.some(task => !/^[a-zA-Z0-9_-]+$/.test(task)) || new Set(tasks).size !== tasks.length)) {
     throw new Error("--tasks must contain unique task IDs separated by commas");
   }
-  const methodValues = values.get("--methods")?.split(",") ?? [...METHODS];
+  const methodValues = values.get("--methods")?.split(",") ?? [...DEFAULT_METHODS];
   if (methodValues.some(method => !METHODS.includes(method as Method)) || new Set(methodValues).size !== methodValues.length) {
     throw new Error(`--methods must contain unique methods from ${METHODS.join(",")}`);
   }
@@ -68,6 +71,8 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
     throw new Error("--resume and summarize require --output-dir pointing to an existing experiment");
   }
   return { command, tasks, methods, resume,
+    arcRoot: values.has("--arc-root") ? resolve(cwd, values.get("--arc-root")!) : resolve(REPOSITORY, "../agentic-requirement-compiler"),
+    arcPython: values.get("--arc-python") ?? "python",
     benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench-modified"),
     outputDir: values.has("--output-dir") ? resolve(cwd, values.get("--output-dir")!) : undefined,
     outputRoot: resolve(cwd, "outputs"),
@@ -91,15 +96,17 @@ export async function createPlan(options: ReturnType<typeof parseExperimentArgs>
   const timestamp = new Date().toISOString().replace(/[-:.]/g, "");
   const outputDir = options.outputDir ?? join(options.outputRoot, `${selected.map(task => task.id).join("+")}-${timestamp}`);
   if (inside(options.benchRoot, outputDir)) throw new Error("Experiment output must be outside arc-bench");
+  const arc = options.methods.includes("arc") ? await inspectArcBaseline(options.arcRoot, options.arcPython) : undefined;
+  if (arc && inside(arc.root, outputDir)) throw new Error("Experiment output must be outside the ARC compiler");
   const settingEntries = Object.entries(env).filter(([key]) =>
-    /^(MODEL$|MODEL_COST_|OPENAI_BASE_URL$|SHALLOW_)/.test(key) &&
+    /^(MODEL$|MODEL_COST_|OPENAI_BASE_URL$|SHALLOW_|ARC_|VISUAL_)/.test(key) &&
     !/API_KEY|SECRET|PASSWORD|TOKEN|SHALLOW_RUN_DIR|SHALLOW_CAPTURE_SSE|SHALLOW_PROBE_PORT|SHALLOW_EVAL_PORT/i.test(key));
   const settings = Object.fromEntries(settingEntries.sort(([a], [b]) => a.localeCompare(b)));
   const setupScript = join(await realpath(options.benchRoot), "setup-playwright.cjs");
   const playwright = JSON.parse(await readFile(join(REPOSITORY, "node_modules/@playwright/test/package.json"), "utf8"));
   return { version: 1, benchRoot: await realpath(options.benchRoot), outputDir, setupScript, setupDigest: digest(await readFile(setupScript)),
     codeDigest: await implementationDigest(), nodeVersion: process.version, playwrightVersion: playwright.version, settings,
-    repeats: options.repeats, methods: options.methods, concurrency: options.concurrency,
+    repeats: options.repeats, methods: options.methods, concurrency: options.concurrency, ...(arc ? { arc } : {}),
     generationTimeoutMs: options.generationTimeoutMs, evaluationTimeoutMs: options.evaluationTimeoutMs,
     tasks: selected, cells: planCells(selected.map(task => task.id), options.repeats, options.methods) };
 }
@@ -137,6 +144,7 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
   const run = dependencies.runProcess ?? runProcess;
   // Keep both benchmark and implementation sources intact, including directory aliases.
   await assertPrivateRunDirectory(plan.benchRoot, outputDir);
+  if (plan.arc) await assertPrivateRunDirectory(plan.arc.root, outputDir);
   const manifestFile = join(outputDir, "experiment.json");
   if (await exists(manifestFile)) {
     if (!resume) throw new Error("Experiment already exists; use --resume with identical options or choose a new output directory");
@@ -160,6 +168,8 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
       logFile, timeoutMs, message, signal });
   };
   try {
+    const arcSource = join(outputDir, "private", "arc-source");
+    if (plan.arc) await freezeArcBaseline(plan.arc, arcSource);
     const setupScript = join(outputDir, "private", "setup-playwright.cjs");
     if (!await exists(setupScript)) {
       const source = await readFile(plan.setupScript);
@@ -178,6 +188,7 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
       await writeFile(join(dirname(normalizedFile), "source-requirements.yaml"), source);
       await saveJson(join(dirname(normalizedFile), "conversion-map.json"), normalized.sourceMap);
       await writeFile(normalizedFile, normalized.yaml);
+      if (plan.arc) await writeFile(join(dirname(normalizedFile), "arc-requirements.yaml"), normalizeArcCompilerRequirements(source));
       await loadRequirementCatalog(normalizedFile);
       const directory = join(outputDir, "private", "catalog", task.id);
       const catalogFile = join(directory, "catalog.json");
@@ -223,20 +234,27 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
         const normalized = normalizeArcRequirements(await readFile(join(requirementsDir, "requirements.yaml"), "utf8"));
         if (digest(normalized.yaml) !== task.normalizedRequirementsDigest) throw new Error("ARC input conversion changed");
         await saveJson(join(sourceDirectory, "conversion-map.json"), normalized.sourceMap);
-        await writeFile(join(requirementsDir, "requirements.yaml"), normalized.yaml);
+        await writeFile(join(requirementsDir, "requirements.yaml"), cell.method === "arc"
+          ? normalizeArcCompilerRequirements(await readFile(join(sourceDirectory, "requirements.yaml"), "utf8")) : normalized.yaml);
         await mkdir(projectDir, { recursive: true });
-        const processResult = await worker({ action: "generate", method: cell.method, requirementsDir, projectDir, privateDir,
-          timeoutMs: plan.generationTimeoutMs }, join(directory, "generation.log"), plan.generationTimeoutMs, true);
-        const runRoot = join(privateDir, "runs");
-        const runDirs = await exists(runRoot) ? await readdir(runRoot) : [];
-        const reportPaths = runDirs.map(name => join(runRoot, name, "result.json"));
-        let report: { status: string; modelUsage?: CellResult["generation"]["modelUsage"]; usageComplete?: boolean } | undefined;
-        for (const path of reportPaths) if (await exists(path)) report = await readJson(path);
-        generation = { status: processResult.timedOut ? "timed_out" : ![0, 2].includes(processResult.exitCode ?? -1) ? "failed"
-          : report?.status === "delivered" ? "completed" : report?.status ?? "failed",
-          exitCode: processResult.exitCode, durationMs: processResult.durationMs,
-          modelUsage: report?.modelUsage ?? null, usageComplete: !processResult.timedOut && Boolean(report?.modelUsage) && report?.usageComplete !== false,
-          ...(processResult.error ? { error: processResult.error } : {}) };
+        if (cell.method === "arc") {
+          if (!plan.arc) throw new Error("ARC method requires a frozen compiler specification");
+          generation = await runArcBaseline({ spec: plan.arc, sourceDir: arcSource, requirementsDir, projectDir, privateDir,
+            env: childEnv, timeoutMs: plan.generationTimeoutMs, signal }, run);
+        } else {
+          const processResult = await worker({ action: "generate", method: cell.method, requirementsDir, projectDir, privateDir,
+            timeoutMs: plan.generationTimeoutMs }, join(directory, "generation.log"), plan.generationTimeoutMs, true);
+          const runRoot = join(privateDir, "runs");
+          const runDirs = await exists(runRoot) ? await readdir(runRoot) : [];
+          const reportPaths = runDirs.map(name => join(runRoot, name, "result.json"));
+          let report: { status: string; modelUsage?: CellResult["generation"]["modelUsage"]; usageComplete?: boolean } | undefined;
+          for (const path of reportPaths) if (await exists(path)) report = await readJson(path);
+          generation = { status: processResult.timedOut ? "timed_out" : ![0, 2].includes(processResult.exitCode ?? -1) ? "failed"
+            : report?.status === "delivered" ? "completed" : report?.status ?? "failed",
+            exitCode: processResult.exitCode, durationMs: processResult.durationMs,
+            modelUsage: report?.modelUsage ?? null, usageComplete: !processResult.timedOut && Boolean(report?.modelUsage) && report?.usageComplete !== false,
+            ...(processResult.error ? { error: processResult.error } : {}) };
+        }
         await saveJson(generationFile, generation);
       }
       const catalog = catalogs.get(task.id)!;
@@ -244,7 +262,7 @@ export async function runExperiment(plan: ExperimentPlan, outputDir: string, env
       const before = await snapshotFiles(projectDir);
       const evaluations = (await readdir(directory)).filter(name => /^evaluation-\d+$/.test(name));
       const evaluationDir = join(directory, `evaluation-${evaluations.length + 1}`);
-      const evaluated = await worker({ action: "evaluate", task, setupScript, projectDir,
+      const evaluated = await worker({ action: "evaluate", method: cell.method, task, setupScript, projectDir,
         directory: evaluationDir, catalog, timeoutMs: plan.evaluationTimeoutMs }, join(evaluationDir, "worker.log"), plan.evaluationTimeoutMs);
       const evaluationFile = join(evaluationDir, "evaluation.json");
       const storedEvaluation = await exists(evaluationFile) ? await readJson<CellResult["evaluation"]>(evaluationFile) : undefined;
@@ -288,7 +306,7 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
   for (const [key, value] of Object.entries(environment)) if (value !== undefined) env[key] = value;
   // Resolve defaults into the frozen protocol; no hidden benchmark metadata enters generation.
   env.SHALLOW_REFERENCE_IMAGES = referenceImagesEnabled(env) ? "1" : "0";
-  env.SHALLOW_BUILDER_CONTEXT_WINDOW = String(parseBuilderContextWindow(env));
+  if (options.methods.some(method => method !== "arc")) env.SHALLOW_BUILDER_CONTEXT_WINDOW = String(parseBuilderContextWindow(env));
   if (options.methods.includes("shallow")) {
     const verifier = parseVerifierConfig(env);
     env.SHALLOW_VERIFIER_SEMANTIC_REVIEW = verifier.semanticReview ? "1" : "0";
@@ -306,8 +324,9 @@ export async function experimentMain(argv = process.argv.slice(2), environment: 
     return 0;
   }
   if (options.command === "run") {
-    const roles = options.methods.includes("shallow") ? ["builder", "grouper", "verifier"] : ["builder"];
+    const roles = options.methods.includes("shallow") ? ["builder", "grouper", "verifier"] : options.methods.includes("baseline") ? ["builder"] : [];
     for (const role of roles) readGatewayConfig(env, role);
+    if (options.methods.includes("arc")) arcEnvironment(env);
   }
   process.stderr.write(`[ARC experiment] output ${storedPath(process.cwd(), plan.outputDir)}\n`);
   const summary = await runExperiment(plan, plan.outputDir, env, options.resume,

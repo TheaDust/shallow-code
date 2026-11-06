@@ -240,14 +240,24 @@ function describeBuilderExecution(value: unknown): string {
   const timing = asRecord(execution.timing);
   const parts: string[] = [];
   const modelMs = asNumber(timing?.modelMsTotal);
+  const requestMs = asNumber(timing?.modelRequestMsTotal);
+  const waitMs = asNumber(timing?.modelWaitMsTotal);
   const toolMs = asNumber(timing?.toolMsTotal);
-  if (modelMs !== null || toolMs !== null) {
+  if (requestMs !== null || modelMs !== null || toolMs !== null) {
     const segments = [
-      modelMs === null ? null : `模型 ${renderDuration(modelMs)}`,
+      requestMs === null ? (modelMs === null ? null : `模型 ${renderDuration(modelMs)}`)
+        : `模型请求 ${renderDuration(requestMs)}`,
+      requestMs === null || waitMs === null ? null : `流开始前等待 ${renderDuration(waitMs)}`,
+      requestMs === null || modelMs === null ? null : `流式响应 ${renderDuration(modelMs)}`,
       toolMs === null ? null : `工具 ${renderDuration(toolMs)}`,
     ].filter((segment): segment is string => segment !== null);
     parts.push(`耗时分布 ${segments.join(" / ")}`);
   }
+  const requestCount = asNumber(timing?.modelRequestCount);
+  if (requestCount !== null) parts.push(`模型请求 ${requestCount} 次`);
+  const errorCount = asNumber(timing?.modelErrorCount);
+  const errorMs = asNumber(timing?.modelErrorMsTotal);
+  if (errorCount !== null && errorCount > 0) parts.push(`失败请求 ${errorCount} 次${errorMs === null ? "" : ` / ${renderDuration(errorMs)}`}`);
   const turns = asNumber(timing?.turns);
   if (turns !== null) parts.push(`轮次 ${turns}`);
   const toolCalls = asNumber(execution.toolCalls);
@@ -387,9 +397,11 @@ function scenarioCoverageText(detail: Record<string, unknown> | undefined): stri
   if (total <= 0) return "";
   const count = (key: string, status: string) => asNumber(coverage?.[key]) ?? results.filter(item => item.status === status).length;
   const failed = count("failed", "failed");
+  const pending = count("pending", "pending");
   const inconclusive = count("inconclusive", "inconclusive");
   const notRun = count("notRun", "not_run");
-  const extras = [failed ? `失败 ${failed}` : null, inconclusive ? `无法判断 ${inconclusive}` : null,
+  const extras = [failed ? `失败 ${failed}` : null, pending ? `待验收 ${pending}` : null,
+    inconclusive ? `无法判断 ${inconclusive}` : null,
     notRun ? `未运行 ${notRun}` : null].filter((item): item is string => item !== null);
   return `；场景覆盖 ${verified}/${total}${extras.length ? `（${extras.join("，")}）` : ""}`;
 }

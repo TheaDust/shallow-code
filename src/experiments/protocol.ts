@@ -5,10 +5,12 @@ import type { JSONReport, JSONReportSuite } from "@playwright/test/reporter";
 import { normalizeArcRequirements } from "./requirements.js";
 import { digest, snapshotFiles } from "../run-record.js";
 import type { UsageSummary } from "../model-usage.js";
+import type { ArcBaselineSpec } from "./arc-baseline.js";
 
 export const REPOSITORY = fileURLToPath(new URL("../../", import.meta.url));
-export const METHODS = ["baseline", "shallow"] as const;
+export const METHODS = ["baseline", "arc", "shallow"] as const;
 export type Method = typeof METHODS[number];
+export const DEFAULT_METHODS: readonly Method[] = ["baseline", "shallow"];
 
 export interface ArcTask {
   id: string;
@@ -34,6 +36,7 @@ export interface ExperimentPlan {
   repeats: number;
   /** Selected methods; absent in manifests written before method filtering. */
   methods?: Method[];
+  arc?: ArcBaselineSpec;
   concurrency: number;
   /** null means no experiment-level wall deadline; internal stage limits still apply. */
   generationTimeoutMs: number | null;
@@ -82,12 +85,14 @@ export function resolveStoredPath(base: string, value: string): string {
 export function serializePlan(plan: ExperimentPlan, base: string): ExperimentPlan {
   const path = (value: string) => storedPath(base, value);
   return { ...plan, benchRoot: path(plan.benchRoot), outputDir: path(plan.outputDir), setupScript: path(plan.setupScript),
+    ...(plan.arc ? { arc: { ...plan.arc, root: path(plan.arc.root), python: path(plan.arc.python) } } : {}),
     tasks: plan.tasks.map(task => ({ ...task, requirementsDir: path(task.requirementsDir), testsDir: path(task.testsDir) })) };
 }
 
 export function deserializePlan(plan: ExperimentPlan, base: string): ExperimentPlan {
   const path = (value: string) => resolveStoredPath(base, value);
   return { ...plan, benchRoot: path(plan.benchRoot), outputDir: path(plan.outputDir), setupScript: path(plan.setupScript),
+    ...(plan.arc ? { arc: { ...plan.arc, root: path(plan.arc.root), python: path(plan.arc.python) } } : {}),
     tasks: plan.tasks.map(task => ({ ...task, requirementsDir: path(task.requirementsDir), testsDir: path(task.testsDir) })) };
 }
 
@@ -130,12 +135,14 @@ export async function implementationDigest(): Promise<string> {
   return digest(JSON.stringify(files));
 }
 
-/** Alternating order reduces systematic baseline-first effects across paired runs. */
-export function planCells(tasks: readonly string[], repeats: number, methods: readonly Method[] = METHODS): ExperimentPlan["cells"] {
+/** Rotate methods across tasks/repeats; two-method runs retain their alternating order. */
+export function planCells(tasks: readonly string[], repeats: number, methods: readonly Method[] = DEFAULT_METHODS): ExperimentPlan["cells"] {
   const selected = METHODS.filter(method => methods.includes(method));
   if (!selected.length) throw new Error("At least one method is required");
-  return Array.from({ length: repeats }, (_, index) => tasks.flatMap((task, taskIndex) =>
-    ((index + taskIndex) % 2 ? [...selected].reverse() : [...selected]).map(method => ({ task, repeat: index + 1, method })))).flat();
+  return Array.from({ length: repeats }, (_, index) => tasks.flatMap((task, taskIndex) => {
+    const offset = (index + taskIndex) % selected.length;
+    return [...selected.slice(offset), ...selected.slice(0, offset)].map(method => ({ task, repeat: index + 1, method }));
+  })).flat();
 }
 
 export function reportEntries(report: JSONReport): TestEntry[] {
@@ -165,7 +172,7 @@ export function scoreReport(expected: readonly TestEntry[], report?: JSONReport)
 
 export function summarize(plan: ExperimentPlan, results: CellResult[]) {
   const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
-  const selected = plan.methods ?? METHODS;
+  const selected = plan.methods ?? DEFAULT_METHODS;
   const methods = METHODS.filter(method => selected.includes(method));
   const byTask = plan.tasks.flatMap(task => methods.map(method => {
     const rows = results.filter(row => row.task === task.id && row.method === method);

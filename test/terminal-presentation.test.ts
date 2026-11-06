@@ -400,11 +400,12 @@ test("Result card offers in-place continuation and separates skips from verifica
     inconclusiveRequirementIds: ["B"], skippedRequirementIds: ["C"],
     scenarioResults: [{ requirementId: "A", scenarioId: "a-1", name: "a-1", status: "verified" as const, caseIds: [] },
       { requirementId: "A", scenarioId: "a-2", name: "a-2", status: "failed" as const, caseIds: [] },
-      { requirementId: "B", scenarioId: "b-1", name: "b-1", status: "inconclusive" as const, caseIds: [] }] };
+      { requirementId: "B", scenarioId: "b-1", name: "b-1", status: "inconclusive" as const, caseIds: [] },
+      { requirementId: "B", scenarioId: "b-2", name: "b-2", status: "pending" as const, caseIds: [] }] };
   const partial = buildResult(summary, "E:\\runs\\user's run", "changes.patch", "demo", 65_000, false);
   assert.match(partial, /总耗时\s+01:05/);
   assert.match(partial, /已验证 1.*证据不足 1/);
-  assert.match(partial, /场景覆盖 1\/3 · 失败 1 · 无法判断 1/);
+  assert.match(partial, /场景覆盖 1\/4 · 失败 1 · 待验收 1 · 无法判断 1/);
   assert.match(partial, /沿用跳过 1/);
   assert.match(partial, /在项目目录再次执行 shallow build/);
   assert.doesNotMatch(partial, /shallow build (apply|resume)/);
@@ -649,7 +650,7 @@ test("Scenario coverage accumulates across module boundaries and decreases only 
       { requirementId: "A", scenarioId: "a-create", name: "创建", status: "verified", caseIds: [] },
       { requirementId: "A", scenarioId: "a-cancel", name: "取消", status: "failed", caseIds: [] },
     ],
-    scenarioCoverage: { total: 3, verified: 1, failed: 1, inconclusive: 0, notRun: 1 } });
+    scenarioCoverage: { total: 3, verified: 1, failed: 1, inconclusive: 0, pending: 0, notRun: 1 } });
   assert.match(view.render(80).join("\n"), /已验证 1\/2.*场景覆盖 1\/3/);
   assert.match(view.requirementTreeText(terminalTheme(false)), /创建订单\s+\[已验证\]\s+场景 1\/2/);
 
@@ -664,7 +665,7 @@ test("Scenario coverage accumulates across module boundaries and decreases only 
       { requirementId: "A", scenarioId: "a-cancel", name: "取消", status: "failed", caseIds: [] },
       { requirementId: "B", scenarioId: "b-cancel", name: "取消", status: "verified", caseIds: [] },
     ],
-    scenarioCoverage: { total: 3, verified: 2, failed: 1, inconclusive: 0, notRun: 0 } });
+    scenarioCoverage: { total: 3, verified: 2, failed: 1, inconclusive: 0, pending: 0, notRun: 0 } });
   assert.match(view.render(80).join("\n"), /已验证 1\/2.*场景覆盖 2\/3/,
     "explicit failures remove requirement coverage while independently verified scenarios stay counted");
   const tree = view.requirementTreeText(terminalTheme(false));

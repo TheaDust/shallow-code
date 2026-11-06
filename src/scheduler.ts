@@ -18,9 +18,9 @@ export interface FeatureGroupThresholds {
 }
 
 export const DEFAULT_FEATURE_GROUP_THRESHOLDS: FeatureGroupThresholds = {
-  maxRequirements: 4,
+  maxRequirements: 6,
   maxScenarios: 12,
-  maxTextChars: 20_000,
+  maxTextChars: 30_000,
 };
 
 export interface FeatureGrouping {

@@ -76,6 +76,9 @@ test("Module action assets retain placeholders and bounded self-test responsibil
   assert.match(selfTest, /默认实际执行/);
   assert.match(selfTest, /独立于运行数据和构建产物的确定性测试设置 reuse=true/);
   assert.match(selfTest, /先完成同一改动面的实现与测试/);
+  assert.match(selfTest, /功能组增量完成时交接局部检查结果/);
+  assert.match(selfTest, /本轮最后一个实现包.*统一执行一次 all、项目类型检查和构建/);
+  assert.doesNotMatch(selfTest, /交接前再跑 all/);
   assert.match(selfTest, /同一源码状态不重复全量测试、类型检查或构建/);
   assert.match(selfTest, /状态与集成检查按当前输入实际执行/);
   assert.match(selfTest, /将实施计划中的既有前置纳入本包相关测试/);
@@ -106,6 +109,31 @@ test("Module action assets retain placeholders and bounded self-test responsibil
   for (const key of ["FAILURE_STAGE", "FAILURE_COMMAND", "FAILURE_EXPECTED", "FAILURE_ACTUAL"]) {
     assert.ok(delivery.includes(`{{${key}}}`));
   }
+});
+
+test("Builder architecture handoff indexes domains before scanning source", () => {
+  const notes = loadPrompt("builder", "architecture-notes");
+  const system = loadPrompt("builder", "builder-system");
+  const implement = loadPrompt("builder", "action-implement");
+  const repair = loadPrompt("builder", "action-repair");
+  const receipt = loadPrompt("builder", "receipt");
+
+  assert.match(notes, /按领域组织，不按目录堆叠/);
+  assert.match(notes, /每个领域条目至少写清以下三项/);
+  assert.match(notes, /\*\*入口\*\*/);
+  assert.match(notes, /\*\*同步点\*\*/);
+  assert.match(notes, /\*\*测试\*\*/);
+  assert.match(notes, /共享路由、端点、种子段或状态形状按领域或区段拆开写/);
+  assert.match(notes, /不要先递归扫描源码树/);
+  assert.match(notes, /只更新实际改变的条目/);
+  assert.match(notes, /不要为了字节数删除入口、同步点或测试指针/);
+  assert.match(notes, /只在本次交接完成时检查一次/);
+  assert.doesNotMatch(system, /先看项目目录/);
+  assert.match(system, /超过约 300 行的文件只读相关片段/);
+  assert.match(system, /不递归扫描无关源码/);
+  assert.match(implement, /预计读取的入口\/测试和需要同步修改的调用方/);
+  assert.match(repair, /按失败涉及的领域读取 ARCHITECTURE\.md 条目/);
+  assert.match(receipt, /更新了哪些 ARCHITECTURE\.md 条目/);
 });
 
 test("task templates carry their placeholders", () => {

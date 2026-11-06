@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { loadRequirementCatalog } from "../src/catalog.js";
 import { parseFeatureGrouping } from "../src/feature-grouper.js";
 import { validateGrouping } from "../src/feature-grouping-tools.js";
-import { featureGroupPackets } from "../src/scheduler.js";
+import { DEFAULT_FEATURE_GROUP_THRESHOLDS, featureGroupPackets } from "../src/scheduler.js";
 import type { RequirementCatalog } from "../src/types.js";
 
 const groups = (ids: string[][]) => ({ groups: ids.map(requirementIds => ({ requirementIds, purpose: "共同状态操作" })), scenarioPrerequisites: [] });
@@ -52,19 +52,19 @@ test("Grouping rejects duplicate, missing, unknown, reversed and cross-module as
 
 test("Grouping uses original capacity metrics and keeps a single oversized atomic intact", async () => {
   const catalog = await github();
-  const baseline = featureGroupPackets(catalog).packets.map(packet => packet.requirementIds);
-  assert.throws(() => parseFeatureGrouping(groups([[...baseline[0], ...baseline[1]], ...baseline.slice(2)]), catalog), /exceeds capacity/);
+  const crowded = smallCatalog(Array.from({ length: DEFAULT_FEATURE_GROUP_THRESHOLDS.maxRequirements + 1 }, (_, i) => ({ id: `R${i}` })));
+  assert.throws(() => parseFeatureGrouping(groups([crowded.requirements.map(item => item.id)]), crowded), /exceeds capacity/);
   const first = structuredClone(catalog.requirements[0]);
-  first.text = "x".repeat(21000);
-  first.scenarios = Array(13).fill("same scenario");
+  first.text = "x".repeat(DEFAULT_FEATURE_GROUP_THRESHOLDS.maxTextChars + 1);
+  first.scenarios = Array(DEFAULT_FEATURE_GROUP_THRESHOLDS.maxScenarios + 1).fill("same scenario");
   const other = structuredClone(first);
   other.id = "SECOND";
   other.text = "small";
   other.scenarios = [];
   const input = { requirements: [first, other], statusById: { [first.id]: "todo" as const, SECOND: "todo" as const } };
   const single = parseFeatureGrouping(groups([[first.id], [other.id]]), input);
-  assert.equal(single.packets[0].requirements[0].text.length, 21000);
-  assert.equal(single.packets[0].requirements[0].scenarios.length, 13);
+  assert.equal(single.packets[0].requirements[0].text.length, DEFAULT_FEATURE_GROUP_THRESHOLDS.maxTextChars + 1);
+  assert.equal(single.packets[0].requirements[0].scenarios.length, DEFAULT_FEATURE_GROUP_THRESHOLDS.maxScenarios + 1);
   assert.throws(() => parseFeatureGrouping(groups([[first.id, other.id]]), input), /exceeds capacity/);
 });
 
@@ -119,10 +119,12 @@ test("ROOT module validation and merge diagnostics agree for direct atomics and 
 
 test("Tool merge facts respect all original capacity limits, including oversized single atomics", () => {
   for (const limit of ["requirements", "scenarios", "text"]) {
-    const catalog = smallCatalog((limit === "requirements" ? ["A", "B", "C", "D", "E"] : ["A", "B"]).map(id => ({ id })));
-    const ids = limit === "requirements" ? [["A", "B", "C", "D"], ["E"]] : [["A"], ["B"]];
-    if (limit === "scenarios") catalog.requirements[0].scenarios = Array(13).fill("same scenario");
-    if (limit === "text") catalog.requirements[0].text = "x".repeat(20001);
+    const capacity = DEFAULT_FEATURE_GROUP_THRESHOLDS.maxRequirements;
+    const names = limit === "requirements" ? Array.from({ length: capacity + 1 }, (_, i) => `R${i}`) : ["A", "B"];
+    const catalog = smallCatalog(names.map(id => ({ id })));
+    const ids = limit === "requirements" ? [names.slice(0, capacity), names.slice(capacity)] : [["A"], ["B"]];
+    if (limit === "scenarios") catalog.requirements[0].scenarios = Array(DEFAULT_FEATURE_GROUP_THRESHOLDS.maxScenarios + 1).fill("same scenario");
+    if (limit === "text") catalog.requirements[0].text = "x".repeat(DEFAULT_FEATURE_GROUP_THRESHOLDS.maxTextChars + 1);
     assert.deepEqual(validateGrouping(catalog, groups(ids)).mergeableAdjacentGroups, []);
   }
   assert.deepEqual(validateGrouping({ requirements: [], statusById: {} }, groups([])).groups, []);

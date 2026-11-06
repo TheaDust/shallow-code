@@ -144,6 +144,7 @@ test("Pi worker reports token usage and where Builder time went", { timeout: 60_
       JSON.parse(body);
       calls += 1;
       const tool = calls === 1;
+      await new Promise(resolve => setTimeout(resolve, 250));
       res.writeHead(200, { "content-type": "text/event-stream" });
       const delta = tool
         ? { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: JSON.stringify({ path: "hello.txt", content: "stats" }) } }] }
@@ -169,7 +170,36 @@ test("Pi worker reports token usage and where Builder time went", { timeout: 60_
       assert.ok(timing?.longestTools.some(entry => entry.name === "write"), JSON.stringify(timing));
       assert.ok((timing?.toolMsTotal ?? -1) >= 0);
       assert.ok((timing?.modelMsTotal ?? -1) >= 0);
+      assert.equal(timing?.modelRequestCount, 2);
+      assert.equal(timing?.modelErrorCount, 0);
+      assert.ok((timing?.modelWaitMsTotal ?? 0) >= 400, JSON.stringify(timing));
+      assert.equal(timing?.modelRequestMsTotal, timing!.modelMsTotal + timing!.modelWaitMsTotal);
     } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
+  });
+});
+
+test("Pi worker includes failed pre-stream request duration in its timing", { timeout: 30_000 }, async () => {
+  await withTempDir("shallow-pi-error-timing-", async root => {
+    const app = join(root, "app"); await mkdir(app);
+    let requests = 0;
+    const server = createServer(async (req, res) => {
+      for await (const _chunk of req) { /* consume the request */ }
+      requests++;
+      await new Promise(resolve => setTimeout(resolve, 100));
+      res.writeHead(503, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Service unavailable" } }));
+    });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const client = new PiWorkerClient({ apiKey: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`, model: "fixture" }, join(root, "sessions"));
+    try {
+      const result = await client.run({ outputDir: app, systemPrompt: "Finish.", taskPrompt: "finish", timeoutMs: 20_000 });
+      assert.equal(result.outcome, "failed");
+      const timing = result.execution!.timing!;
+      assert.equal(timing.modelRequestCount, requests);
+      assert.equal(timing.modelErrorCount, requests);
+      assert.ok(timing.modelErrorMsTotal >= requests * 80, JSON.stringify(timing));
+      assert.equal(timing.modelErrorMsTotal, timing.modelRequestMsTotal);
+    } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 });
 
@@ -204,6 +234,8 @@ test("Pi worker reports only the current call's tokens and cost after a session 
       const second = await client.run({ ...input, taskPrompt: "second" });
       assert.equal(second.sessionId, first.sessionId);
       // 会话统计是累计值；回执必须只包含本次调用。
+      assert.equal(first.execution?.timing?.modelRequestCount, 1);
+      assert.equal(second.execution?.timing?.modelRequestCount, 1);
       assert.ok(second.execution?.usage.status === "available");
       const { cost: secondCost, ...secondUsage } = second.execution.usage;
       assert.deepEqual(secondUsage,

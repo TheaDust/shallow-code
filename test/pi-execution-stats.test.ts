@@ -32,6 +32,11 @@ test("Pi execution stats separate model and tool time and bound the slowest tool
   assert.deepEqual(summary.timing, {
     turns: 2,
     modelMsTotal: 2_500,
+    modelRequestMsTotal: 2_500,
+    modelWaitMsTotal: 0,
+    modelRequestCount: 2,
+    modelErrorCount: 0,
+    modelErrorMsTotal: 0,
     toolMsTotal: 3_400,
     longestTools: [{ name: "shell", durationMs: 3_000 }],
     toolCounts: [{ name: "read", count: 1 }, { name: "shell", count: 1 }],
@@ -56,6 +61,11 @@ test("Pi execution stats ignore unmatched spans and duplicate starts", () => {
     turns: 0,
     modelMsTotal: 0,
     toolMsTotal: 300,
+    modelRequestMsTotal: 0,
+    modelWaitMsTotal: 0,
+    modelRequestCount: 1,
+    modelErrorCount: 0,
+    modelErrorMsTotal: 0,
     longestTools: [{ name: "read", durationMs: 300 }],
     // A duplicate start for the same call must not inflate the per-tool count.
     toolCounts: [{ name: "read", count: 1 }],
@@ -78,11 +88,51 @@ test("Pi execution stats clamp negative spans and cap the slowest list", () => {
     turns: 0,
     modelMsTotal: 0,
     toolMsTotal: 150,
+    modelRequestMsTotal: 0,
+    modelWaitMsTotal: 0,
+    modelRequestCount: 0,
+    modelErrorCount: 0,
+    modelErrorMsTotal: 0,
     longestTools: [{ name: "shell", durationMs: 50 }, { name: "write", durationMs: 50 }],
     toolCounts: [{ name: "browser", count: 1 }, { name: "read", count: 1 },
       { name: "shell", count: 1 }, { name: "write", count: 1 }],
     outputBytes: 0,
   });
+});
+
+test("Full request timing includes pre-stream waiting, SDK error durations and pending heartbeats", () => {
+  const collector = new PiExecutionCollector();
+  collector.requestStarted(0);
+  collector.requestStarted(200);
+  assert.equal(collector.summarize(undefined, 5, 1_000).timing.modelRequestMsTotal, 1_000);
+  assert.equal(collector.summarize(undefined, 5, 1_000).timing.modelWaitMsTotal, 1_000);
+  collector.modelStarted(2_000);
+  collector.modelEnded(3_000, 3_000);
+  collector.toolStarted("write", "write", 3_000);
+  collector.toolEnded("write", 4_000);
+  // SDK errors without a preceding stream-start still report the full duration.
+  collector.modelStarted(9_000);
+  collector.modelEnded(9_000, 5_000, true);
+  let timing = collector.summarize().timing;
+  assert.equal(timing.modelRequestMsTotal, 8_000);
+  assert.equal(timing.modelMsTotal, 1_000);
+  assert.equal(timing.modelWaitMsTotal, 7_000);
+  assert.equal(timing.modelRequestCount, 2);
+  assert.equal(timing.modelErrorCount, 1);
+  assert.equal(timing.modelErrorMsTotal, 5_000);
+  assert.equal(timing.toolMsTotal, 1_000);
+  collector.requestStarted(10_000);
+  collector.modelStarted(11_000);
+  timing = collector.summarize(undefined, 5, 12_000).timing;
+  assert.equal(timing.modelRequestMsTotal, 10_000);
+  assert.equal(timing.modelMsTotal, 2_000);
+  assert.equal(timing.modelWaitMsTotal, 8_000);
+  assert.equal(timing.modelRequestCount, 3);
+  assert.deepEqual(collector.summarize(undefined, 5, 12_000).timing, timing);
+  collector.modelEnded(13_000, 3_000, true);
+  timing = collector.summarize().timing;
+  assert.equal(timing.modelRequestMsTotal, 11_000);
+  assert.equal(timing.modelErrorMsTotal, 8_000);
 });
 
 test("Pi execution stats count per-tool calls and assistant output size without keeping text", () => {

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" lang="zh-CN" aria-labelledby="title description">
   <title id="title">ShallowCode 系统架构</title>
-  <desc id="description">结构化需求、项目运行合同与已有项目进入控制面。Pipeline 调度 Grouper 与 Pi Builder Worker，Verifier Coordinator 调度独立 Verifier。应用运行与行为验收分别经 Web App Adapter 和 Web Verifier Adapter 完成。控制器封存应用副本，验收在独立环境中执行；私有快照、程序和证据保存在工作区之外。</desc>
+  <desc id="description">结构化需求、项目运行合同与已有项目进入控制面。控制器调度 Grouper 与 Builder Worker，Verifier Coordinator 调度独立 Verifier。应用运行与行为验收分别经 Web App Adapter 和 Web Verifier Adapter 完成。控制器封存应用副本，验收在独立环境中执行；私有快照、程序和证据保存在工作区之外。</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#56616b"/></marker>
     <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#43816a"/></marker>
@@ -48,7 +48,7 @@
 </g>
 <g id="project-input" data-node="true"><rect x="772" y="126" width="396" height="80" rx="2" fill="#ffffff" stroke="#8b949c" stroke-width="1.2"/>
 <text x="790" y="156" class="node-title" text-anchor="start">项目起点</text>
-<text x="790" y="184" class="body" text-anchor="start">新建工程，或复制已有项目与输入数据</text>
+<text x="790" y="184" class="body" text-anchor="start">新建工程，或就地接管已有项目与输入数据</text>
 </g>
 <path d="M 197 206 V 244" class="edge"/>
 <path d="M 567 206 V 244" class="edge"/>
@@ -59,7 +59,7 @@
 <text x="68" y="319.0" class="node-title" text-anchor="start">CLI / TUI</text>
 </g>
 <g id="pipeline" data-node="true"><rect x="308" y="284" width="340" height="56" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
-<text x="326" y="319.0" class="node-title" text-anchor="start">Pipeline Controller</text>
+<text x="326" y="319.0" class="node-title" text-anchor="start">控制器</text>
 </g>
 <g id="coordinator" data-node="true"><rect x="704" y="284" width="444" height="56" rx="2" fill="#f3f4f2" stroke="#6c757b" stroke-width="1.2"/>
 <text x="722" y="319.0" class="node-title" text-anchor="start">Verifier Coordinator / Queue</text>
@@ -73,12 +73,12 @@
 <text x="545" y="390" class="label" text-anchor="start">实现 / 修复</text>
 <text x="978" y="390" class="label" text-anchor="start">快照任务 / 调度</text>
 <g id="grouper" data-node="true"><rect x="32" y="418" width="276" height="126" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
-<text x="50" y="448" class="node-title" text-anchor="start">Pi Grouper</text>
+<text x="50" y="448" class="node-title" text-anchor="start">Grouper</text>
 <text x="50" y="476" class="body" text-anchor="start">按依赖与场景划分功能组</text>
 <text x="50" y="502" class="mono" text-anchor="start">validate_grouping / finish</text>
 </g>
 <g id="builder" data-node="true"><rect x="364" y="418" width="330" height="126" rx="2" fill="#e8eff7" stroke="#527ba4" stroke-width="1.2"/>
-<text x="382" y="448" class="node-title" text-anchor="start">Pi Builder Worker</text>
+<text x="382" y="448" class="node-title" text-anchor="start">Builder Worker</text>
 <text x="382" y="476" class="body" text-anchor="start">实现业务 · 开发测试 · 有界修复</text>
 <text x="382" y="502" class="small" text-anchor="start">独立 Worker 进程</text>
 </g>
@@ -124,5 +124,5 @@
 </g>
 <path d="M 694 820 H 756" class="edge"/>
 <text x="725" y="805" class="label" text-anchor="middle">封存</text>
-<text x="32" y="887" class="small" text-anchor="start">共享基础设施：Pi 网关 / 用量 · 运行状态与日志     producedHead：实现版本 · acceptedSha：可运行检查点</text>
+<text x="32" y="887" class="small" text-anchor="start">共享基础设施：模型网关 / 用量 · 运行状态与日志     producedHead：实现版本 · acceptedSha：可运行检查点</text>
 </svg>

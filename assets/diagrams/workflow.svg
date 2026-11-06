@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900" role="img" lang="zh-CN" aria-labelledby="title description">
   <title id="title">实现与验收的流水线</title>
-  <desc id="description">需求解析和功能分组之后，Builder 按依赖顺序跨模块实现功能组。控制器每完成一组即封存独立快照并提交后台 Verifier，Builder 继续下一组。全部开发结束后统一等待后台检查，汇总原快照证据并检查交付合同。开启全量重放时在集中修复前后复验最终候选，随后输出应用、补丁与报告。</desc>
+  <desc id="description">需求解析和功能分组之后，Builder 按依赖顺序跨模块实现功能组。控制器每完成一组即封存独立快照并提交后台 Verifier，结果完成即发布，Builder 继续下一组。全部开发结束后统一等待后台检查，汇总原快照证据并检查交付合同。开启全量重放时在集中修复前后复验最终候选，随后输出应用、补丁与报告。</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#56616b"/></marker>
     <marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#43816a"/></marker>
@@ -54,7 +54,7 @@
 <path d="M 694 166 H 756" class="edge"/>
 <path d="M 962 206 V 242" class="edge"/>
 <rect x="32" y="242" width="1136" height="432" fill="#fcfcfb" stroke="#9aa4ad" stroke-width="1.1" stroke-dasharray="5 4"/>
-<text x="50" y="268" class="section" text-anchor="start">按依赖顺序跨模块开发 · 逐组封存，后台验收（图示两个功能组）</text>
+<text x="50" y="268" class="section" text-anchor="start">按依赖顺序跨模块开发 · 逐组封存，验收完成即发布（图示两个功能组）</text>
 <line x1="50" y1="376" x2="836" y2="376" stroke="#d8dde1" stroke-width="1"/>
 <line x1="50" y1="494" x2="836" y2="494" stroke="#d8dde1" stroke-width="1"/>
 <text x="50" y="326" class="section" text-anchor="start">Builder</text>
@@ -114,7 +114,7 @@
 <text x="48" y="786" class="small" text-anchor="start">集中修复 ≤1 轮；交付修复 ≤3 轮</text>
 <text x="48" y="812" class="small" text-anchor="start">未接受的改动恢复修复前基线</text>
 <line x1="452" y1="738" x2="452" y2="821" stroke="#527ba4" stroke-width="2"/>
-<text x="468" y="758" class="section" text-anchor="start">历史程序重放 · 可选</text>
+<text x="468" y="758" class="section" text-anchor="start">最终全量重放 · 可选</text>
 <text x="468" y="786" class="small" text-anchor="start">全部开发结束、集中修复后重验</text>
 <text x="468" y="812" class="small" text-anchor="start">默认汇总各功能组原快照证据</text>
 <g id="delivery" data-node="true"><rect x="864" y="738" width="272" height="110" rx="2" fill="#e8f2ec" stroke="#43816a" stroke-width="1.2"/>

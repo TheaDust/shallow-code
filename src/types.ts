@@ -8,7 +8,7 @@ export interface RunScenarioResult {
   requirementId: string;
   scenarioId: string;
   name: string;
-  status: "verified" | "failed" | "inconclusive" | "not_run";
+  status: "verified" | "failed" | "inconclusive" | "pending" | "not_run";
   caseIds: string[];
   reason?: string;
 }
@@ -19,6 +19,7 @@ export interface ScenarioCoverageCounts {
   verified: number;
   failed: number;
   inconclusive: number;
+  pending: number;
   notRun: number;
 }
 
