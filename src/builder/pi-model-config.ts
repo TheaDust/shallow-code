@@ -2,9 +2,8 @@ import type { ModelRates } from "../model-usage.js";
 
 /**
  * In-process gateway provider descriptor. The context window is the only
- * per-run tunable. Mainline packets are deliberately bounded so long tool
- * histories are compacted before they dominate token cost; the raw baseline
- * pins its own larger single-session window. Cost rates (USD per million
+ * per-run tunable. Sequential implementation retains its conversation and
+ * uses SDK compaction at this window. Cost rates (USD per million
  * tokens) come from the controller's price resolution so the SDK can report
  * per-session spend; an unset price keeps the historical zero rates.
  */

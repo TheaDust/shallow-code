@@ -182,8 +182,9 @@ export class PiWorkerClient implements CodingAgentPort {
       usage: result.usage ?? { status: "unavailable" }, ...(result.timing ? { timing: result.timing } : {}),
       ...(result.termination ? { termination: result.termination } : {}) };
     if (input.sessionKey) {
-      if (result.outcome === "completed" && result.sessionFile) this.sessions.set(input.sessionKey, { file: result.sessionFile, cwd: resolve(input.outputDir) });
-      else this.sessions.delete(input.sessionKey);
+      if (result.sessionFile && (result.outcome === "completed" || result.gatewayFailure?.retryable)) {
+        this.sessions.set(input.sessionKey, { file: result.sessionFile, cwd: resolve(input.outputDir) });
+      } else this.sessions.delete(input.sessionKey);
     }
     return result;
   }

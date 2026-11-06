@@ -60,7 +60,7 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   return runtime;
 }
 
-test("Only the last pending implementation packet is marked for self-test finalization", async () => {
+test("Sequential implementation shares a conversation and marks the final pending packet", async () => {
   await withModulePipeline(async f => {
     await attach(f);
     await f.run();
@@ -68,6 +68,9 @@ test("Only the last pending implementation packet is marked for self-test finali
     assert.ok(requests.length >= 2);
     assert.ok(requests.slice(0, -1).every(request => request.finalImplementation === false));
     assert.equal(requests.at(-1)!.finalImplementation, true);
+    for (const [index, request] of f.builder.requests.entries()) {
+      assert.equal(f.builder.runOptions[index]?.sessionKey, request.mode === "implement" ? "implementation" : undefined);
+    }
   });
 });
 
@@ -682,6 +685,7 @@ test("Concentrated repairs wait for all modules and follow current-snapshot Veri
     let builtB = false, builtC = false;
     f.builder.run = async (request, options) => {
       if (request.mode === "repair") {
+        assert.equal(options?.sessionKey, undefined, "repair must not receive implementation history");
         assert(builtB && builtC, "all modules finish before concentrated repair");
         assert.ok((await f.events()).some(event => event.type === "check_completed" && event.detail?.mode === "diagnose"));
       }

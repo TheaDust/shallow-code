@@ -39,7 +39,7 @@ export interface BuilderRunOptions {
   timeoutMs?: number;
   /** 每个已结束调用的增量用量，包括图片预检和降级重试。 */
   onUsage?: (usage: UsageSummary) => void | Promise<void>;
-  /** Controller-owned conversation key; omitted for isolated repair calls. */
+  /** One conversation for sequential implementation; omitted for isolated repair calls. */
   sessionKey?: string;
   /** Concrete controller build/start failure, never hidden Verifier plans. */
   continuationFeedback?: string;

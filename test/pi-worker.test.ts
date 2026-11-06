@@ -135,6 +135,61 @@ test("Pi SDK executes tools and resumes persisted history in a new worker", { ti
   });
 });
 
+for (const status of [503, 400]) {
+  test(`Pi worker ${status === 503 ? "retains" : "discards"} implementation history after HTTP ${status}`, { timeout: 45_000 }, async () => {
+    await withTempDir("shallow-pi-recovery-", async root => {
+      const app = join(root, "app"); await mkdir(app);
+      const requests: Array<{ messages: unknown[] }> = [];
+      let recovering = false;
+      const server = createServer(async (req, res) => {
+        let body = ""; for await (const chunk of req) body += chunk;
+        requests.push(JSON.parse(body));
+        if (!recovering && requests.length > 1) {
+          res.writeHead(status, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: { message: status === 503 ? "Service unavailable" : "Invalid request" } }));
+          return;
+        }
+        const tool = requests.length === 1;
+        const delta = tool ? { role: "assistant", tool_calls: [{ index: 0, id: "write-progress", type: "function", function: {
+          name: "write", arguments: JSON.stringify({ path: "progress.txt", content: "implemented" }),
+        } }] } : { role: "assistant", content: "done" };
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: tool ? "tool_calls" : "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 4 } })}\n\n`);
+        res.end("data: [DONE]\n\n");
+      });
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const client = new PiWorkerClient({ apiKey: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+        model: "fixture" }, join(root, "sessions"));
+      try {
+        const input = { outputDir: app, systemPrompt: "Implement the current feature.", taskPrompt: "feature-alpha", sessionKey: "implementation", timeoutMs: 20_000 };
+        const first = await client.run(input);
+        assert.equal(first.outcome, "failed");
+        assert.equal(first.gatewayFailure?.retryable, status === 503);
+        assert.equal(await readFile(join(app, "progress.txt"), "utf8"), "implemented");
+
+        recovering = true;
+        const second = await client.run({ ...input, taskPrompt: "continue current feature" });
+        assert.equal(second.outcome, "completed", second.summary);
+        assert.equal(second.execution?.resumed, status === 503);
+        assert.equal(second.sessionId === first.sessionId, status === 503);
+        assert.equal(JSON.stringify(requests.at(-1)?.messages).includes("feature-alpha"), status === 503);
+        assert.ok(second.execution?.usage.status === "available");
+        assert.equal(second.execution.usage.total, 14, "resumed calls report only new usage");
+        assert.equal(second.execution.timing?.modelRequestCount, 1);
+
+        const repair = await client.run({ ...input, sessionKey: undefined, taskPrompt: "isolated repair" });
+        assert.equal(repair.execution?.resumed, false);
+        assert.notEqual(repair.sessionId, second.sessionId);
+        assert.doesNotMatch(JSON.stringify(requests.at(-1)?.messages), /feature-alpha|continue current feature/);
+      } finally {
+        await client.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    });
+  });
+}
+
 test("Pi worker reports token usage and where Builder time went", { timeout: 60_000 }, async () => {
   await withTempDir("shallow-pi-stats-", async root => {
     const app = join(root, "app"); await mkdir(app);

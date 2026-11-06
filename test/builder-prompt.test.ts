@@ -50,10 +50,12 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.doesNotMatch(compiled.systemPrompt, /MCP/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /SHALLOW_DATA_DIR/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /持续增量扩展/);
-  assert.match(compiled.systemPrompt + compiled.taskPrompt, /必要的开发检查/);
-  assert.match(compiled.systemPrompt + compiled.taskPrompt, /全新的独立会话/);
-  assert.match(compiled.systemPrompt + compiled.taskPrompt, /唯一交接面/);
-  assert.match(compiled.systemPrompt + compiled.taskPrompt, /复杂或边界逻辑必须编写传统测试并用 run_tests 运行/);
+  assert.match(compiled.systemPrompt + compiled.taskPrompt, /必要局部检查/);
+  assert.match(compiled.systemPrompt, /常规功能组在同一开发会话中依次实现/);
+  assert.match(compiled.systemPrompt, /修复任务使用独立会话/);
+  assert.match(compiled.systemPrompt, /每次调用的运行环境与开发数据独立/);
+  assert.match(compiled.systemPrompt, /网关中断.*接着已保存的实现继续完成/);
+  assert.match(compiled.systemPrompt, /新增传统测试用于复杂计算、权限、事务、状态转换、解析边界或已修复缺陷/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /browser 启动真实浏览器，属于昂贵操作/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /清晰稳定的模块与接口边界/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /延续既有栈，不得换栈重写/);
@@ -80,14 +82,12 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   const actionIndex = compiled.taskPrompt.indexOf(loadPrompt("builder", "action-implement"));
   const packetIndex = compiled.taskPrompt.indexOf("## 当前工作包");
   assert.ok(actionIndex >= 0 && packetIndex > actionIndex, "implement action stays ahead of packet-specific context");
-  assert.match(compiled.taskPrompt, /先规划，再实施/);
-  assert.match(compiled.taskPrompt, /严格符合需求文档/);
-  assert.match(compiled.taskPrompt, /覆盖本包每条需求和场景新增的具体约束/);
-  assert.match(compiled.taskPrompt, /按需求 ID 和场景名或序号/);
-  assert.match(compiled.taskPrompt, /在同一实施计划中列出每个新场景实际依赖的既有前置/);
-  assert.match(compiled.taskPrompt, /实施前用相关既有测试或最小公开交互逐项检查现状/);
-  assert.match(compiled.taskPrompt, /尚未实现或尚未验证的场景约束/);
-  assert.match(compiled.taskPrompt, /完整业务链路/);
+  assert.match(compiled.taskPrompt, /实现覆盖本包需求、必要局部检查通过后即交接/);
+  assert.match(compiled.taskPrompt, /完整场景用于确定实现约束/);
+  assert.match(compiled.taskPrompt, /前序能力按现有接口复用/);
+  assert.match(compiled.taskPrompt, /缺口随本包局部补齐/);
+  assert.match(compiled.taskPrompt, /尚未实现的行为和已知问题/);
+  assert.match(compiled.systemPrompt, /贯通界面、服务端校验、领域状态、持久化和刷新后的读取/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /不能为示例输入、账号或断言硬编码结果/);
   assert.match(compiled.taskPrompt, /ARCHITECTURE\.md/);
   assert.match(compiled.taskPrompt, /REQ-PROFILE/);
@@ -121,7 +121,7 @@ test("Builder shares its product and platform prefix across packets and repair m
     request.packet.requirements[0].text += ` Packet evidence ${index}.`;
     const compiled = compileBuilderPrompt(request);
     assert.match(compiled.systemPrompt + compiled.taskPrompt, /逐场景还原 GIVEN/);
-    assert.match(compiled.systemPrompt + compiled.taskPrompt, /逐场景核对 GIVEN、准备、WHEN 操作和全部 THEN 结果/);
+    assert.match(compiled.systemPrompt, /逐场景还原 GIVEN.*WHEN.*全部 THEN/);
     assert.ok(compiled.taskPrompt.includes(`Path ${index}`));
     assert.ok(compiled.taskPrompt.includes(`Contract ${index}`));
     assert.ok(compiled.taskPrompt.includes(`Packet evidence ${index}.`));
@@ -208,8 +208,8 @@ test("Builder prompt ties domain lookup to the architecture handoff", () => {
   const compiled = compileBuilderPrompt(implementRequest());
   assert.match(compiled.systemPrompt, /超过约 300 行的文件只读相关片段/);
   assert.match(compiled.systemPrompt, /不递归扫描无关源码/);
-  assert.match(compiled.taskPrompt, /按 ARCHITECTURE\.md 中本包领域的入口、同步点和测试定位相关代码/);
-  assert.match(compiled.taskPrompt, /预计读取的入口\/测试和需要同步修改的调用方/);
+  assert.match(compiled.taskPrompt, /结合已有会话上下文、ARCHITECTURE\.md 和本包原文/);
+  assert.match(compiled.systemPrompt, /只在本次改动改变跨文件入口或约定时更新对应条目/);
   assert.match(compiled.taskPrompt, /更新了哪些 ARCHITECTURE\.md 条目/);
 
   const repair = compileBuilderPrompt(repairRequest("repair"));
@@ -227,12 +227,16 @@ test("Module and consolidated repair prompts bound self-test and maintain archit
   }
 });
 
-test("Only the final implementation packet requests application-wide self-test finalization", () => {
+test("Final implementation keeps local checks while baseline owns whole-application self-check", () => {
   const request = implementRequest();
   if (request.mode !== "implement") throw new Error("unexpected mode");
   assert.match(compileBuilderPrompt(request).taskPrompt, /开发阶段：功能组增量/);
   request.finalImplementation = true;
-  assert.match(compileBuilderPrompt(request).taskPrompt, /开发阶段：本轮最后一个实现包/);
+  const compiled = compileBuilderPrompt(request);
+  assert.match(compiled.taskPrompt, /开发阶段：本轮最后一个实现包/);
+  assert.match(compiled.systemPrompt, /最后一个实现包也沿用这一范围/);
+  assert.match(compiled.systemPrompt, /逐场景独立验收由 Verifier 完成/);
+  assert.match(loadPrompt("builder", "baseline-system"), /统一执行一次项目声明的 all 测试、类型检查和构建/);
 });
 
 test("Builder includes all seed data in implementation and both packet repair modes", () => {
@@ -342,7 +346,7 @@ test("Both boundary repair rounds and root-cause repair share diagnostic safegua
       const compiled = compileBuilderPrompt(request);
       assert.match(compiled.systemPrompt + compiled.taskPrompt, /precondition 表示准备未完成/);
       assert.match(compiled.systemPrompt + compiled.taskPrompt, /locator 表示定位尚需诊断，不能据此认定目标业务失败/);
-      assert.match(compiled.systemPrompt + compiled.taskPrompt, /重复控件不得为消除定位歧义而随意重命名、隐藏或删除/);
+      assert.match(compiled.systemPrompt + compiled.taskPrompt, /重复控件按需求中的容器和完整身份区分，不得为消除定位歧义而随意重命名、隐藏或删除/);
       if (mode === "repair") {
         assert.match(compiled.taskPrompt, /任务模式：需求修复/);
         assert.doesNotMatch(compiled.taskPrompt, /任务模式：第一次修复/);

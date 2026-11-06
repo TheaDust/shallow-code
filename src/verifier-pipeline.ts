@@ -277,7 +277,9 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
       result = await gateway.run("builder", packetId, remainingMs, async () => {
         reported = false;
         result = await deps.builder.run({ ...request, ...(options.initialization ? { initialization: options.initialization } : {}) },
-          { timeoutMs: remainingMs(), resumeInterrupted, onUsage, ...(repairDiff ? { repairDiff } : {}) });
+          { timeoutMs: remainingMs(), resumeInterrupted, onUsage,
+            ...(request.mode === "implement" ? { sessionKey: "implementation" } : {}),
+            ...(repairDiff ? { repairDiff } : {}) });
         try { await deps.assertContractUnchanged?.(); }
         catch (error) {
           await deps.git.restoreAccepted(coordinator.checkpoints.snapshot.accepted.sha);

@@ -29,7 +29,7 @@ export interface CodingAgentResult extends BuilderResult {
   compactions?: number;
 }
 export interface CodingAgentPort {
-  /** Resolve only after owned processes have exited. Failure invalidates the session key. */
+  /** Resolve after owned processes exit. Completed calls and retryable gateway failures retain keyed history. */
   run(request: CodingAgentRequest): Promise<CodingAgentResult>;
   close(): Promise<void>;
 }
