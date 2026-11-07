@@ -8,7 +8,7 @@
 
 阈值定义位于 `src/scheduler.ts` 的 `DEFAULT_FEATURE_GROUP_THRESHOLDS`。确定性参考分组、Grouper 输入、提交 schema、校验与运行事件使用同一份定义。
 
-选择依据是八个 ARC benchmark 的离线容量扫描：12306、bookstack、ctrip、github、keep、prestashop、sheet、stackoverflow，共 408 条需求、714 个场景。扫描原子上限 4/6/8/10/12、场景上限 12/16/20、字符上限 20k/30k/40k/60k，共 60 组组合、480 次任务分组评估。输入使用本地 `arc-bench-modified/arc-bench` 的需求，经过实验入口相同的语法转换后装入 Catalog。
+选择依据是八个 ARC benchmark 的离线容量扫描：12306、bookstack、ctrip、github、keep、prestashop、sheet、stackoverflow，共 408 条需求、714 个场景。扫描原子上限 4/6/8/10/12、场景上限 12/16/20、字符上限 20k/30k/40k/60k，共 60 组组合、480 次任务分组评估。输入使用本地 `arc-bench-ext/arc-bench` 的需求，经过实验入口相同的语法转换后装入 Catalog。
 
 | 原子 / 场景 / 字符上限 | 总包数 | Stack Overflow 包数 |
 | --- | ---: | ---: |
@@ -40,7 +40,7 @@
 复现命令（输出目录须与输入目录分开）：
 
 ```powershell
-node --import tsx scripts/benchmark-feature-groups.ts E:\my-works\coding\arc-bench-modified\arc-bench outputs/feature-group-thresholds-20261106
+node --import tsx scripts/benchmark-feature-groups.ts E:\my-works\coding\arc-bench-ext\arc-bench outputs/feature-group-thresholds-20261106
 ```
 
 脚本只读取需求，不调用模型或读取正式测试。输出包括规范化需求副本、源文件 SHA-256、各候选阈值的完整成员和容量数据；`results.json` 可用于复核表格。

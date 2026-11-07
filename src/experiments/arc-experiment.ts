@@ -16,7 +16,7 @@ import { arcEnvironment, freezeArcBaseline, inspectArcBaseline, runArcBaseline }
 
 const HELP = `ARC-Bench experiments
 
-npm run experiment -- list [--bench-root ../arc-bench-modified]
+npm run experiment -- list [--bench-root ../arc-bench-ext]
 npm run experiment -- plan --tasks bookstack --repeats 1 --concurrency 2
 npm run experiment -- prepare --tasks bookstack --repeats 1 --concurrency 2
 npm run experiment -- run --tasks bookstack --repeats 1 --concurrency 2
@@ -25,7 +25,7 @@ npm run experiment -- run --tasks bookstack --repeats 1 --concurrency 2 --output
 npm run experiment -- summarize --output-dir <existing-experiment>
 
 Options:
-  --bench-root <dir>               ARC repository (default: ../arc-bench-modified relative to ShallowCode)
+  --bench-root <dir>               ARC repository (default: ../arc-bench-ext relative to ShallowCode)
   --tasks <id,id>                  Selected tasks (default: all discovered tasks)
   --methods <baseline,arc,shallow> Selected methods (default: baseline,shallow)
   --arc-root <dir>                ARC compiler checkout (default: ../agentic-requirement-compiler)
@@ -73,7 +73,7 @@ export function parseExperimentArgs(argv: string[], cwd = process.cwd()) {
   return { command, tasks, methods, resume,
     arcRoot: values.has("--arc-root") ? resolve(cwd, values.get("--arc-root")!) : resolve(REPOSITORY, "../agentic-requirement-compiler"),
     arcPython: values.get("--arc-python") ?? "python",
-    benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench-modified"),
+    benchRoot: values.has("--bench-root") ? resolve(cwd, values.get("--bench-root")!) : resolve(REPOSITORY, "../arc-bench-ext"),
     outputDir: values.has("--output-dir") ? resolve(cwd, values.get("--output-dir")!) : undefined,
     outputRoot: resolve(cwd, "outputs"),
     repeats: integer("--repeats", 2, 100),

@@ -1,6 +1,6 @@
 # ARC-Bench 对照实验
 
-实验入口默认读取相邻的 `../arc-bench-modified`，运行 `baseline`（单 Agent 全需求开发与自检）和 `shallow`（完整 Grouper / Builder / Verifier 流程），用基准中的 Playwright 测试评估最终应用。两组各自使用全新工程、私有运行目录、数据和程序缓存；配对顺序在任务与重复间交替。`--concurrency N` 控制同时执行的实验单元数，默认 1。
+实验入口默认读取相邻的 `../arc-bench-ext`，运行 `baseline`（单 Agent 全需求开发与自检）和 `shallow`（完整 Grouper / Builder / Verifier 流程），用基准中的 Playwright 测试评估最终应用。两组各自使用全新工程、私有运行目录、数据和程序缓存；配对顺序在任务与重复间交替。`--concurrency N` 控制同时执行的实验单元数，默认 1。
 
 通过 `--methods baseline,arc,shallow` 加入 Agentic Requirement Compiler（ARC）方法，或用 `--methods arc` 单独运行。默认仍选择 `baseline,shallow`。多方法按题目与重复序号轮换执行顺序；两方法保留原有的交替顺序。
 
@@ -38,7 +38,7 @@ ARC 内部工作流成功记 `completed`，完成但存在失败节点记 `parti
 先完成 README 的 `npm.cmd run setup`，在仓库 `.env` 配置模型网关。进程环境变量覆盖 `.env`。默认基准目录结构为：
 
 ```text
-../arc-bench-modified/
+../arc-bench-ext/
   setup-playwright.cjs
   arc-bench/<task>/
     requirements/requirements.yaml

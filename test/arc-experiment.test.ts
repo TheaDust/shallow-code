@@ -103,7 +103,7 @@ test("experimental scoring includes failed, skipped, interrupted and unexecuted 
 
 test("experiment CLI validates tasks and limits and alternates paired method order", () => {
   const defaults = parseExperimentArgs(["run"]);
-  assert.equal(defaults.benchRoot, resolve(REPOSITORY, "../arc-bench-modified"));
+  assert.equal(defaults.benchRoot, resolve(REPOSITORY, "../arc-bench-ext"));
   assert.equal(defaults.outputDir, undefined);
   assert.equal(defaults.outputRoot, resolve("outputs"));
   assert.equal(defaults.concurrency, 1);
