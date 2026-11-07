@@ -135,6 +135,37 @@ test("Pi SDK executes tools and resumes persisted history in a new worker", { ti
   });
 });
 
+test("Pi worker starts a new conversation when the implementation module changes", { timeout: 90_000 }, async () => {
+  await withTempDir("shallow-pi-module-session-", async root => {
+    const app = join(root, "app"); await mkdir(app);
+    const requests: Array<{ messages: unknown[] }> = [];
+    const server = createServer(async (req, res) => {
+      let body = ""; for await (const chunk of req) body += chunk;
+      requests.push(JSON.parse(body));
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", choices: [{ index: 0, delta: { role: "assistant", content: "done" }, finish_reason: null }] })}\n\n`);
+      res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+      res.end("data: [DONE]\n\n");
+    });
+    await new Promise<void>(r => server.listen(0, "127.0.0.1", r));
+    const client = new PiWorkerClient({ apiKey: "fixture", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      model: "fixture" }, join(root, "sessions"), undefined, { heartbeat: false });
+    try {
+      const base = { outputDir: app, systemPrompt: "Remember the task.", timeoutMs: 20_000 };
+      const first = await client.run({ ...base, taskPrompt: "remember module alpha", sessionKey: "implementation:FIRST" });
+      assert.equal(first.outcome, "completed", first.summary);
+      const same = await client.run({ ...base, taskPrompt: "continue module alpha", sessionKey: "implementation:FIRST" });
+      assert.equal(same.outcome, "completed", same.summary);
+      assert.equal(same.sessionId, first.sessionId);
+      assert.match(JSON.stringify(requests.at(-1)?.messages), /remember module alpha/);
+      const next = await client.run({ ...base, taskPrompt: "start module beta", sessionKey: "implementation:SECOND" });
+      assert.equal(next.outcome, "completed", next.summary);
+      assert.notEqual(next.sessionId, first.sessionId);
+      assert.doesNotMatch(JSON.stringify(requests.at(-1)?.messages), /remember module alpha/);
+    } finally { await client.close(); server.closeAllConnections(); await new Promise<void>(r => server.close(() => r())); }
+  });
+});
+
 for (const status of [503, 400]) {
   test(`Pi worker ${status === 503 ? "retains" : "discards"} implementation history after HTTP ${status}`, { timeout: 45_000 }, async () => {
     await withTempDir("shallow-pi-recovery-", async root => {

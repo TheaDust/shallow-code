@@ -60,7 +60,7 @@ async function attach(f: PipelineFixture, hook?: (job: CheckJob, signal: AbortSi
   return runtime;
 }
 
-test("Sequential implementation shares a conversation and marks the final pending packet", async () => {
+test("Sequential implementation reuses a conversation within a module and rotates across modules", async () => {
   await withModulePipeline(async f => {
     await attach(f);
     await f.run();
@@ -68,8 +68,16 @@ test("Sequential implementation shares a conversation and marks the final pendin
     assert.ok(requests.length >= 2);
     assert.ok(requests.slice(0, -1).every(request => request.finalImplementation === false));
     assert.equal(requests.at(-1)!.finalImplementation, true);
+    const keyFor = (requirementId: string) => {
+      const index = f.builder.requests.findIndex(request => request.mode === "implement" && request.packet.requirementIds.includes(requirementId));
+      assert.ok(index >= 0, `missing implementation request for ${requirementId}`);
+      return f.builder.runOptions[index]?.sessionKey;
+    };
+    assert.equal(keyFor("A"), "implementation:FIRST");
+    assert.equal(keyFor("B"), "implementation:FIRST");
+    assert.equal(keyFor("C"), "implementation:SECOND");
     for (const [index, request] of f.builder.requests.entries()) {
-      assert.equal(f.builder.runOptions[index]?.sessionKey, request.mode === "implement" ? "implementation" : undefined);
+      assert.equal(f.builder.runOptions[index]?.sessionKey, request.mode === "implement" ? keyFor(request.packet.requirementIds[0]) : undefined);
     }
   });
 });

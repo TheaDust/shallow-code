@@ -51,7 +51,8 @@ test("Builder prompt compiles a Chinese system contract and dynamic task prompt"
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /SHALLOW_DATA_DIR/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /持续增量扩展/);
   assert.match(compiled.systemPrompt + compiled.taskPrompt, /必要局部检查/);
-  assert.match(compiled.systemPrompt, /常规功能组在同一开发会话中依次实现/);
+  assert.match(compiled.systemPrompt, /同一模块内的常规功能组复用同一开发会话/);
+  assert.match(compiled.systemPrompt, /跨入新模块时使用新会话/);
   assert.match(compiled.systemPrompt, /修复任务使用独立会话/);
   assert.match(compiled.systemPrompt, /每次调用的运行环境与开发数据独立/);
   assert.match(compiled.systemPrompt, /网关中断.*接着已保存的实现继续完成/);
@@ -208,7 +209,7 @@ test("Builder prompt ties domain lookup to the architecture handoff", () => {
   const compiled = compileBuilderPrompt(implementRequest());
   assert.match(compiled.systemPrompt, /超过约 300 行的文件只读相关片段/);
   assert.match(compiled.systemPrompt, /不递归扫描无关源码/);
-  assert.match(compiled.taskPrompt, /结合已有会话上下文、ARCHITECTURE\.md 和本包原文/);
+  assert.match(compiled.taskPrompt, /结合已有会话上下文（如有）、ARCHITECTURE\.md 和本包原文/);
   assert.match(compiled.systemPrompt, /只在本次改动改变跨文件入口或约定时更新对应条目/);
   assert.match(compiled.taskPrompt, /更新了哪些 ARCHITECTURE\.md 条目/);
 

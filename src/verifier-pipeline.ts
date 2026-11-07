@@ -278,7 +278,10 @@ export async function runVerifierPipeline(options: PipelineOptions, deps: Pipeli
         reported = false;
         result = await deps.builder.run({ ...request, ...(options.initialization ? { initialization: options.initialization } : {}) },
           { timeoutMs: remainingMs(), resumeInterrupted, onUsage,
-            ...(request.mode === "implement" ? { sessionKey: "implementation" } : {}),
+            // Reuse one conversation within a requirement module; a module boundary starts a fresh handoff.
+            ...(request.mode === "implement"
+              ? { sessionKey: `implementation:${requirementModuleId(request.packet.requirements[0])}` }
+              : {}),
             ...(repairDiff ? { repairDiff } : {}) });
         try { await deps.assertContractUnchanged?.(); }
         catch (error) {

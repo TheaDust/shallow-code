@@ -120,7 +120,7 @@ test("Builder architecture handoff indexes domains before scanning source", () =
   assert.doesNotMatch(system, /先看项目目录/);
   assert.match(system, /超过约 300 行的文件只读相关片段/);
   assert.match(system, /不递归扫描无关源码/);
-  assert.match(implement, /已有会话上下文、ARCHITECTURE\.md 和本包原文/);
+  assert.match(implement, /已有会话上下文（如有）、ARCHITECTURE\.md 和本包原文/);
   assert.match(repair, /按失败涉及的领域读取 ARCHITECTURE\.md 条目/);
   assert.match(receipt, /更新了哪些 ARCHITECTURE\.md 条目/);
 });
