@@ -9,6 +9,9 @@ export interface ScenarioExecution {
   title: string;
   status: "not_run" | "running" | "completed";
   durationMs: number;
+  appStartMs?: number;
+  testMs?: number;
+  cleanupMs?: number;
   candidate?: CandidateEvidence;
   error?: string;
 }
@@ -45,21 +48,29 @@ export async function evaluateScenarios(options: {
     item.status = "running";
     try {
       await options.record?.(cases);
-      app = await options.start();
+      const startAt = Date.now();
+      try { app = await options.start(); }
+      finally { item.appStartMs = Date.now() - startAt; }
       const candidate = app.candidate;
       if (!candidate || runtimeIds.has(candidate.runtimeId)) throw new Error("Scenario needs a fresh candidate runtime");
       runtimeIds.add(candidate.runtimeId);
       item.candidate = candidate;
       baseline ??= candidate;
-      if (candidate.inputDigest !== baseline.inputDigest || candidate.applicationDigest !== baseline.applicationDigest) {
+      if (candidate.inputDigest !== baseline.inputDigest || candidate.applicationDigest !== baseline.applicationDigest || candidate.buildId !== baseline.buildId) {
         throw new Error("Application or build changed between scenarios");
       }
       await options.record?.(cases);
-      const result = await options.execute(entry, index);
+      const testAt = Date.now();
+      const result = await options.execute(entry, index).finally(() => { item.testMs = Date.now() - testAt; });
       if (result.process.timedOut || ![0, 1].includes(result.process.exitCode ?? -1)) {
         throw new Error(result.process.error ?? "Scenario runner did not complete");
       }
       if (reportEntries(result.report).length !== 1) throw new Error("Runner must select exactly one frozen scenario");
+      const launchError = result.report.suites.flatMap(function errors(suite): string[] {
+        return [...suite.specs.flatMap(spec => spec.tests.flatMap(test => test.results.flatMap(result =>
+          (result.errors ?? []).map(error => error.message ?? "")))), ...(suite.suites ?? []).flatMap(errors)];
+      }).find(message => /^(?:Error: )?browserType\.launch(?:PersistentContext)?:/.test(message));
+      if (launchError) throw new Error(`Browser initialization failed: ${launchError}`);
       const score = scoreReport([entry], result.report);
       if (score.errors.length || score.notRun || score.skipped) {
         throw new Error(score.errors.join("; ") || "Selected scenario was not executed");
@@ -69,11 +80,14 @@ export async function evaluateScenarios(options: {
     } catch (error) {
       item.error = String(error);
     } finally {
+      const cleanupAt = Date.now();
       try { await app?.stop(); }
       catch (error) { item.error = [item.error, `Application cleanup failed: ${String(error)}`].filter(Boolean).join("; "); }
+      item.cleanupMs = Date.now() - cleanupAt;
       item.status = item.error ? "not_run" : "completed";
       item.durationMs = Date.now() - at;
-      await options.record?.(cases);
+      try { await options.record?.(cases); }
+      catch (error) { item.error = `Scenario record failed: ${String(error)}`; item.status = "not_run"; }
     }
     if (item.error) {
       errors.push(`${entry.title}: ${item.error}`);

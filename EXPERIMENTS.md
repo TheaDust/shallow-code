@@ -111,6 +111,8 @@ npm.cmd run experiment -- run --tasks bookstack --repeats 2 --concurrency 2 --ge
 
 生成失败、超时和中断也会保留并尝试评分；无法启动时记为全部测试未执行、通过数为 0。通过率的分母来自生成前冻结的完整测试清单，包含失败、跳过和未执行项。方法级主指标先平均同一应用的重复结果，再对应用取平均；实验未完成时主指标为空。
 
+`summary.md` 是单文件人工汇总，包含方法级与每次运行的通过/总数、通过率、生成与评测耗时（分钟）、输入/输出/缓存读/缓存写 token、总 token、缓存命中率和生成阶段费用。缓存命中率按 `cacheRead / (input + cacheRead + cacheWrite)` 计算，分母只含 prompt token。`runs.csv` 追加同样的逐次运行字段，`summary.csv` 与 `tasks.csv` 追加方法级和应用级汇总字段；费用仍只统计生成阶段模型用量，评测不调用模型。
+
 ```text
 outputs/bookstack-<UTC时间戳>/
   experiment.json                 输入、代码、依赖版本、配置、并发度与执行顺序
@@ -124,9 +126,10 @@ outputs/bookstack-<UTC时间戳>/
     evaluation-1/                独立测试、配置、日志、trace 和 playwright.json
     result.json                  本次完整结果与最终源码摘要
   summary.json                   完整结构化汇总
+  summary.md                     人工阅读汇总（通过率、耗时、token、缓存命中率、费用）
   summary.csv                    方法级对比
   tasks.csv                      应用级对比
-  runs.csv                       每次运行的成绩、费用与耗时
+  runs.csv                       每次运行的详细结果（成绩、耗时、token、缓存命中率、费用）
 ```
 
 `--resume` 要求任务、重复次数、并发度、限制、模型配置、代码及输入摘要保持一致，完成的单元包括失败结果均直接保留。若进程被中断且没有生成结算报告，该单元记录为 `interrupted`，保留现有源码并评分，继续剩余单元；不会自动把它当成一次全新生成。中断的评测在新的 `evaluation-N` 目录重新执行，之前的记录保留。用户中断或某个单元抛出异常时停止领取新单元，取消其余在途进程，并等待清理结束后释放实验目录锁。

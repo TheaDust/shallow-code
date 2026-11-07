@@ -5,7 +5,8 @@ import { test } from "node:test";
 import { parse } from "yaml";
 import type { JSONReport } from "@playwright/test/reporter";
 import { createPlan, experimentMain, parseExperimentArgs, runExperiment, writeSummary } from "../src/experiments/arc-experiment.js";
-import { csv, planCells, reportEntries, REPOSITORY, scoreReport, summarize, type CellResult, type ExperimentPlan } from "../src/experiments/protocol.js";
+import { cacheHitRate, csv, planCells, reportEntries, REPOSITORY, scoreReport, summarize, summaryMarkdown,
+  type CellResult, type ExperimentPlan } from "../src/experiments/protocol.js";
 import { lockWorkspace } from "../src/run-record.js";
 import { normalizeArcRequirements } from "../src/experiments/requirements.js";
 import type { ProcessRequest } from "../src/experiments/process.js";
@@ -215,6 +216,8 @@ test("experiment runs two independent workspaces, preserves inputs and resumes w
     await assert.rejects(runExperiment({ ...plan, concurrency: 2 }, output, env, true), /settings changed/);
     await assert.rejects(runExperiment(plan, output, env, false), /already exists/);
     assert.match(await readFile(join(output, "runs.csv"), "utf8"), /baseline/);
+    assert.match(await readFile(join(output, "runs.csv"), "utf8"), /cacheHitRate/);
+    assert.match(await readFile(join(output, "summary.md"), "utf8"), /实验汇总/);
     assert.equal((await writeSummary(output, plan)).cells.length, 2);
   });
 });
@@ -421,4 +424,39 @@ test("macro summaries weight applications equally and do not publish an incomple
   assert.equal(summarize(plan, [row("a", 1, 1)]).byMethod[0].macroPassRate, null);
   assert.equal(summarize(plan, [row("a", 1, 1), row("b", 100, 0)]).byMethod[0].macroPassRate, 0.5);
   assert.match(csv([{ name: 'a,"b', score: null }]), /"a,""b"/);
+});
+
+test("summaries aggregate tokens, cache hits, cost and minutes for methods, tasks and runs", () => {
+  const plan = { tasks: [{ id: "a" }], repeats: 2, concurrency: 1, methods: ["baseline"], cells: [
+    { task: "a", repeat: 1, method: "baseline" }, { task: "a", repeat: 2, method: "baseline" }] } as ExperimentPlan;
+  const cell = (repeat: number, input: number, cacheRead: number, output: number, generationMs: number,
+    evaluationMs: number, cost: number) => ({ task: "a", repeat, method: "baseline",
+    generation: { status: "completed", exitCode: 0, durationMs: generationMs,
+      modelUsage: { input, output, cacheRead, cacheWrite: 0, total: input + output + cacheRead, cost },
+      usageComplete: true },
+    evaluation: { status: "completed", durationMs: evaluationMs,
+      score: { total: 10, passed: 5, failed: 5, skipped: 0, notRun: 0, passRate: 0.5, errors: [] }, directory: "." },
+    finalDigest: "fixture" }) as CellResult;
+  const summary = summarize(plan, [
+    cell(1, 100, 300, 10, 60_000, 30_000, 0.1),
+    cell(2, 0, 100, 5, 120_000, 60_000, 0.05),
+  ]);
+  const method = summary.byMethod[0];
+  assert.equal(method.inputTokens, 100);
+  assert.equal(method.outputTokens, 15);
+  assert.equal(method.cacheReadTokens, 400);
+  assert.equal(method.totalTokens, 515);
+  assert.equal(method.cacheHitRate, 0.8);
+  assert.equal(method.knownCostUsd!.toFixed(6), "0.150000");
+  assert.equal(method.generationMinutes, 3);
+  assert.equal(method.evaluationMinutes, 1.5);
+  assert.equal(method.totalMinutes, 4.5);
+  assert.equal(summary.byTask[0].cacheHitRate, 0.8);
+  assert.equal(cacheHitRate({ input: 0, cacheRead: 0, cacheWrite: 0 }), null);
+
+  const markdown = summaryMarkdown(plan, summary);
+  assert.match(markdown, /\| baseline \| 2\/2 \| 50\.0% \|/);
+  assert.match(markdown, /\| 5\/10 \| 50\.0% \|/);
+  assert.match(markdown, /\| 0\.8|80\.0%/);
+  assert.match(markdown, /缓存命中率 = cacheRead/);
 });

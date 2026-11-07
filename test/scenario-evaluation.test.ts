@@ -31,7 +31,7 @@ test("business failures retain their score and the next case starts clean", asyn
   assert.deepEqual([result.score.passed, result.score.failed, result.score.notRun], [2, 1, 0]);
 });
 
-for (const failure of ["start", "cleanup", "snapshot", "runtime", "build", "selection", "timeout"] as const) {
+for (const failure of ["start", "cleanup", "snapshot", "runtime", "build", "selection", "timeout", "browser", "record"] as const) {
   test(`${failure} failure preserves completed cases and does not score remaining cases as business failures`, async () => {
     let starts = 0;
     const result = await evaluateScenarios({ catalog,
@@ -44,8 +44,15 @@ for (const failure of ["start", "cleanup", "snapshot", "runtime", "build", "sele
           assertUnchanged: async () => { if (index === 1 && failure === "snapshot") throw new Error("snapshot changed"); },
           stop: async () => { if (index === 1 && failure === "cleanup") throw new Error("stop failed"); } };
       },
-      execute: async (_entry, i) => ({ report: report(i === 1 && failure === "selection" ? 0 : i),
-        process: { ...processResult, timedOut: i === 1 && failure === "timeout" } }) });
+      record: async cases => { if (failure === "record" && cases[1].status === "completed") throw new Error("disk error"); },
+      execute: async (_entry, i) => {
+        const observed = report(i === 1 && failure === "selection" ? 0 : i);
+        if (i === 1 && failure === "browser") {
+          observed.suites[0].specs[0].tests[0].results[0].status = "failed";
+          observed.suites[0].specs[0].tests[0].results[0].errors = [{ message: "Error: browserType.launch: spawn EPERM" }];
+        }
+        return { report: observed, process: { ...processResult, timedOut: i === 1 && failure === "timeout" } };
+      } });
     assert.equal(starts, 2);
     assert.deepEqual([result.score.passed, result.score.failed, result.score.notRun], [1, 0, 2]);
     assert.equal(result.score.errors.length, 1);

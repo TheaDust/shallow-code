@@ -6,8 +6,8 @@ import { parseBuilderContextWindow, parseVerifierConfig, readEnvFile, readGatewa
 import { assertPrivateRunDirectory, digest, lockWorkspace, snapshotFiles } from "../run-record.js";
 import { atomicWrite } from "../verifier/artifacts.js";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./process.js";
-import { csv, DEFAULT_METHODS, deserializePlan, deserializeResult, discoverArcTasks, implementationDigest, inside, METHODS, planCells,
-  REPOSITORY, resolveStoredPath, scoreReport, serializePlan, serializeResult, storedPath, summarize,
+import { cacheHitRate, csv, DEFAULT_METHODS, deserializePlan, deserializeResult, discoverArcTasks, implementationDigest, inside, METHODS, planCells,
+  REPOSITORY, resolveStoredPath, scoreReport, serializePlan, serializeResult, storedPath, summarize, summaryMarkdown,
   type CellResult, type ExperimentPlan, type Method, type TestEntry } from "./protocol.js";
 import type { WorkerRequest } from "./worker.js";
 import { normalizeArcCompilerRequirements, normalizeArcRequirements } from "./requirements.js";
@@ -124,12 +124,23 @@ export async function writeSummary(outputDir: string, plan: ExperimentPlan) {
   await saveJson(join(outputDir, "summary.json"), { ...summary, cells: results.map(result => serializeResult(result, outputDir)) });
   await writeFile(join(outputDir, "summary.csv"), csv(summary.byMethod));
   await writeFile(join(outputDir, "tasks.csv"), csv(summary.byTask));
-  await writeFile(join(outputDir, "runs.csv"), csv(results.map(row => ({ task: row.task, repeat: row.repeat, method: row.method,
-    generationStatus: row.generation.status, evaluationStatus: row.evaluation.status,
-    ...row.evaluation.score, errors: row.evaluation.score.errors.join("; "),
-    generationDurationMs: row.generation.durationMs, evaluationDurationMs: row.evaluation.durationMs,
-    tokens: row.generation.modelUsage?.total, knownCostUsd: row.generation.modelUsage?.cost,
-    usageComplete: row.generation.usageComplete, finalDigest: row.finalDigest }))));
+  await writeFile(join(outputDir, "runs.csv"), csv(results.map(row => {
+    const usage = row.generation.modelUsage;
+    const generationMinutes = row.generation.durationMs === null ? null : row.generation.durationMs / 60_000;
+    const evaluationMinutes = row.evaluation.durationMs / 60_000;
+    return { task: row.task, repeat: row.repeat, method: row.method,
+      generationStatus: row.generation.status, evaluationStatus: row.evaluation.status,
+      ...row.evaluation.score, errors: row.evaluation.score.errors.join("; "),
+      generationDurationMs: row.generation.durationMs, evaluationDurationMs: row.evaluation.durationMs,
+      tokens: usage?.total, knownCostUsd: usage?.cost,
+      usageComplete: row.generation.usageComplete, finalDigest: row.finalDigest,
+      inputTokens: usage?.input ?? null, outputTokens: usage?.output ?? null,
+      cacheReadTokens: usage?.cacheRead ?? null, cacheWriteTokens: usage?.cacheWrite ?? null,
+      cacheHitRate: usage ? cacheHitRate(usage) : null,
+      generationMinutes, evaluationMinutes,
+      totalMinutes: generationMinutes === null ? null : generationMinutes + evaluationMinutes };
+  })));
+  await writeFile(join(outputDir, "summary.md"), summaryMarkdown(plan, summary));
   return summary;
 }
 
