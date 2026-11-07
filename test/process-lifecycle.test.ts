@@ -95,3 +95,13 @@ test("Runtime environments do not forward the outer npm script policy into candi
     else process.env.npm_config_allow_scripts = priorPolicy;
   }
 });
+
+test("Runtime environment overrides cannot reintroduce an inherited npm script policy", () => {
+  const extra = { npm_config_allow_scripts: "@opencode/cli", NPM_CONFIG_ALLOW_SCRIPTS: "outer-package",
+    PORT: "43210", npm_config_registry: "https://registry.example.test" };
+  const env = runtimeEnvironment(extra);
+  assert.deepEqual(Object.keys(env).filter(key => /^npm_config_allow_scripts$/i.test(key)), []);
+  assert.equal(env.PORT, extra.PORT);
+  assert.equal(env.npm_config_registry, extra.npm_config_registry);
+  assert.equal(extra.npm_config_allow_scripts, "@opencode/cli");
+});

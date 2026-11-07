@@ -88,7 +88,8 @@ class ARCWorkflowManager:
         root = Path(output)
         (root / '.arc').mkdir(parents=True, exist_ok=True)
         (root / '.arc/model_usage.jsonl').write_text(json.dumps({'model':'fixture','stage':'MODEL','input_tokens':100,'output_tokens':10,'cached_tokens':40})+'\\n')
-        (root / 'runtime.json').write_text(json.dumps({'db':os.environ['ARC_DB_FILE'],'model':os.environ['MODEL'],'port':os.environ.get('ARC_WEB_PORT')}))
+        (root / 'runtime.json').write_text(json.dumps({'db':os.environ['ARC_DB_FILE'],'model':os.environ['MODEL'],'port':os.environ.get('ARC_WEB_PORT'),
+            'policyKeys':[key for key in os.environ if key.lower() == 'npm_config_allow_scripts'],'hasModelKey':bool(os.environ.get('OPENAI_API_KEY'))}))
         if os.environ.get('ARC_FIXTURE_HANG'):
             import time
             time.sleep(30)
@@ -135,13 +136,15 @@ test("ARC Python bridge reports partial completion, keeps data private, and acco
     const projectDir = join(root, "app"), privateDir = join(root, "private");
     await mkdir(projectDir); await mkdir(privateDir);
     const result = await runArcBaseline({ spec, sourceDir: spec.root, requirementsDir: root, projectDir, privateDir,
-      env: { ...toolEnvironment(), ...environment, SHALLOW_REFERENCE_IMAGES: "0", ARC_FIXTURE_PARTIAL: "1" }, timeoutMs: 20_000 });
+      env: { ...toolEnvironment(), ...environment, SHALLOW_REFERENCE_IMAGES: "0", ARC_FIXTURE_PARTIAL: "1",
+        npm_config_allow_scripts: "outer-package", NPM_CONFIG_ALLOW_SCRIPTS: "outer-package" }, timeoutMs: 20_000 });
     assert.equal(result.status, "partial", await readFile(join(root, "generation.log"), "utf8"));
     assert.equal(result.usageComplete, true);
     assert.equal(result.modelUsage?.total, 110);
     const runtime = JSON.parse(await readFile(join(projectDir, "runtime.json"), "utf8"));
     assert.equal(runtime.db, join(projectDir, "backend", "database.db"));
     assert.equal(runtime.model, "fixture"); assert(Number(runtime.port) > 0);
+    assert.deepEqual(runtime.policyKeys, []); assert.equal(runtime.hasModelKey, true);
     const config = JSON.parse(await readFile(join(projectDir, "shallowcode.config.json"), "utf8"));
     assert.equal(config.env.ARC_DB_FILE, undefined, "the evaluator binds its private runtime data directory");
     const timedOut = await runArcBaseline({ spec, sourceDir: spec.root, requirementsDir: root,

@@ -2,7 +2,7 @@ import { open, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { ownProcessTree } from "../process-lifecycle.js";
+import { ownProcessTree, withoutInheritedNpmPolicy } from "../process-lifecycle.js";
 import { spawnProcess } from "../process-spawn.js";
 
 export interface ProcessRequest {
@@ -52,7 +52,7 @@ export async function runProcess(request: ProcessRequest): Promise<ProcessResult
   let timer: NodeJS.Timeout | undefined;
   let outcome: ProcessResult | undefined;
   let abort = () => {};
-  const child = spawnProcess(request.executable, request.args, { cwd: request.cwd, env: request.env,
+  const child = spawnProcess(request.executable, request.args, { cwd: request.cwd, env: withoutInheritedNpmPolicy(request.env),
     detached: process.platform !== "win32", windowsHide: true,
     stdio: request.message === undefined ? ["ignore", log.fd, log.fd] : ["ignore", log.fd, log.fd, "ipc"] });
   const exited = new Promise<ProcessResult>((resolve, reject) => {

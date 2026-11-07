@@ -76,6 +76,11 @@ const CREDENTIAL_ENV_KEY = /openai_|api[_-]?key|token|secret|password|credential
  */
 const INHERITED_NPM_POLICY_KEY = /^npm_config_allow_scripts$/i;
 
+/** Model workers keep their credentials while discarding the launcher's npm script policy. */
+export function withoutInheritedNpmPolicy(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(environment).filter(([key]) => !INHERITED_NPM_POLICY_KEY.test(key)));
+}
+
 /**
  * Environment for candidate processes: the host environment is inherited so
  * npm, Node and platform tooling keep working (proxies, registry settings,
@@ -85,10 +90,10 @@ const INHERITED_NPM_POLICY_KEY = /^npm_config_allow_scripts$/i;
 export function runtimeEnvironment(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value === undefined || CREDENTIAL_ENV_KEY.test(key) || INHERITED_NPM_POLICY_KEY.test(key)) continue;
+    if (value === undefined || CREDENTIAL_ENV_KEY.test(key)) continue;
     environment[key] = value;
   }
-  return { ...environment, ...extra };
+  return withoutInheritedNpmPolicy({ ...environment, ...extra });
 }
 
 /** Detached tool groups are registered with the Worker parent for interruption cleanup. */
